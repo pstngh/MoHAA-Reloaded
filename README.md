@@ -16,7 +16,7 @@
 - **Smooth matches.** What used to load in the middle of a match (models announced late, a sound's first play, the soundtrack at a round restart) now happens while the map loads.
 - **Fast.** In two real matches played back at 1920x1080 on an AMD Radeon 780M (an integrated GPU), the renderer's CPU time per frame is about half of upstream's GL1 renderer's (0.35 ms against 0.65, 0.68 against 1.26), frames take 35 to 40 % less time, and the 99th percentile is 1.2 ms against 1.9 and 1.4 against 2.4.
 - **The Omaha sound mixer** (JayRewd's) instead of OpenAL: miniaudio for the device, gains per kind of sound, ducking, sounds behind walls muffled, and HRTF for headphones.
-- **Same game online.** The network protocol, the server-side game code and the data formats are upstream's, except that backpedal and strafe move at the original game's speeds.
+- **Same game online.** The network protocol, the server-side game code and the data formats are upstream's, except that backpedal and strafe move at the original game's speeds, and a server it hosts caps SMGs and rifles at the original's top speeds.
 
 Needs a GPU with a Vulkan 1.1 driver (on Linux Mesa's RADV, ANV or NVK, or NVIDIA's driver; on Windows any current AMD, NVIDIA or Intel driver). The Linux build needs glibc 2.34 or later (Ubuntu 22.04, Debian 12, Fedora 35 or later), the Windows build the [Microsoft Visual C++ 2015–2022 Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe), which most PCs with games already have; SDL 3 and libcurl come with both (the Linux build uses the SDL 3 next to it, so distributions without one, like Ubuntu 22.04 and 24.04, need nothing). On a Wayland desktop the game is a native Wayland client (`SDL_VIDEODRIVER=x11` runs it under Xwayland). Developed and measured on an AMD Radeon 780M with Mesa's RADV driver under KDE Plasma (Wayland); also played on an NVIDIA RTX 4070 Ti.
 
@@ -73,6 +73,7 @@ Configs saved by earlier builds keep the values they hold: a saved `com_maxfps 8
 
 - The server side is upstream's: this client plays on stock MOHAA and OpenMoHAA servers.
 - Backpedal and strafe move at the original game's speeds (upstream OpenMoHAA's are 25% and 18% faster), in this client's prediction and on a server it hosts. Your movement then matches stock MOHAA servers and servers with the same fix ([openmohaa-server](https://github.com/pstngh/openmohaa-server)); on an upstream OpenMoHAA server, the server corrects you slightly while you backpedal or strafe, until upstream changes too.
+- A player's top speed is truncated as MOHAA 1.11 does it, on a server this build hosts: at the default `sv_dmspeedmult 1.1` an SMG runs at 262 (upstream OpenMoHAA: 264) and a rifle at 257 (258); other weapons are unchanged. It isn't a setting. On other servers your speed is theirs.
 - A server receives `cl_movefps` commands a second (100 by default), each exactly one step long, as from a stock client at that frame rate (at `cl_movefps 0`, one per frame). A shot or a jump in the first half of a step splits that step in two (`cl_movesubgrid`: 5 + 5 ms at 100, the steps of a stock client at 200 frames a second), one more command and packet for it.
 
 ## Building
