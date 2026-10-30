@@ -30,7 +30,6 @@ Each branch's README has its install steps, settings and limits: [`metal`](https
 - **A Mac with Apple Silicon:** `metal`. Download it from [Releases](https://github.com/pstngh/MoHAA-Reloaded/releases).
 - **A Linux PC:** `vulkan`. Download `openmohaa-vulkan-1.0.0-linux-amd64.tar.gz` from [Releases](https://github.com/pstngh/MoHAA-Reloaded/releases). Any GPU with a Vulkan 1.1 driver; developed on AMD with Mesa's RADV driver, also played on NVIDIA.
 - **Windows:** `vulkan`. Download `openmohaa-vulkan-1.0.0-windows-x64.zip` from [Releases](https://github.com/pstngh/MoHAA-Reloaded/releases).
-- **Intel Macs:** neither for now (`metal` needs Apple Silicon; `vulkan` isn't built or tested on macOS).
 
 ## What the two share
 
