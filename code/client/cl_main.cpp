@@ -2709,6 +2709,10 @@ void CL_Frame ( int msec ) {
 	// advance local effects for next frame
 	SCR_RunCinematic();
 
+#ifdef USE_DISCORD
+	CL_Discord_Frame();
+#endif
+
 	cls.framecount++;
 }
 
@@ -3581,6 +3585,10 @@ void CL_Init( void ) {
 
 	S_Init(qtrue);
 
+#ifdef USE_DISCORD
+	CL_Discord_Init();
+#endif
+
 	CL_StartHunkUsers(qfalse);
 
 	end = Sys_Milliseconds();
@@ -3651,6 +3659,10 @@ void CL_Shutdown(const char* finalmsg, qboolean disconnect, qboolean quit) {
 	Cmd_RemoveCommand ("stopvideo");
 
 	CL_ShutdownInput();
+
+#ifdef USE_DISCORD
+	CL_Discord_Shutdown();
+#endif
 
 	Cvar_Set( "cl_running", "0" );
 

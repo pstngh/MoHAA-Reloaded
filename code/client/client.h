@@ -770,6 +770,15 @@ qboolean CL_VideoRecording( void );
 //
 void CL_InitConsoleCommands( void );
 
+#ifdef USE_DISCORD
+//
+// cl_discord.c
+//
+void CL_Discord_Init( void );
+void CL_Discord_Frame( void );
+void CL_Discord_Shutdown( void );
+#endif
+
 #ifdef __cplusplus
 }
 #endif

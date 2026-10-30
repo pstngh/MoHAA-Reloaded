@@ -22,6 +22,7 @@ option(USE_CODEC_OPUS "Ogg Opus support" ON)
 option(USE_CODEC_MAD "MP3 support" ON)
 option(USE_VOIP "Voice chat" OFF)
 option(USE_MUMBLE "Mumble support" OFF)
+option(USE_DISCORD "Discord Rich Presence" ON)
 option(USE_FREETYPE "Freetype font rendering" OFF)
 
 option(USE_INTERNAL_LIBS "Use internally packaged libraries" ON)
