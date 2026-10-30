@@ -887,6 +887,16 @@ extern const uint32_t	vk_spirv_motion_blur_tiles_comp[];
 extern const size_t		vk_spirv_motion_blur_tiles_comp_size;
 extern const uint32_t	vk_spirv_motion_blur_neighbor_comp[];
 extern const size_t		vk_spirv_motion_blur_neighbor_comp_size;
+extern const uint32_t	vk_spirv_dof_focus_comp[];
+extern const size_t		vk_spirv_dof_focus_comp_size;
+extern const uint32_t	vk_spirv_dof_setup_comp[];
+extern const size_t		vk_spirv_dof_setup_comp_size;
+extern const uint32_t	vk_spirv_dof_neighbor_comp[];
+extern const size_t		vk_spirv_dof_neighbor_comp_size;
+extern const uint32_t	vk_spirv_dof_gather_comp[];
+extern const size_t		vk_spirv_dof_gather_comp_size;
+extern const uint32_t	vk_spirv_dof_apply_comp[];
+extern const size_t		vk_spirv_dof_apply_comp_size;
 
 /*
 ====================================================================
@@ -903,7 +913,8 @@ target. The color and the pyramid of the last frame are kept: two of each,
 the frames alternate. What the buffers don't hold (the camera's motion of
 what doesn't move, the normals the draws didn't give) their readers work out
 with shaders/temporal_common.glsl. Its readers: temporal anti-aliasing
-(r_taa), ambient occlusion (r_ao) and motion blur (r_motionBlur).
+(r_taa), ambient occlusion (r_ao), depth of field (r_dof) and motion blur
+(r_motionBlur).
 
 ====================================================================
 */
@@ -929,7 +940,8 @@ with shaders/temporal_common.glsl. Its readers: temporal anti-aliasing
 #define VK_TEMPORAL_GROUP_AO		4	// the ambient occlusion's (r_ao)
 #define VK_TEMPORAL_GROUP_PREVCOLOR	8	// color[1], the last scene's color: r_temporalShow 5
 #define VK_TEMPORAL_GROUP_MOTIONBLUR	16	// mbVelocity, mbTile, mbNeighbor: the motion blur (r_motionBlur), r_temporalShow 11, 12
-#define VK_TEMPORAL_GROUP_LAST		VK_TEMPORAL_GROUP_MOTIONBLUR
+#define VK_TEMPORAL_GROUP_DOF		32	// dofFocus, dofHalf, dofTile, dofNeighbor, dofFar, dofNear, dofResult: the depth of field (r_dof), r_temporalShow 13
+#define VK_TEMPORAL_GROUP_LAST		VK_TEMPORAL_GROUP_DOF
 
 // a dispatch of the depth pyramid after the prepare pass (hiz_build.comp)
 typedef struct {
@@ -1018,6 +1030,7 @@ typedef struct {
 	VkDescriptorSet	hizSets[VK_TEMPORAL_HISTORY][VK_TEMPORAL_MAX_PASSES];
 	VkDescriptorSet	compositeSets[VK_TEMPORAL_HISTORY];
 	VkDescriptorSet	compositeTaaSets[VK_TEMPORAL_HISTORY];	// the same, showing taa[current]
+	VkDescriptorSet	compositeDofSets[VK_TEMPORAL_HISTORY];	// the same, showing dofResult
 
 	// temporal anti-aliasing (r_taa, taa_resolve.comp): its result, this
 	// frame's and the last frame's (the history), alternating with current;
@@ -1071,6 +1084,30 @@ typedef struct {
 	VkShaderModule	mbTilesShader, mbNeighborShader;
 	VkPipeline		mbTilesPipeline, mbNeighborPipeline;
 	VkDescriptorSet	mbSets[VK_MAX_FRAMES];	// written in each frame (the depth image's view can change)
+
+	// depth of field (r_dof, VK_TemporalDof: dof.comp): the focus, the half
+	// resolution's color and blur, the largest blur of each tile of
+	// dofTileSize x dofTileSize pixels and of the 3 x 3 tiles around it, the
+	// gathered background and foreground, the result the composite shows;
+	// its images are GENERAL always
+	qboolean		dofOn;			// for this frame's scene (VK_TemporalUpdateFeatures): its passes run (r_dof, r_temporalShow 13)
+	qboolean		dofShow;		// r_temporalShow 13: the result shows the blur instead
+	qboolean		dofRan;			// the passes ran in this scene: the composite shows dofResult
+	int				dofTileSize;	// the largest blur's radius in pixels, even: max( 16, height / 20 )
+	int				dofTilesX, dofTilesY;
+	int				dofHalfWidth, dofHalfHeight;
+	vkTemporalImage_t	dofFocus;		// R32F, 1 x 1: 1 / the focus distance, eased over frames; 0: none yet
+	vkTemporalImage_t	dofHalf;		// RGBA16F, half resolution: color in linear light, the blur
+	vkTemporalImage_t	dofTile;		// RG16F, a texel a tile
+	vkTemporalImage_t	dofNeighbor;	// RG16F, a texel a tile
+	vkTemporalImage_t	dofFar;			// RGBA16F, half resolution
+	vkTemporalImage_t	dofNear;		// RGBA16F, half resolution
+	vkTemporalImage_t	dofResult;		// RGBA16F (gamma-encoded, as the scene)
+	VkDescriptorSetLayout dofSetLayout;
+	VkPipelineLayout	dofLayout;
+	VkShaderModule	dofFocusShader, dofSetupShader, dofNeighborShader, dofGatherShader, dofApplyShader;
+	VkPipeline		dofFocusPipeline, dofSetupPipeline, dofNeighborPipeline, dofGatherPipeline, dofApplyPipeline;
+	VkDescriptorSet	dofSets[VK_MAX_FRAMES];	// written in each frame (the depth image's and the color's views change)
 
 	// the frame data of the skinned draws: a ring of VK_SKIN_RING buffers
 	// instead of one per frame slot (the frame slots' and one more), so the
@@ -1136,3 +1173,4 @@ extern cvar_t	*r_taaSharpen;
 extern cvar_t	*r_saturation;
 extern cvar_t	*r_ao;
 extern cvar_t	*r_motionBlur;
+extern cvar_t	*r_dof;

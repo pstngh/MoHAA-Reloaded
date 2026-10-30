@@ -27,7 +27,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // sharpened here (r_taaSharpen: it stays unsharpened as the history).
 // With HDR output (r_hdrOutput, vk_output.c) the scene is expanded toward
 // the display's peak (HdrExpand). The ambient occlusion (r_ao) is in the
-// scene already (ao_apply.frag). With r_motionBlur the scene is blurred
+// scene already (ao_apply.frag). With r_dof u_color is the depth of
+// field's result (dof.comp), whose alpha says which pixels it left as they
+// were: only those are sharpened. With r_motionBlur the scene is blurred
 // here (MOTION_BLUR, MotionBlur) along what motion_blur.comp made, after the
 // anti-aliasing (its history stays sharp). r_temporalShow shows one of the
 // buffers instead, with what temporal_common.glsl gives their readers (the
@@ -38,7 +40,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #extension GL_GOOGLE_include_directive : require
 #include "temporal_common.glsl"
 
-layout(set = 0, binding = 0) uniform sampler2D u_color;		// what is shown: the anti-aliased scene with r_taa, else the scene
+layout(set = 0, binding = 0) uniform sampler2D u_color;		// what is shown: the depth of field's result with r_dof, the anti-aliased scene with r_taa, else the scene
 layout(set = 0, binding = 1) uniform sampler2D u_velocity;
 layout(set = 0, binding = 2) uniform sampler2D u_normal;
 layout(set = 0, binding = 3) uniform sampler2D u_hiz;		// this frame's depth pyramid (min, max), level 0 at half size
@@ -59,7 +61,7 @@ layout(push_constant) uniform Push {
 	ivec4	rect;		// the scene's views: x, y, width, height in framebuffer pixels
 	vec4	hdrA;		// HDR output's expansion: knee, b, the sky's b, the peak over paper white
 	vec4	hdrB;		// the boost of what is above 1, r_saturation, 1 HDR expansion / 2 the HDR look in SDR / 0 none, r_hdrBlack for the look (VK_OutputExpansion)
-	ivec4	mb;			// the motion blur's tile size, its pairs of samples (r_motionBlurQuality)
+	ivec4	mb;			// the motion blur's tile size, its pairs of samples (r_motionBlurQuality), 1: u_color is the depth of field's (sharpened where its alpha is 1), 0
 } pc;
 
 // HDR output: the pipeline expands the scene (vk_output.c)
@@ -301,8 +303,12 @@ void main() {
 
 		c = vec3( max( v.x, 0.0 ), max( v.y, 0.0 ), max( -v.x, 0.0 ) + max( -v.y, 0.0 ) );
 	} else {
-		c = texelFetch( u_color, p, 0 ).rgb;
-		if ( pc.sharpen > 0.0 ) {
+		vec4 cs = texelFetch( u_color, p, 0 );
+		// the depth of field's blur isn't sharpened
+		float sharpen = pc.mb.z != 0 ? pc.sharpen * cs.a : pc.sharpen;
+
+		c = cs.rgb;
+		if ( sharpen > 0.0 ) {
 			// the pixel away from the mean of its 4 neighbours, no farther
 			// than the darkest and the brightest of them (no halos)
 			ivec2 lo = pc.rect.xy, hi = pc.rect.xy + pc.rect.zw - 1;
@@ -313,7 +319,7 @@ void main() {
 			vec3 nmin = min( min( min( l, r ), min( u, d ) ), c );
 			vec3 nmax = max( max( max( l, r ), max( u, d ) ), c );
 
-			c = clamp( c + ( c - 0.25 * ( l + r + u + d ) ) * pc.sharpen, nmin, nmax );
+			c = clamp( c + ( c - 0.25 * ( l + r + u + d ) ) * sharpen, nmin, nmax );
 		}
 		if ( MOTION_BLUR ) {
 			c = MotionBlur( p, c );

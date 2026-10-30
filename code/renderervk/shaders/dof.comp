@@ -1,0 +1,412 @@
+/*
+===========================================================================
+Copyright (C) 2026 the OpenMoHAA team
+
+This file is part of OpenMoHAA source code.
+
+OpenMoHAA source code is free software; you can redistribute it
+and/or modify it under the terms of the GNU General Public License as
+published by the Free Software Foundation; either version 2 of the License,
+or (at your option) any later version.
+
+OpenMoHAA source code is distributed in the hope that it will be
+useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with OpenMoHAA source code; if not, write to the Free Software
+Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+===========================================================================
+*/
+
+// dof.comp -- the depth of field's passes (r_dof, vk_temporal.c,
+// VK_TemporalDof), after the anti-aliasing, before the composite (whose
+// sharpening and motion blur then read u_result). A thin lens: a pixel's
+// blur, its circle of confusion (CoC), is a radius in pixels of
+// pc.lens.x * (1 / F - 1 / d) for a view distance d and the focus distance F,
+// positive behind the focus (the background), negative in front of it (the
+// foreground), no more than a tile's side (pc.lens.y). The view weapon is
+// never blurred. The gather is the one of Jimenez, "Next Generation Post
+// Processing in Call of Duty: Advanced Warfare" (2014), at half the
+// resolution, the background and the foreground apart:
+//  - FOCUS (a workgroup): the focus, as 1 / F in u_focus, eased toward the
+//    nearest quarter of the view distances around the primary view's center
+//    (the crosshair; the sky as the far distance), or r_dofFocus's
+//    (pc.lens.z)
+//  - SETUP (a workgroup a tile): the half resolution's CoC (that of its
+//    nearest pixel) and color in linear light (its pixels weighted by how
+//    close their CoC is to that one) into u_half; the tile's largest
+//    foreground and largest CoC into u_tile
+//  - NEIGHBOR (an invocation a tile): the largest of the 3 x 3 tiles around
+//    it into u_neighbor, which reaches every pixel a blur can cover
+//  - GATHER (half resolution): the background over the pixel's own CoC, a
+//    sample's weight what of its blur reaches the pixel but no more than the
+//    pixel's (what is behind doesn't spread over what is in front); the
+//    foreground over the largest around the tile, each sample adding its
+//    share of the disc it spreads over, which gives its opacity. Into u_far
+//    and u_near
+//  - APPLY (full resolution): the sharp scene, the background over it by
+//    the pixel's own CoC, the foreground over that by its opacity, both
+//    upsampled with a tent; into u_result. A pixel neither covers is the
+//    scene's own value, unchanged, with alpha 1: the composite sharpens
+//    those only (r_taaSharpen; the blur would show the gather's noise)
+
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "temporal_common.glsl"
+
+#define GROUP	8
+
+layout( local_size_x = GROUP, local_size_y = GROUP ) in;
+
+layout( set = 0, binding = 0 ) uniform sampler2D u_depth;
+layout( set = 0, binding = 1 ) uniform sampler2D u_normal;
+layout( set = 0, binding = 2 ) uniform sampler2D u_color;	// the sharp scene: the anti-aliased one with r_taa
+layout( set = 0, binding = 3, r32f ) uniform image2D u_focus;			// 1 x 1: 1 / F, 0 before the first frame
+layout( set = 0, binding = 4, rgba16f ) uniform image2D u_half;		// half resolution: linear color, CoC in full pixels
+layout( set = 0, binding = 5, rg16f ) uniform image2D u_tile;			// the largest foreground CoC (as a radius), the largest |CoC|
+layout( set = 0, binding = 6, rg16f ) uniform image2D u_neighbor;		// the same of the 3 x 3 tiles around
+layout( set = 0, binding = 7, rgba16f ) uniform image2D u_far;		// half resolution: the background's color, 1
+layout( set = 0, binding = 8, rgba16f ) uniform image2D u_near;		// half resolution: the foreground's color, its opacity
+layout( set = 0, binding = 9, rgba16f ) uniform writeonly image2D u_result;	// the scene with the depth of field (gamma-encoded), alpha 1 where unchanged
+
+layout( push_constant ) uniform Push {
+	TemporalView	view;
+	ivec4	rect;		// the scene's views: x, y, width, height in framebuffer pixels
+	vec4	lens;		// the CoC's scale (pixels times units), the largest CoC (the tile's side), 1 / r_dofFocus (0: autofocus), the focus's step (1: at once)
+	vec4	params;		// the focus area's half side in pixels, 0, 1: r_temporalShow 13, 0
+	ivec4	ints;		// the tiles across and down, the gather's samples, 0
+} pc;
+
+const float GAMMA = 2.2;
+
+vec3 Linear( vec3 c ) {
+	return pow( max( c, vec3( 0.0 ) ), vec3( GAMMA ) );
+}
+
+vec3 Encode( vec3 lin ) {
+	return pow( max( lin, vec3( 0.0 ) ), vec3( 1.0 / GAMMA ) );
+}
+
+// the view distance of a pixel; 0 for the view weapon (its class, or what is
+// nearer than the world's depth floor with r_depthClamp): in front of all,
+// never blurred
+float PixelDistance( ivec2 p ) {
+	float wz = texelFetch( u_depth, p, 0 ).r;
+
+	if ( TemporalClass( texelFetch( u_normal, p, 0 ) ) == TEMPORAL_CLASS_WEAPON || wz < pc.view.depth.z ) {
+		return 0.0;
+	}
+	return TemporalViewDistance( pc.view, wz, false );
+}
+
+// the CoC of a view distance in full pixels, signed: behind the focus positive
+float Coc( float d, float invFocus ) {
+	if ( d <= 0.0 ) {
+		return 0.0;
+	}
+	return clamp( pc.lens.x * ( invFocus - 1.0 / max( d, 1.0 ) ), -pc.lens.y, pc.lens.y );
+}
+
+#if defined( FOCUS )
+
+shared float	s_dist[GROUP * GROUP];
+
+// 8 x 8 points over a square of 2 * params.x around the center of the
+// primary view; the view weapon left out, the sky (and what nothing drew)
+// at the far distance. The invocation whose distance ranks at a quarter of
+// the others writes the focus: the nearest of what is under the crosshair
+// wins, a stray pixel doesn't, and a sliver of roof at the edge of the sky
+// doesn't either
+void main() {
+	uint i = gl_LocalInvocationIndex;
+	ivec2 lo = pc.view.rect.xy, hi = pc.view.rect.xy + pc.view.rect.zw - 1;
+	vec2 center = vec2( pc.view.rect.xy ) + vec2( pc.view.rect.zw ) * 0.5;
+	vec2 offset = ( vec2( gl_LocalInvocationID.xy ) - 3.5 ) / 3.5 * pc.params.x;
+	ivec2 p = clamp( ivec2( center + offset ), lo, hi );
+	float wz = texelFetch( u_depth, p, 0 ).r;
+	int cls = TemporalClass( texelFetch( u_normal, p, 0 ) );
+	float d = -1.0;
+	int valid = 0, rank = 0;
+	bool writer;
+
+	if ( cls != TEMPORAL_CLASS_WEAPON && wz >= pc.view.depth.z ) {
+		d = wz >= 1.0 || cls == TEMPORAL_CLASS_SKY ? pc.view.depth.w : TemporalViewDistance( pc.view, wz, false );
+	}
+	s_dist[i] = d;
+	barrier();
+
+	for ( uint j = 0u; j < uint( GROUP * GROUP ); j++ ) {
+		float o = s_dist[j];
+
+		if ( o >= 0.0 ) {
+			valid++;
+			if ( o < d || ( o == d && j < i ) ) {
+				rank++;
+			}
+		}
+	}
+	// only the view weapon there: the focus stays (the far distance when
+	// there is none yet)
+	writer = valid == 0 ? i == 0u : d >= 0.0 && rank == valid / 4;
+	if ( writer ) {
+		float focus = imageLoad( u_focus, ivec2( 0 ) ).r;
+		float target = valid > 0 ? 1.0 / max( d, 8.0 ) : focus > 0.0 ? focus : 1.0 / pc.view.depth.w;
+
+		if ( pc.lens.z > 0.0 ) {
+			target = pc.lens.z;
+		}
+		// eased in 1 / F, so near and far changes take as long
+		focus = focus <= 0.0 ? target : mix( focus, target, pc.lens.w );
+		imageStore( u_focus, ivec2( 0 ), vec4( focus, 0.0, 0.0, 0.0 ) );
+	}
+}
+
+#elif defined( SETUP )
+
+shared vec2		s_best[GROUP * GROUP];
+
+void main() {
+	int side = int( pc.lens.y ) / 2;	// a tile's half resolution texels across
+	ivec2 origin = ivec2( gl_WorkGroupID.xy ) * side;
+	ivec2 local = ivec2( gl_LocalInvocationID.xy );
+	ivec2 size = imageSize( u_half );
+	ivec2 lo = pc.rect.xy;
+	ivec2 hi = pc.rect.xy + pc.rect.zw - 1;
+	float invFocus = imageLoad( u_focus, ivec2( 0 ) ).r;
+	vec2 best = vec2( 0.0 );
+	int x, y, k, i;
+
+	for ( y = local.y; y < side; y += GROUP ) {
+		for ( x = local.x; x < side; x += GROUP ) {
+			ivec2 h = origin + ivec2( x, y );
+			vec4 sum = vec4( 0.0 );
+			vec3 colors[4];
+			float cocs[4];
+			float nearest = 1e30, coc = 0.0;
+			bool inside[4];
+
+			if ( any( greaterThanEqual( h, size ) ) ) {
+				continue;
+			}
+			for ( k = 0; k < 4; k++ ) {
+				ivec2 p = h * 2 + ivec2( k & 1, k >> 1 );
+				float d;
+
+				inside[k] = all( greaterThanEqual( p, lo ) ) && all( lessThanEqual( p, hi ) );
+				if ( !inside[k] ) {
+					continue;
+				}
+				d = PixelDistance( p );
+				colors[k] = Linear( texelFetch( u_color, p, 0 ).rgb );
+				cocs[k] = Coc( d, invFocus );
+				if ( d < nearest ) {
+					nearest = d;
+					coc = cocs[k];
+				}
+			}
+			// the texel is its nearest pixel's: of the others, what is at
+			// another depth counts less (no background color in the
+			// foreground's blur at its outline)
+			for ( k = 0; k < 4; k++ ) {
+				if ( inside[k] ) {
+					sum += vec4( colors[k], 1.0 ) / ( 1.0 + abs( cocs[k] - coc ) );
+				}
+			}
+			imageStore( u_half, h, sum.a > 0.0 ? vec4( sum.rgb / sum.a, coc ) : vec4( 0.0 ) );
+			best = max( best, vec2( -coc, abs( coc ) ) );
+		}
+	}
+
+	// the largest of the workgroup
+	i = int( gl_LocalInvocationIndex );
+	s_best[i] = best;
+	barrier();
+	for ( int stride = GROUP * GROUP / 2; stride > 0; stride >>= 1 ) {
+		if ( i < stride ) {
+			s_best[i] = max( s_best[i], s_best[i + stride] );
+		}
+		barrier();
+	}
+	if ( i == 0 ) {
+		imageStore( u_tile, ivec2( gl_WorkGroupID.xy ), vec4( s_best[0], 0.0, 0.0 ) );
+	}
+}
+
+#elif defined( NEIGHBOR )
+
+void main() {
+	ivec2 t = ivec2( gl_GlobalInvocationID.xy );
+	vec2 best = vec2( 0.0 );
+	int x, y;
+
+	if ( any( greaterThanEqual( t, pc.ints.xy ) ) ) {
+		return;
+	}
+	for ( y = -1; y <= 1; y++ ) {
+		for ( x = -1; x <= 1; x++ ) {
+			best = max( best, imageLoad( u_tile, clamp( t + ivec2( x, y ), ivec2( 0 ), pc.ints.xy - 1 ) ).xy );
+		}
+	}
+	imageStore( u_neighbor, t, vec4( best, 0.0, 0.0 ) );
+}
+
+#elif defined( GATHER )
+
+const float GOLDEN_ANGLE = 2.39996323;
+
+// fixed per pixel: nothing blends it over frames after this
+float Noise( vec2 pixel ) {
+	return fract( 52.9829189 * fract( dot( pixel, vec2( 0.06711056, 0.00583715 ) ) ) );
+}
+
+// sample i of n of a disc of radius r (half resolution texels), turned by
+// rot: a golden angle spiral, as dense at the rim as in the middle
+vec2 Disc( int i, int n, float r, float rot, out float dist ) {
+	float a = float( i ) * GOLDEN_ANGLE + rot;
+
+	dist = r * sqrt( ( float( i ) + 0.5 ) / float( n ) );
+	return dist * vec2( cos( a ), sin( a ) );
+}
+
+void main() {
+	ivec2 h = ivec2( gl_GlobalInvocationID.xy );
+	ivec2 size = imageSize( u_half );
+	ivec2 lo = pc.rect.xy / 2;
+	ivec2 hi = ( pc.rect.xy + pc.rect.zw - 1 ) / 2;
+	int n = pc.ints.z;
+	vec4 c, far, near;
+	vec2 around;
+	float cc, rot, nearR, area;
+
+	if ( any( greaterThanEqual( h, size ) ) ) {
+		return;
+	}
+	c = imageLoad( u_half, h );
+	around = imageLoad( u_neighbor, h / ( int( pc.lens.y ) / 2 ) ).xy * 0.5;	// in half resolution texels
+	cc = c.a * 0.5;
+	rot = Noise( vec2( h ) ) * 6.2831853;
+	far = vec4( c.rgb, 1.0 );
+	near = vec4( 0.0 );
+
+	// the background: the pixel's own blur
+	if ( cc >= 0.5 ) {
+		for ( int i = 0; i < n; i++ ) {
+			float r;
+			vec2 o = Disc( i, n, cc + 0.5, rot, r );
+			vec4 s = imageLoad( u_half, clamp( h + ivec2( round( o ) ), lo, hi ) );
+			float sc = s.a * 0.5;
+
+			if ( sc > 0.0 ) {
+				far += clamp( min( sc, cc ) - r + 1.0, 0.0, 1.0 ) * vec4( s.rgb, 1.0 );
+			}
+		}
+	}
+
+	// the foreground: what spreads over the pixel from around it, each
+	// sample standing for the disc's area over n, its share of its own disc
+	nearR = around.x;
+	if ( nearR >= 0.5 ) {
+		nearR += 0.5;
+		area = nearR * nearR / float( n );
+		for ( int i = 0; i < n; i++ ) {
+			float r;
+			vec2 o = Disc( i, n, nearR, rot, r );
+			vec4 s = imageLoad( u_half, clamp( h + ivec2( round( o ) ), lo, hi ) );
+			float sr = -s.a * 0.5;
+
+			if ( sr > 0.0 ) {
+				float w = clamp( sr - r + 1.0, 0.0, 1.0 ) * area / max( sr * sr, 1.0 );
+
+				near += w * vec4( s.rgb, 1.0 );
+			}
+		}
+	}
+
+	imageStore( u_far, h, vec4( far.rgb / far.a, 1.0 ) );
+	imageStore( u_near, h, near.a > 0.0 ? vec4( near.rgb / near.a, min( near.a, 1.0 ) ) : vec4( 0.0 ) );
+}
+
+#elif defined( APPLY )
+
+void main() {
+	ivec2 p = pc.rect.xy + ivec2( gl_GlobalInvocationID.xy );
+	ivec2 lo = pc.rect.xy, hi = pc.rect.xy + pc.rect.zw - 1;
+	ivec2 hlo = lo / 2, hhi = hi / 2;
+	int tile = int( pc.lens.y );
+	vec3 sharp, lin;
+	vec2 around, hp;
+	vec4 far, near;
+	float d, cc, wn;
+	ivec2 b;
+	bool changed;
+
+	if ( any( greaterThan( p, hi ) ) ) {
+		return;
+	}
+	sharp = texelFetch( u_color, p, 0 ).rgb;
+	d = PixelDistance( p );
+	cc = Coc( d, imageLoad( u_focus, ivec2( 0 ) ).r );
+
+	if ( pc.params.z > 0.0 ) {
+		// r_temporalShow 13: the foreground's CoC in red, the background's in
+		// blue (1: 8 pixels), in focus the scene in gray; the focus area green
+		vec2 off = abs( vec2( p ) + 0.5 - ( vec2( pc.view.rect.xy ) + vec2( pc.view.rect.zw ) * 0.5 ) );
+		float edge = abs( max( off.x, off.y ) - pc.params.x );
+		vec3 c = vec3( dot( Linear( sharp ), vec3( 0.2126, 0.7152, 0.0722 ) ) * 0.4 );
+
+		c += vec3( clamp( -cc / 8.0, 0.0, 1.0 ), 0.0, clamp( cc / 8.0, 0.0, 1.0 ) );
+		if ( edge < 1.0 ) {
+			c = vec3( 0.0, 1.0, 0.0 );
+		}
+		imageStore( u_result, p, vec4( Encode( c ), 0.0 ) );
+		return;
+	}
+
+	around = imageLoad( u_neighbor, p / tile ).xy;
+	if ( around.y < 0.5 || d <= 0.0 ) {
+		imageStore( u_result, p, vec4( sharp, 1.0 ) );
+		return;
+	}
+	lin = Linear( sharp );
+
+	// the 3 x 3 half resolution texels around the nearest, a tent of 1.5
+	// texels: the background only from texels that are background
+	hp = ( vec2( p ) + 0.5 ) * 0.5 - 0.5;
+	b = ivec2( round( hp ) );
+	far = vec4( 0.0 );
+	near = vec4( 0.0 );
+	wn = 0.0;
+	for ( int y = -1; y <= 1; y++ ) {
+		for ( int x = -1; x <= 1; x++ ) {
+			ivec2 t = b + ivec2( x, y );
+			ivec2 q = clamp( t, hlo, hhi );
+			vec2 dd = abs( vec2( t ) - hp );
+			float w = max( 1.5 - dd.x, 0.0 ) * max( 1.5 - dd.y, 0.0 );
+			float wf = w * clamp( imageLoad( u_half, q ).a - 0.5, 0.0, 1.0 );
+			vec4 nr = imageLoad( u_near, q );
+
+			far += wf * vec4( imageLoad( u_far, q ).rgb, 1.0 );
+			near += w * nr.a * vec4( nr.rgb, 1.0 );
+			wn += w;
+		}
+	}
+
+	changed = false;
+	if ( cc > 0.5 && far.a > 1e-4 ) {
+		lin = mix( lin, far.rgb / far.a, smoothstep( 0.5, 2.0, cc ) );
+		changed = true;
+	}
+	if ( near.a > 1e-4 ) {
+		// a pixel of the foreground takes its blur whole: at its edge the
+		// coverage is about half, which would leave its sharp outline
+		float alpha = max( clamp( near.a / wn, 0.0, 1.0 ), smoothstep( 0.5, 2.0, -cc ) );
+
+		lin = mix( lin, near.rgb / near.a, alpha );
+		changed = true;
+	}
+	imageStore( u_result, p, changed ? vec4( Encode( lin ), 0.0 ) : vec4( sharp, 1.0 ) );
+}
+
+#endif

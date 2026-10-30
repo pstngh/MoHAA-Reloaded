@@ -43,7 +43,12 @@ ao_temporal_comp:ao_temporal.comp:
 ao_denoise_comp:ao_denoise.comp:
 ao_apply_frag:ao_apply.frag:
 motion_blur_tiles_comp:motion_blur.comp:
-motion_blur_neighbor_comp:motion_blur.comp:-DNEIGHBOR"
+motion_blur_neighbor_comp:motion_blur.comp:-DNEIGHBOR
+dof_focus_comp:dof.comp:-DFOCUS
+dof_setup_comp:dof.comp:-DSETUP
+dof_neighbor_comp:dof.comp:-DNEIGHBOR
+dof_gather_comp:dof.comp:-DGATHER
+dof_apply_comp:dof.comp:-DAPPLY"
 HDR_SHADERS="output_frag:output.frag:"
 
 # write <output file> <what it holds> <shader list>

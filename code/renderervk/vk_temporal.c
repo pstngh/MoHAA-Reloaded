@@ -68,6 +68,13 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // the scene along them (temporal_composite.frag, MOTION_BLUR), so the
 // anti-aliasing's history stays unblurred.
 //
+// With r_dof, before that (VK_TemporalDof): shaders/dof.comp eases the
+// focus toward what is under the crosshair, gives each pixel its blur (a
+// thin lens' circle of confusion from its view distance), gathers the
+// background and the foreground apart at half the resolution and puts them
+// over the sharp scene into dofResult, which the composite shows instead (and
+// the motion blur gathers from); the history stays sharp here too.
+//
 // Before that, in the primary view between its opaque surfaces and what is
 // blended over them, the ambient occlusion (r_ao, VK_TemporalAo, called by
 // vk_ao_scene): the scene's render pass ends, compute passes make view
@@ -109,6 +116,11 @@ cvar_t	*r_motionBlurShutter;
 cvar_t	*r_motionBlurFps;
 cvar_t	*r_motionBlurCamera;
 cvar_t	*r_motionBlurQuality;
+cvar_t	*r_dof;
+cvar_t	*r_dofAperture;
+cvar_t	*r_dofFocus;
+cvar_t	*r_dofFocusSpeed;
+cvar_t	*r_dofQuality;
 
 // push constants of the passes, see the shaders
 typedef struct {
@@ -132,7 +144,7 @@ typedef struct {
 	float	sharpen;		// r_taaSharpen when it shows the anti-aliased scene
 	int		rect[4];		// the scene's views (vkt.rect)
 	float	hdr[8];			// HDR output's expansion (VK_OutputExpansion)
-	int		mb[4];			// the motion blur's tile size, its pairs of samples
+	int		mb[4];			// the motion blur's tile size, its pairs of samples, 1: the color is the depth of field's (its alpha: sharpen), 0
 } vkCompositePush_t;
 
 typedef struct {
@@ -160,6 +172,15 @@ typedef struct {
 	int		tiles[4];		// the tiles across and down, 0, 0
 } vkMotionBlurPush_t;
 
+// the depth of field's passes (dof.comp, Push)
+typedef struct {
+	vkTemporalView_t	view;
+	int		rect[4];		// the scene's views (vkt.rect)
+	float	lens[4];		// the blur's scale (pixels times units), the largest blur (the tile's side), 1 / r_dofFocus (0: autofocus), the focus's step
+	float	params[4];		// the focus area's half side in pixels, 0, 1: r_temporalShow 13, 0
+	int		ints[4];		// the tiles across and down, the gather's samples, 0
+} vkDofPush_t;
+
 #define VK_TEMPORAL_PREPARE_BINDINGS	4	// depth, normals (sampled), levels 0 and 1 (storage)
 #define VK_TEMPORAL_COMPOSITE_BINDINGS	11
 #define VK_TEMPORAL_TAA_BINDINGS		8	// color, motion vectors, normals, depth, history, last pyramid (sampled), result, this pyramid's level 0 (storage)
@@ -170,9 +191,20 @@ typedef struct {
 #define VK_TEMPORAL_MB_BINDINGS		6	// depth, normals, motion vectors (sampled), mbVelocity, mbTile, mbNeighbor (storage)
 #define VK_TEMPORAL_MB_SAMPLED			3
 #define VK_TEMPORAL_MB_NEIGHBOR_GROUP	8	// the neighbour pass's workgroup's width and height (motion_blur.comp)
+#define VK_TEMPORAL_DOF_BINDINGS		10	// depth, normals, color (sampled), focus, half, tile, neighbor, far, near, result (storage)
+#define VK_TEMPORAL_DOF_SAMPLED		3
+#define VK_TEMPORAL_DOF_GROUP			8	// the workgroups' width and height (dof.comp)
+// the depth of field's lens: r_dofAperture is the blur of the far distance
+// when the focus is this far (128 units, about 3 m), and the projection's
+// [5] of the game's default field of view (fov 80 at 4:3; a narrower field,
+// a scope's zoom, blurs more, by its zoom)
+#define VK_DOF_REFERENCE_FOCUS		128.0f
+#define VK_DOF_PROJ_FOV80			1.5890f
 
 // pairs of samples of the motion blur's gather at r_motionBlurQuality 0, 1, 2
 static const int vk_mbPairs[3] = { 4, 6, 8 };
+// samples of each of the depth of field's gathers at r_dofQuality 0, 1, 2
+static const int vk_dofSamples[3] = { 16, 32, 48 };
 
 void VK_TemporalRegisterCvars( void ) {
 	r_temporal = ri.Cvar_Get( "r_temporal", "0", CVAR_ARCHIVE | CVAR_LATCH );
@@ -182,8 +214,8 @@ void VK_TemporalRegisterCvars( void ) {
 	r_temporalJitterSamples = ri.Cvar_Get( "r_temporalJitterSamples", "8", 0 );
 	ri.Cvar_CheckRange( r_temporalJitterSamples, 1, 64, qtrue );
 	r_temporalShow = ri.Cvar_Get( "r_temporalShow", "0", CVAR_CHEAT );
-	ri.Cvar_SetDescription( r_temporalShow, "with r_temporal 1, instead of the 3D view: 1 motion vectors, 2 normals, 3 classes, 4 depth pyramid level r_temporalShowMip, 5 last frame's color, 6 view distances, 7 last frame's view distances, 8 the scene without anti-aliasing, 9 the ambient occlusion, 10 one frame's ambient occlusion before denoising, 11 the motion blur of each pixel, 12 the longest motion blur around each tile" );
-	ri.Cvar_CheckRange( r_temporalShow, 0, 12, qtrue );
+	ri.Cvar_SetDescription( r_temporalShow, "with r_temporal 1, instead of the 3D view: 1 motion vectors, 2 normals, 3 classes, 4 depth pyramid level r_temporalShowMip, 5 last frame's color, 6 view distances, 7 last frame's view distances, 8 the scene without anti-aliasing, 9 the ambient occlusion, 10 one frame's ambient occlusion before denoising, 11 the motion blur of each pixel, 12 the longest motion blur around each tile, 13 the depth of field's blur (red in front of the focus, blue behind it, the focus area green)" );
+	ri.Cvar_CheckRange( r_temporalShow, 0, 13, qtrue );
 	r_temporalShowMip = ri.Cvar_Get( "r_temporalShowMip", "0", CVAR_CHEAT );
 	ri.Cvar_CheckRange( r_temporalShowMip, 0, VK_TEMPORAL_MAX_MIPS - 1, qtrue );
 	r_temporalShowScale = ri.Cvar_Get( "r_temporalShowScale", "20", CVAR_CHEAT );
@@ -237,6 +269,20 @@ void VK_TemporalRegisterCvars( void ) {
 	ri.Cvar_CheckRange( r_motionBlurCamera, 0.0f, 1.0f, qfalse );
 	r_motionBlurQuality = ri.Cvar_Get( "r_motionBlurQuality", "1", CVAR_ARCHIVE );
 	ri.Cvar_SetDescription( r_motionBlurQuality, "with r_motionBlur 1: 0 low, 1 medium, 2 high (8, 12, 16 samples per pixel)" );
+	r_dof = ri.Cvar_Get( "r_dof", "0", CVAR_ARCHIVE );
+	ri.Cvar_SetDescription( r_dof, "with r_temporal 1: depth of field, focused on what is under the crosshair (or at r_dofFocus); the view weapon stays sharp" );
+	r_dofAperture = ri.Cvar_Get( "r_dofAperture", "0.5", CVAR_ARCHIVE );
+	ri.Cvar_SetDescription( r_dofAperture, "with r_dof 1: the lens' aperture: the blur of the far distance when focused 128 units (3 m) away, in percent of the view's height; a scope's zoom blurs more" );
+	ri.Cvar_CheckRange( r_dofAperture, 0.0f, 5.0f, qfalse );
+	r_dofFocus = ri.Cvar_Get( "r_dofFocus", "0", CVAR_ARCHIVE );
+	ri.Cvar_SetDescription( r_dofFocus, "with r_dof 1: 0 focus on what is under the crosshair; more: a fixed focus distance in units (screenshots)" );
+	ri.Cvar_CheckRange( r_dofFocus, 0.0f, 65536.0f, qfalse );
+	r_dofFocusSpeed = ri.Cvar_Get( "r_dofFocusSpeed", "0.25", CVAR_ARCHIVE );
+	ri.Cvar_SetDescription( r_dofFocusSpeed, "with r_dof 1: how long the focus takes to follow, in seconds (the time constant of its easing); 0 at once" );
+	ri.Cvar_CheckRange( r_dofFocusSpeed, 0.0f, 10.0f, qfalse );
+	r_dofQuality = ri.Cvar_Get( "r_dofQuality", "1", CVAR_ARCHIVE );
+	ri.Cvar_SetDescription( r_dofQuality, "with r_dof 1: 0 low, 1 medium, 2 high (16, 32, 48 samples per gather where something is blurred)" );
+	ri.Cvar_CheckRange( r_dofQuality, 0, 2, qtrue );
 	ri.Cvar_CheckRange( r_motionBlurQuality, 0, 2, qtrue );
 }
 
@@ -277,7 +323,7 @@ must be sampled too)
 void VK_TemporalCheckDevice( void ) {
 	const VkFormatFeatureFlags attachment = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
 	const uint32_t pushSize = Q_max( Q_max( Q_max( Q_max( Q_max( VK_TEMPORAL_PUSH_END, (uint32_t)sizeof( vkPreparePush_t ) ), (uint32_t)sizeof( vkCompositePush_t ) ),
-		(uint32_t)sizeof( vkTaaPush_t ) ), (uint32_t)sizeof( vkAoPush_t ) ), (uint32_t)sizeof( vkMotionBlurPush_t ) );
+		(uint32_t)sizeof( vkTaaPush_t ) ), (uint32_t)sizeof( vkAoPush_t ) ), (uint32_t)Q_max( sizeof( vkMotionBlurPush_t ), sizeof( vkDofPush_t ) ) );
 	const VkFormatFeatureFlags storage = VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
 	const char *missing = NULL;
 
@@ -594,6 +640,23 @@ static void VK_TemporalCreateGroup( int group, VkCommandBuffer cmd ) {
 		VK_TemporalClearImage( cmd, vkt.mbTile.image, VK_IMAGE_LAYOUT_GENERAL, zero );
 		VK_TemporalClearImage( cmd, vkt.mbNeighbor.image, VK_IMAGE_LAYOUT_GENERAL, zero );
 		break;
+	case VK_TEMPORAL_GROUP_DOF:
+		// the focus 0: the first scene takes its target at once
+		VK_TemporalCreateImage( &vkt.dofFocus, VK_FORMAT_R32_SFLOAT, storage, 1, 1, 1 );
+		VK_TemporalCreateImage( &vkt.dofHalf, VK_FORMAT_R16G16B16A16_SFLOAT, storage, vkt.dofHalfWidth, vkt.dofHalfHeight, 1 );
+		VK_TemporalCreateImage( &vkt.dofTile, VK_FORMAT_R16G16_SFLOAT, storage, vkt.dofTilesX, vkt.dofTilesY, 1 );
+		VK_TemporalCreateImage( &vkt.dofNeighbor, VK_FORMAT_R16G16_SFLOAT, storage, vkt.dofTilesX, vkt.dofTilesY, 1 );
+		VK_TemporalCreateImage( &vkt.dofFar, VK_FORMAT_R16G16B16A16_SFLOAT, storage, vkt.dofHalfWidth, vkt.dofHalfHeight, 1 );
+		VK_TemporalCreateImage( &vkt.dofNear, VK_FORMAT_R16G16B16A16_SFLOAT, storage, vkt.dofHalfWidth, vkt.dofHalfHeight, 1 );
+		VK_TemporalCreateImage( &vkt.dofResult, VK_FORMAT_R16G16B16A16_SFLOAT, storage, vk.width, vk.height, 1 );
+		VK_TemporalClearImage( cmd, vkt.dofFocus.image, VK_IMAGE_LAYOUT_GENERAL, zero );
+		VK_TemporalClearImage( cmd, vkt.dofHalf.image, VK_IMAGE_LAYOUT_GENERAL, zero );
+		VK_TemporalClearImage( cmd, vkt.dofTile.image, VK_IMAGE_LAYOUT_GENERAL, zero );
+		VK_TemporalClearImage( cmd, vkt.dofNeighbor.image, VK_IMAGE_LAYOUT_GENERAL, zero );
+		VK_TemporalClearImage( cmd, vkt.dofFar.image, VK_IMAGE_LAYOUT_GENERAL, zero );
+		VK_TemporalClearImage( cmd, vkt.dofNear.image, VK_IMAGE_LAYOUT_GENERAL, zero );
+		VK_TemporalClearImage( cmd, vkt.dofResult.image, VK_IMAGE_LAYOUT_GENERAL, black );
+		break;
 	}
 	vkt.groups |= group;
 }
@@ -642,6 +705,15 @@ static void VK_TemporalDestroyGroup( int group ) {
 		VK_TemporalDestroyImage( &vkt.mbTile );
 		VK_TemporalDestroyImage( &vkt.mbNeighbor );
 		break;
+	case VK_TEMPORAL_GROUP_DOF:
+		VK_TemporalDestroyImage( &vkt.dofFocus );
+		VK_TemporalDestroyImage( &vkt.dofHalf );
+		VK_TemporalDestroyImage( &vkt.dofTile );
+		VK_TemporalDestroyImage( &vkt.dofNeighbor );
+		VK_TemporalDestroyImage( &vkt.dofFar );
+		VK_TemporalDestroyImage( &vkt.dofNear );
+		VK_TemporalDestroyImage( &vkt.dofResult );
+		break;
 	}
 	vkt.groups &= ~group;
 }
@@ -683,6 +755,15 @@ void VK_TemporalCreateTargets( void ) {
 	vkt.mbTileSize = Q_max( 16, ( vk.height + 20 ) / 40 );
 	vkt.mbTilesX = ( vk.width + vkt.mbTileSize - 1 ) / vkt.mbTileSize;
 	vkt.mbTilesY = ( vk.height + vkt.mbTileSize - 1 ) / vkt.mbTileSize;
+
+	// the depth of field's: their side is the largest blur, even (a tile is
+	// half of it across at half the resolution): 54 pixels at 1080, 72 at
+	// 1440, 108 at 2160
+	vkt.dofTileSize = Q_max( 16, ( vk.height + 10 ) / 20 ) & ~1;
+	vkt.dofHalfWidth = ( vk.width + 1 ) / 2;
+	vkt.dofHalfHeight = ( vk.height + 1 ) / 2;
+	vkt.dofTilesX = ( vkt.dofHalfWidth + vkt.dofTileSize / 2 - 1 ) / ( vkt.dofTileSize / 2 );
+	vkt.dofTilesY = ( vkt.dofHalfHeight + vkt.dofTileSize / 2 - 1 ) / ( vkt.dofTileSize / 2 );
 
 	// the images every scene draws; the readers' own come with them
 	// (VK_TemporalUpdateFeatures)
@@ -1127,6 +1208,11 @@ static const VkDescriptorType vk_mbTypes[VK_TEMPORAL_MB_BINDINGS] = {
 	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 	VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
 };
+static const VkDescriptorType vk_dofTypes[VK_TEMPORAL_DOF_BINDINGS] = {
+	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
+};
 static const VkDescriptorType vk_taaTypes[VK_TEMPORAL_TAA_BINDINGS] = {
 	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -1140,7 +1226,8 @@ VK_TemporalWriteStaticSets
 The sets that don't change until the targets are created again or a group
 of images is made or freed (VK_TemporalUpdateFeatures, the GPU idle): those
 of the pyramid's dispatches and of the composite, one of each per current
-image, and the ambient occlusion's apply pass's. Frames in flight may bind
+image (three: the scene, the anti-aliased scene, the depth of field's
+result), and the ambient occlusion's apply pass's. Frames in flight may bind
 them: they are written only then
 ===============
 */
@@ -1150,6 +1237,7 @@ static void VK_TemporalWriteStaticSets( void ) {
 	const qboolean ao = ( vkt.groups & VK_TEMPORAL_GROUP_AO ) != 0;
 	const qboolean prevColor = ( vkt.groups & VK_TEMPORAL_GROUP_PREVCOLOR ) != 0;
 	const qboolean mb = ( vkt.groups & VK_TEMPORAL_GROUP_MOTIONBLUR ) != 0;
+	const qboolean dof = ( vkt.groups & VK_TEMPORAL_GROUP_DOF ) != 0;
 	VkImageView views[VK_TEMPORAL_MAX_BINDINGS];
 	VkImageLayout layouts[VK_TEMPORAL_MAX_BINDINGS];
 	int cur, i, l;
@@ -1189,6 +1277,10 @@ static void VK_TemporalWriteStaticSets( void ) {
 		views[0] = ( vkt.groups & VK_TEMPORAL_GROUP_TAA ) ? vkt.taa[cur].view : placeholder;
 		layouts[0] = VK_IMAGE_LAYOUT_GENERAL;
 		VK_TemporalWriteSet( vkt.compositeTaaSets[cur], vk_compositeTypes, views, layouts, VK_TEMPORAL_COMPOSITE_BINDINGS, -1 );
+
+		// and the depth of field's result
+		views[0] = dof ? vkt.dofResult.view : placeholder;
+		VK_TemporalWriteSet( vkt.compositeDofSets[cur], vk_compositeTypes, views, layouts, VK_TEMPORAL_COMPOSITE_BINDINGS, -1 );
 	}
 
 	// the ambient occlusion's apply pass
@@ -1306,21 +1398,36 @@ void VK_TemporalInitPipelines( void ) {
 	vkt.mbTilesPipeline = VK_TemporalComputePipeline( vkt.mbTilesShader, vkt.mbLayout );
 	vkt.mbNeighborPipeline = VK_TemporalComputePipeline( vkt.mbNeighborShader, vkt.mbLayout );
 
+	// the depth of field: one set and layout for its five passes
+	vkt.dofSetLayout = VK_TemporalSetLayout( vk_dofTypes, VK_TEMPORAL_DOF_BINDINGS, VK_SHADER_STAGE_COMPUTE_BIT );
+	vkt.dofLayout = VK_TemporalSimpleLayout( vkt.dofSetLayout, VK_SHADER_STAGE_COMPUTE_BIT, sizeof( vkDofPush_t ) );
+	vkt.dofFocusShader = VK_CreateShaderModule( vk_spirv_dof_focus_comp, vk_spirv_dof_focus_comp_size );
+	vkt.dofSetupShader = VK_CreateShaderModule( vk_spirv_dof_setup_comp, vk_spirv_dof_setup_comp_size );
+	vkt.dofNeighborShader = VK_CreateShaderModule( vk_spirv_dof_neighbor_comp, vk_spirv_dof_neighbor_comp_size );
+	vkt.dofGatherShader = VK_CreateShaderModule( vk_spirv_dof_gather_comp, vk_spirv_dof_gather_comp_size );
+	vkt.dofApplyShader = VK_CreateShaderModule( vk_spirv_dof_apply_comp, vk_spirv_dof_apply_comp_size );
+	vkt.dofFocusPipeline = VK_TemporalComputePipeline( vkt.dofFocusShader, vkt.dofLayout );
+	vkt.dofSetupPipeline = VK_TemporalComputePipeline( vkt.dofSetupShader, vkt.dofLayout );
+	vkt.dofNeighborPipeline = VK_TemporalComputePipeline( vkt.dofNeighborShader, vkt.dofLayout );
+	vkt.dofGatherPipeline = VK_TemporalComputePipeline( vkt.dofGatherShader, vkt.dofLayout );
+	vkt.dofApplyPipeline = VK_TemporalComputePipeline( vkt.dofApplyShader, vkt.dofLayout );
+
 	// per frame slot: set 2 of the scene, the prepare pass's, the
-	// anti-aliasing's, the ambient occlusion's and the motion blur's sets; per current image:
-	// the pyramid's dispatches' and the composite's two; the ambient
+	// anti-aliasing's, the ambient occlusion's, the motion blur's and the depth of field's sets;
+	// per current image: the pyramid's dispatches' and the composite's three; the ambient
 	// occlusion's apply pass's
 	poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	poolSizes[0].descriptorCount = VK_MAX_FRAMES * 4;
 	poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	poolSizes[1].descriptorCount = VK_MAX_FRAMES * ( 2 + VK_TEMPORAL_TAA_BINDINGS - 2 + VK_TEMPORAL_AO_SAMPLED + VK_TEMPORAL_MB_SAMPLED )
-		+ VK_TEMPORAL_HISTORY * 2 * VK_TEMPORAL_COMPOSITE_BINDINGS + 1;
+	poolSizes[1].descriptorCount = VK_MAX_FRAMES * ( 2 + VK_TEMPORAL_TAA_BINDINGS - 2 + VK_TEMPORAL_AO_SAMPLED + VK_TEMPORAL_MB_SAMPLED + VK_TEMPORAL_DOF_SAMPLED )
+		+ VK_TEMPORAL_HISTORY * 3 * VK_TEMPORAL_COMPOSITE_BINDINGS + 1;
 	poolSizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	poolSizes[2].descriptorCount = VK_MAX_FRAMES * ( 4 + VK_TEMPORAL_AO_BINDINGS - VK_TEMPORAL_AO_SAMPLED + VK_TEMPORAL_MB_BINDINGS - VK_TEMPORAL_MB_SAMPLED )
+	poolSizes[2].descriptorCount = VK_MAX_FRAMES * ( 4 + VK_TEMPORAL_AO_BINDINGS - VK_TEMPORAL_AO_SAMPLED + VK_TEMPORAL_MB_BINDINGS - VK_TEMPORAL_MB_SAMPLED
+		+ VK_TEMPORAL_DOF_BINDINGS - VK_TEMPORAL_DOF_SAMPLED )
 		+ VK_TEMPORAL_HISTORY * VK_TEMPORAL_MAX_PASSES * VK_TEMPORAL_TAIL_IMAGES;
 	Com_Memset( &poolInfo, 0, sizeof( poolInfo ) );
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	poolInfo.maxSets = VK_MAX_FRAMES * 5 + VK_TEMPORAL_HISTORY * ( VK_TEMPORAL_MAX_PASSES + 2 ) + 1;
+	poolInfo.maxSets = VK_MAX_FRAMES * 6 + VK_TEMPORAL_HISTORY * ( VK_TEMPORAL_MAX_PASSES + 3 ) + 1;
 	poolInfo.poolSizeCount = ARRAY_LEN( poolSizes );
 	poolInfo.pPoolSizes = poolSizes;
 	VK_CHECK( qvkCreateDescriptorPool( vk.device, &poolInfo, NULL, &vkt.pool ) );
@@ -1329,10 +1436,12 @@ void VK_TemporalInitPipelines( void ) {
 	VK_TemporalAllocateSets( vkt.prepareSetLayout, vkt.prepareSets, VK_MAX_FRAMES );
 	VK_TemporalAllocateSets( vkt.compositeSetLayout, vkt.compositeSets, VK_TEMPORAL_HISTORY );
 	VK_TemporalAllocateSets( vkt.compositeSetLayout, vkt.compositeTaaSets, VK_TEMPORAL_HISTORY );
+	VK_TemporalAllocateSets( vkt.compositeSetLayout, vkt.compositeDofSets, VK_TEMPORAL_HISTORY );
 	VK_TemporalAllocateSets( vkt.taaSetLayout, vkt.taaSets, VK_MAX_FRAMES );
 	VK_TemporalAllocateSets( vkt.aoSetLayout, vkt.aoSets, VK_MAX_FRAMES );
 	VK_TemporalAllocateSets( vkt.aoApplySetLayout, &vkt.aoApplySet, 1 );
 	VK_TemporalAllocateSets( vkt.mbSetLayout, vkt.mbSets, VK_MAX_FRAMES );
+	VK_TemporalAllocateSets( vkt.dofSetLayout, vkt.dofSets, VK_MAX_FRAMES );
 	for ( i = 0; i < VK_TEMPORAL_HISTORY; i++ ) {
 		if ( vkt.numHizPasses ) {
 			VK_TemporalAllocateSets( vkt.hizSetLayout, vkt.hizSets[i], vkt.numHizPasses );
@@ -1356,16 +1465,18 @@ void VK_TemporalShutdownPipelines( void ) {
 		&vkt.effectsVertexShader, &vkt.effectsVertexShaderClip, &vkt.fragmentShader,
 		&vkt.prepareShader, &vkt.hizShader, &vkt.hizTailShader, &vkt.compositeVertexShader, &vkt.compositeFragmentShader,
 		&vkt.taaShader, &vkt.aoPrefilterShader, &vkt.aoMainShader, &vkt.aoTemporalShader, &vkt.aoDenoiseShader, &vkt.aoApplyShader,
-		&vkt.mbTilesShader, &vkt.mbNeighborShader
+		&vkt.mbTilesShader, &vkt.mbNeighborShader,
+		&vkt.dofFocusShader, &vkt.dofSetupShader, &vkt.dofNeighborShader, &vkt.dofGatherShader, &vkt.dofApplyShader
 	};
 	VkPipeline *pipelines[] = { &vkt.preparePipeline, &vkt.hizPipeline, &vkt.hizTailPipeline, &vkt.compositePipeline, &vkt.taaPipeline,
 		&vkt.aoPrefilterPipeline, &vkt.aoMainPipelines[0], &vkt.aoMainPipelines[1], &vkt.aoMainPipelines[2], &vkt.aoMainPipelines[3],
 		&vkt.aoTemporalPipeline, &vkt.aoDenoisePipeline, &vkt.aoApplyPipeline, &vkt.compositeBlurPipeline, &vkt.mbTilesPipeline,
-		&vkt.mbNeighborPipeline };
+		&vkt.mbNeighborPipeline, &vkt.dofFocusPipeline, &vkt.dofSetupPipeline, &vkt.dofNeighborPipeline, &vkt.dofGatherPipeline,
+		&vkt.dofApplyPipeline };
 	VkPipelineLayout *pipelineLayouts[] = { &vkt.pipelineLayout, &vkt.prepareLayout, &vkt.hizLayout, &vkt.compositeLayout, &vkt.taaLayout,
-		&vkt.aoLayout, &vkt.aoApplyLayout, &vkt.mbLayout };
+		&vkt.aoLayout, &vkt.aoApplyLayout, &vkt.mbLayout, &vkt.dofLayout };
 	VkDescriptorSetLayout *setLayouts[] = { &vkt.graphicsSetLayout, &vkt.prepareSetLayout, &vkt.hizSetLayout, &vkt.compositeSetLayout,
-		&vkt.taaSetLayout, &vkt.aoSetLayout, &vkt.aoApplySetLayout, &vkt.mbSetLayout };
+		&vkt.taaSetLayout, &vkt.aoSetLayout, &vkt.aoApplySetLayout, &vkt.mbSetLayout, &vkt.dofSetLayout };
 	unsigned int i;
 
 	if ( !vk.device ) {
@@ -1407,9 +1518,11 @@ void VK_TemporalShutdownPipelines( void ) {
 	Com_Memset( vkt.hizSets, 0, sizeof( vkt.hizSets ) );
 	Com_Memset( vkt.compositeSets, 0, sizeof( vkt.compositeSets ) );
 	Com_Memset( vkt.compositeTaaSets, 0, sizeof( vkt.compositeTaaSets ) );
+	Com_Memset( vkt.compositeDofSets, 0, sizeof( vkt.compositeDofSets ) );
 	Com_Memset( vkt.taaSets, 0, sizeof( vkt.taaSets ) );
 	Com_Memset( vkt.aoSets, 0, sizeof( vkt.aoSets ) );
 	Com_Memset( vkt.mbSets, 0, sizeof( vkt.mbSets ) );
+	Com_Memset( vkt.dofSets, 0, sizeof( vkt.dofSets ) );
 	vkt.aoApplySet = VK_NULL_HANDLE;
 }
 
@@ -1626,7 +1739,7 @@ changes, never otherwise
 */
 void VK_TemporalUpdateFeatures( void ) {
 	static const char *names[] = { "anti-aliasing (r_taa)", "depth pyramid", "ambient occlusion (r_ao)", "last scene's color (r_temporalShow 5)",
-		"motion blur (r_motionBlur)" };
+		"motion blur (r_motionBlur)", "depth of field (r_dof)" };
 	const qboolean mbShow = r_temporalShow->integer == 11 || r_temporalShow->integer == 12;
 	int mode = r_temporalShow->integer;
 	int need = 0, change, group, i;
@@ -1645,6 +1758,9 @@ void VK_TemporalUpdateFeatures( void ) {
 	}
 	if ( r_motionBlur->integer || mbShow ) {
 		need |= VK_TEMPORAL_GROUP_MOTIONBLUR;
+	}
+	if ( r_dof->integer || mode == 13 ) {
+		need |= VK_TEMPORAL_GROUP_DOF;
 	}
 
 	change = need ^ vkt.groups;
@@ -1678,6 +1794,8 @@ void VK_TemporalUpdateFeatures( void ) {
 	vkt.aoOn = r_ao->integer && ( vkt.groups & VK_TEMPORAL_GROUP_AO );
 	vkt.mbOn = ( r_motionBlur->integer || mbShow ) && ( vkt.groups & VK_TEMPORAL_GROUP_MOTIONBLUR );
 	vkt.mbBlur = vkt.mbOn && r_motionBlur->integer;
+	vkt.dofOn = ( r_dof->integer || mode == 13 ) && ( vkt.groups & VK_TEMPORAL_GROUP_DOF );
+	vkt.dofShow = vkt.dofOn && mode == 13;
 	vkt.colorIndex = ( vkt.groups & VK_TEMPORAL_GROUP_PREVCOLOR ) ? vkt.current : 0;
 }
 
@@ -1974,13 +2092,118 @@ static void VK_TemporalMotionBlur( VkCommandBuffer cmd ) {
 	vkt.mbRan = qtrue;
 }
 
+// whether this scene's depth of field passes run (r_dof, r_temporalShow 13)
+static qboolean VK_TemporalDofs( void ) {
+	return vkt.dofOn && vkt.dofSets[0] && vkt.rect[2] && vkt.rect[3];
+}
+
+/*
+===============
+VK_TemporalDof
+
+In VK_TemporalResolve after the anti-aliasing, before the motion blur (the
+depth image, the normals and the sharp scene readable: taa[current] when the
+anti-aliasing ran, else the scene's color): the five passes of dof.comp, the
+last writing dofResult, which the composite shows. The blur of a view
+distance d is S (1 / F - 1 / d) pixels for the focus distance F, S from
+r_dofAperture (the far distance's blur at F = VK_DOF_REFERENCE_FOCUS, in
+percent of the primary view's height) times the zoom (a narrower field of
+view than the game's default, up to 4). The focus eases toward its target with
+the time constant r_dofFocusSpeed over the game time between the frames
+(vkt.frameMsec), at once when the view has no last frame (a cut). Its
+images were last read by the last frame's composite and this pass's focus
+written by the last frame's: the barriers before the resolve's passes and at
+the end of the last one's wait for them. Sets vkt.dofRan
+===============
+*/
+static void VK_TemporalDof( VkCommandBuffer cmd ) {
+	const VkDescriptorSet set = vkt.dofSets[vk.frameIndex];
+	const int half = vkt.dofTileSize / 2;
+	VkImageView views[VK_TEMPORAL_DOF_BINDINGS];
+	VkImageLayout layouts[VK_TEMPORAL_DOF_BINDINGS];
+	vkDofPush_t push;
+	float zoom;
+	int i;
+
+	// the depth image's view can change between frames, and the sharp scene
+	// with the anti-aliasing; this frame slot's last use of the set is done
+	views[0] = vkt.depthView;
+	views[1] = vkt.normal.view;
+	views[2] = vkt.taaRan ? vkt.taa[vkt.current].view : vkt.color[vkt.colorIndex].view;
+	views[3] = vkt.dofFocus.view;
+	views[4] = vkt.dofHalf.view;
+	views[5] = vkt.dofTile.view;
+	views[6] = vkt.dofNeighbor.view;
+	views[7] = vkt.dofFar.view;
+	views[8] = vkt.dofNear.view;
+	views[9] = vkt.dofResult.view;
+	layouts[0] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+	layouts[1] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	layouts[2] = vkt.taaRan ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	for ( i = VK_TEMPORAL_DOF_SAMPLED; i < VK_TEMPORAL_DOF_BINDINGS; i++ ) {
+		layouts[i] = VK_IMAGE_LAYOUT_GENERAL;
+	}
+	VK_TemporalWriteSet( set, vk_dofTypes, views, layouts, VK_TEMPORAL_DOF_BINDINGS, -1 );
+
+	zoom = Com_Clamp( 0.5f, 4.0f, fabsf( vkt.view.proj[1] ) / VK_DOF_PROJ_FOV80 );
+
+	Com_Memset( &push, 0, sizeof( push ) );
+	push.view = vkt.view;
+	Com_Memcpy( push.rect, vkt.rect, sizeof( push.rect ) );
+	push.lens[0] = r_dofAperture->value * 0.01f * vkt.view.rect[3] * VK_DOF_REFERENCE_FOCUS * zoom;
+	push.lens[1] = (float)vkt.dofTileSize;
+	push.lens[2] = r_dofFocus->value > 0.0f ? 1.0f / ( r_dofFocus->value > 8.0f ? r_dofFocus->value : 8.0f ) : 0.0f;
+	if ( vkt.view.params[2] == 0.0f || r_dofFocusSpeed->value <= 0.0f ) {
+		push.lens[3] = 1.0f;
+	} else {
+		push.lens[3] = 1.0f - expf( -vkt.frameMsec / ( 1000.0f * r_dofFocusSpeed->value ) );
+	}
+	push.params[0] = 0.02f * vkt.view.rect[3];
+	push.params[2] = vkt.dofShow ? 1.0f : 0.0f;
+	push.ints[0] = vkt.dofTilesX;
+	push.ints[1] = vkt.dofTilesY;
+	push.ints[2] = vk_dofSamples[Q_min( Q_max( r_dofQuality->integer, 0 ), 2 )];
+
+	qvkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.dofLayout, 0, 1, &set, 0, NULL );
+	qvkCmdPushConstants( cmd, vkt.dofLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( push ), &push );
+
+	// the focus first: the barrier after it also waits for the anti-aliasing
+	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.dofFocusPipeline );
+	qvkCmdDispatch( cmd, 1, 1, 1 );
+	VK_TemporalComputeBarrier( cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT );
+
+	// a workgroup a tile, over the half resolution image
+	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.dofSetupPipeline );
+	qvkCmdDispatch( cmd, vkt.dofTilesX, vkt.dofTilesY, 1 );
+	VK_TemporalComputeBarrier( cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT );
+
+	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.dofNeighborPipeline );
+	qvkCmdDispatch( cmd, ( vkt.dofTilesX + VK_TEMPORAL_DOF_GROUP - 1 ) / VK_TEMPORAL_DOF_GROUP,
+		( vkt.dofTilesY + VK_TEMPORAL_DOF_GROUP - 1 ) / VK_TEMPORAL_DOF_GROUP, 1 );
+	VK_TemporalComputeBarrier( cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT );
+
+	// the views' half resolution texels
+	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.dofGatherPipeline );
+	qvkCmdDispatch( cmd, ( Q_min( vkt.dofTilesX * half, vkt.dofHalfWidth ) + VK_TEMPORAL_DOF_GROUP - 1 ) / VK_TEMPORAL_DOF_GROUP,
+		( Q_min( vkt.dofTilesY * half, vkt.dofHalfHeight ) + VK_TEMPORAL_DOF_GROUP - 1 ) / VK_TEMPORAL_DOF_GROUP, 1 );
+	VK_TemporalComputeBarrier( cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT );
+
+	// the views' pixels
+	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.dofApplyPipeline );
+	qvkCmdDispatch( cmd, ( vkt.rect[2] + VK_TEMPORAL_DOF_GROUP - 1 ) / VK_TEMPORAL_DOF_GROUP,
+		( vkt.rect[3] + VK_TEMPORAL_DOF_GROUP - 1 ) / VK_TEMPORAL_DOF_GROUP, 1 );
+
+	vkt.dofRan = qtrue;
+}
+
 /*
 ===============
 VK_TemporalResolve
 
 After the scene's last render pass, outside of a render pass: the depth
 pyramid (levels 0 and 1 from the depth buffer, then the others) when a
-reader needs it, then what resolves the scene and the motion blur's passes;
+reader needs it, then what resolves the scene, the depth of field's and the
+motion blur's passes;
 the depth image goes back to an attachment for the 2D drawing that follows. When the anti-aliasing is the
 pyramid's only reader it makes level 0 itself in its pass (it has the view
 distances of its pixels already; the pyramid's passes and barriers cost
@@ -1995,6 +2218,7 @@ void VK_TemporalResolve( VkCommandBuffer cmd ) {
 	const VkPipelineStageFlags readers = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
 	const qboolean taa = VK_TemporalTaa();
 	const qboolean blur = VK_TemporalBlurs();
+	const qboolean dof = VK_TemporalDofs();
 	qboolean pyramid = ( VK_TemporalReaders() & VK_TEMPORAL_READ_DEPTH ) != 0;
 	VkImageMemoryBarrier barriers[6];
 	VkMemoryBarrier memory;
@@ -2007,10 +2231,11 @@ void VK_TemporalResolve( VkCommandBuffer cmd ) {
 
 	vkt.taaRan = qfalse;
 	vkt.mbRan = qfalse;
+	vkt.dofRan = qfalse;
 	if ( taa && !pyramid && ( vkt.rect[0] || vkt.rect[1] || vkt.rect[2] != vk.width || vkt.rect[3] != vk.height ) ) {
 		pyramid = qtrue;
 	}
-	if ( !pyramid && !taa && !blur ) {
+	if ( !pyramid && !taa && !blur && !dof ) {
 		// the scene's images to their readers, the depth image stays as it is
 		VK_TemporalImageBarrier( &barriers[0], vkt.normal.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT );
@@ -2022,7 +2247,8 @@ void VK_TemporalResolve( VkCommandBuffer cmd ) {
 		return;
 	}
 	// this frame's level 0 at least (the anti-aliasing's or the prepare
-	// pass's); the motion blur alone makes none (the group may not be there)
+	// pass's); the motion blur and the depth of field alone make none (the
+	// group may not be there)
 	if ( pyramid || taa ) {
 		vkt.hizSerial[cur] = vk.frameSerial;
 	}
@@ -2116,13 +2342,17 @@ void VK_TemporalResolve( VkCommandBuffer cmd ) {
 	if ( taa ) {
 		VK_TemporalConsumers( cmd, !pyramid );
 	}
+	if ( dof ) {
+		VK_TemporalDof( cmd );
+	}
 	if ( blur ) {
 		VK_TemporalMotionBlur( cmd );
 	}
 
 	// the 2D drawing and the next scene draw with the depth image again; what
-	// the anti-aliasing and the motion blur wrote to the composite and to the
-	// next frame's (the history, level 0 of the pyramid)
+	// the anti-aliasing, the depth of field and the motion blur wrote to the
+	// composite and to the next frame's (the history, level 0 of the pyramid,
+	// the focus)
 	VK_TemporalImageBarrier( &barriers[0], vk.depthImage, vk.depthAspect, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
 		VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0,
 		VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT );
@@ -2130,7 +2360,7 @@ void VK_TemporalResolve( VkCommandBuffer cmd ) {
 	memory.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
 	memory.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 	memory.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-	qvkCmdPipelineBarrier( cmd, readers, depthStages | ( taa || blur ? readers : 0 ), 0, taa || blur ? 1 : 0, &memory, 0, NULL, 1, barriers );
+	qvkCmdPipelineBarrier( cmd, readers, depthStages | ( taa || blur || dof ? readers : 0 ), 0, taa || blur || dof ? 1 : 0, &memory, 0, NULL, 1, barriers );
 }
 
 /*
@@ -2139,8 +2369,11 @@ VK_TemporalComposite
 
 In vk.renderPass, after VK_TemporalResolve: the scene into the frame's color
 target, over the rectangle of its views (or what r_temporalShow shows): the
-anti-aliased scene when the resolve made it, sharpened (r_taaSharpen), and
-blurred along the motion blur's vectors when its passes ran (r_motionBlur).
+anti-aliased scene when the resolve made it, sharpened (r_taaSharpen), or
+the depth of field's result when its passes ran (r_dof: what it blurred not
+sharpened),
+and blurred along the motion blur's vectors when its passes ran
+(r_motionBlur; not over r_temporalShow 13's view of the depth of field).
 The caller rebinds what it draws with next
 ===============
 */
@@ -2173,10 +2406,13 @@ void VK_TemporalComposite( VkCommandBuffer cmd ) {
 	VK_OutputExpansion( push.hdr );
 	push.mb[0] = vkt.mbTileSize;
 	push.mb[1] = vk_mbPairs[Q_min( Q_max( r_motionBlurQuality->integer, 0 ), 2 )];
+	push.mb[2] = vkt.dofRan ? 1 : 0;
 
-	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkt.mbRan && vkt.mbBlur ? vkt.compositeBlurPipeline : vkt.compositePipeline );
+	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkt.mbRan && vkt.mbBlur && !( vkt.dofRan && vkt.dofShow )
+		? vkt.compositeBlurPipeline : vkt.compositePipeline );
 	qvkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkt.compositeLayout, 0, 1,
-		vkt.taaRan ? &vkt.compositeTaaSets[vkt.current] : &vkt.compositeSets[vkt.current], 0, NULL );
+		vkt.dofRan ? &vkt.compositeDofSets[vkt.current] : vkt.taaRan ? &vkt.compositeTaaSets[vkt.current] : &vkt.compositeSets[vkt.current],
+		0, NULL );
 	qvkCmdPushConstants( cmd, vkt.compositeLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof( push ), &push );
 	qvkCmdSetViewport( cmd, 0, 1, &viewport );
 	qvkCmdSetScissor( cmd, 0, 1, &scissor );

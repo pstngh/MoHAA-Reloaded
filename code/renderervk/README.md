@@ -793,6 +793,24 @@ below are done.
   at 2560x1440: 0.07 ms in a still view (its two passes), 0.14 turning
   (0.12 and 0.18 at quality 0 and 2), 0.21 turning with the
   anti-aliasing. See Implementation notes, Motion blur
+- depth of field (2026-10-29, Plan 47, the renderer; the user's request:
+  an implementation of depth of field): with `r_temporal 1`, `r_dof 1`
+  (archived, off by default, switched live) blurs the 3D view by a thin
+  lens' circle of confusion from the depth, focused on what is under the
+  crosshair. The user's choices: autofocus at the crosshair, eased over
+  `r_dofFocusSpeed` (0.25 s; `r_dofFocus` a fixed distance instead), a
+  bokeh gather (Jimenez's 2014 one: the foreground blurs over what is in
+  focus without a sharp outline, the background doesn't spread over what
+  is in front of it), the Vulkan port only. `r_dofAperture` (0.5) is the
+  far distance's blur in percent of the view's height when focused 128
+  units away; a scope's zoom blurs more. The view weapon stays sharp.
+  `r_dofQuality` 0 to 2 (16, 32, 48 samples a gather, default 1);
+  `r_temporalShow 13` shows the blur. It runs after the anti-aliasing
+  (whose history stays sharp) and before the motion blur. With `r_dof 0`
+  the frames are the build before's to the bit, with and without the
+  anti-aliasing, and with it on so is what is in focus. Cost on the RTX
+  4070 Ti, GPU time a frame in `dm/mohdm6` at 2560x1440 with the
+  anti-aliasing: 0.26 ms. See Implementation notes, Depth of field
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL 3, libm, libstdc++, libgcc_s and libc. Vulkan is loaded at
   runtime through SDL
@@ -978,9 +996,14 @@ Cvars of the backend:
 | `r_motionBlurFps` (archived, default 60, 0 to 1000) | with `r_motionBlur 1`: the frame rate whose frames `r_motionBlurShutter` counts, so the blur is as long at any frame rate; 0: the frames as they come (`r_motionBlurShutter` of each frame's motion: shorter the higher the frame rate) |
 | `r_motionBlurCamera` (archived, default 1, 0 to 1) | with `r_motionBlur 1`: the share of the camera's motion (turning, moving) in the blur; 0: only what moves |
 | `r_motionBlurQuality` (archived, default 1, 0 to 2) | with `r_motionBlur 1`: 8, 12 or 16 samples a pixel where something moves |
+| `r_dof` (archived, default 0) | with `r_temporal 1`: depth of field, focused on what is under the crosshair (or at `r_dofFocus`); the view weapon stays sharp (see Implementation notes, Depth of field) |
+| `r_dofAperture` (archived, default 0.5, 0 to 5) | with `r_dof 1`: the lens' aperture, as the blur of the far distance when focused 128 units (about 3 m) away, in percent of the view's height; a scope's zoom blurs more (by its zoom, up to 4) |
+| `r_dofFocus` (archived, default 0) | with `r_dof 1`: 0 focus on what is under the crosshair; more: a fixed focus distance in units (screenshots) |
+| `r_dofFocusSpeed` (archived, default 0.25, 0 to 10) | with `r_dof 1`: the focus' time constant in seconds (game time); 0 at once. A cut (a teleport, a camera change) focuses at once |
+| `r_dofQuality` (archived, default 1, 0 to 2) | with `r_dof 1`: 16, 32 or 48 samples a gather where something is blurred |
 | `r_temporalJitter` (default 0) | with `r_temporal 1`: the 3D views' projection moves by a sub-pixel offset every frame (Halton 2, 3; `r_temporalJitterSamples`, default 8). For the anti-aliasing (`r_taa` turns it on itself): without it the image shakes |
 | `r_temporalCutDist` (default 256) | with `r_temporal 1`: a camera or entity that moves farther in a frame has no motion (a cut, a teleport) |
-| `r_temporalShow` (cheat, default 0) | with `r_temporal 1`, instead of the 3D view: 1 motion vectors (red right, green down, blue left or up, times `r_temporalShowScale`, default 20), 2 normals, 3 classes, 4 the depth pyramid's level `r_temporalShowMip` (min red, max green), 5 the last frame's color, 6 the view distances, 7 the last frame's (6 and 7 the nearest of level 0 of the pyramid: half the resolution; 1 and 2 work out what the draws left to the readers from it too), 8 the scene before the anti-aliasing's blend (with `r_taa 1`: still jittered, so each frame is aliased and moves by up to half a pixel; at a few hundred frames a second the eye averages it), 9 the ambient occlusion's factor (gamma-encoded, as it multiplies the scene), 10 one frame's ambient occlusion before the blending over frames and the blur, 11 the motion blur of each pixel (mode 1's colors, 1 the longest: half a streak of a tile's side), 12 the longest motion blur around each tile |
+| `r_temporalShow` (cheat, default 0) | with `r_temporal 1`, instead of the 3D view: 1 motion vectors (red right, green down, blue left or up, times `r_temporalShowScale`, default 20), 2 normals, 3 classes, 4 the depth pyramid's level `r_temporalShowMip` (min red, max green), 5 the last frame's color, 6 the view distances, 7 the last frame's (6 and 7 the nearest of level 0 of the pyramid: half the resolution; 1 and 2 work out what the draws left to the readers from it too), 8 the scene before the anti-aliasing's blend (with `r_taa 1`: still jittered, so each frame is aliased and moves by up to half a pixel; at a few hundred frames a second the eye averages it), 9 the ambient occlusion's factor (gamma-encoded, as it multiplies the scene), 10 one frame's ambient occlusion before the blending over frames and the blur, 11 the motion blur of each pixel (mode 1's colors, 1 the longest: half a streak of a tile's side), 12 the longest motion blur around each tile, 13 the depth of field's blur (red in front of the focus, blue behind it, 1 at 8 pixels, the scene in gray where in focus; the focus area's square green) |
 | `r_vkFallbacks` (latched, default 0) | for tests: ignores what the device has and uses the fallback, bits added: 1 no `imageViewFormatSwizzle` (the alpha of RGB textures set in the shader), 2 no binding stride of 0 (those bindings read per instance, as on every portability subset device), 4 no `VK_KHR/EXT_line_rasterization`, 8 no `VK_KHR/EXT_swapchain_maintenance1` (no present fences); see Implementation notes. The startup line `Vulkan present fences ..., view swizzle ..., stride 0 bindings ..., Bresenham lines ..., line stipple ...` says what is used |
 
 The console command `vkinfo` prints the backend's counters since its last
@@ -8266,7 +8289,8 @@ selects the sample count (see Implementation notes).
     the last scene's color (`color[1]`, `r_temporalShow` 5: with it the
     two color images alternate as before, the framebuffers made again),
     the motion blur's (`r_motionBlur`, `r_temporalShow` 11 and 12: 30 MB at
-    2560x1440).
+    2560x1440), the depth of field's (`r_dof`, `r_temporalShow` 13: 52 MB
+    at 2560x1440).
     At 2560x1440: the color 30 MB, the motion vectors and the normals 15
     each, the history 59, the pyramid 20, the ambient occlusion 102, the
     last color 30. At the start of a frame's scene (`vk_begin_scene`,
@@ -8729,6 +8753,122 @@ selects the sample count (see Implementation notes).
     into). Not optimized yet: the samples need only the blur's length and
     the distance, so 4 bytes a pixel (the direction packed) would halve
     what both passes move.
+- **Depth of field (Plan 47).** `r_dof 1` with the temporal path
+  (`VK_TemporalDof`, `shaders/dof.comp`). The gather is Jimenez's,
+  "Next Generation Post Processing in Call of Duty: Advanced Warfare"
+  (SIGGRAPH 2014), at half the resolution, the background and the
+  foreground apart.
+  - *When.* `VK_TemporalUpdateFeatures` latches it for the scene
+    (`vkt.dofOn`, also for `r_temporalShow 13`; `vkt.dofShow`) and makes
+    its group (`VK_TEMPORAL_GROUP_DOF`, `GENERAL` always): `dofFocus`
+    (R32F, 1 x 1), `dofHalf`, `dofFar`, `dofNear` (RGBA16F, half size),
+    `dofTile`, `dofNeighbor` (RG16F, a texel a tile), `dofResult`
+    (RGBA16F, the framebuffer's size). `VK_TemporalResolve` runs its five
+    passes after the anti-aliasing and before the motion blur; the
+    composite then binds `compositeDofSets` (`dofResult` as its color),
+    so the motion blur gathers the defocused scene. The sharpening
+    (`r_taaSharpen`, 0.8 by default) stays in the composite, for the
+    pixels the apply pass left as they were (`dofResult`'s alpha 1,
+    `mb.z` of its push constants): in focus the frames are those without
+    the depth of field to the bit, and the blur isn't sharpened (it would
+    show the gather's noise). Sharpening in the apply pass instead, as
+    first done, rounded the sharpened color to half floats in
+    `dofResult`: one level off in 0.6 to 1.2 % of the pixels. Alone, it
+    needs the depth image readable as the motion blur does, without the
+    pyramid.
+  - *Lens.* A pixel's blur, its circle of confusion, is the radius
+    S (1 / F - 1 / d) in pixels for its view distance d and the focus
+    distance F: positive behind the focus (the background), negative in
+    front of it (the foreground), at most a tile's side. It is a thin lens
+    with the focal length small against the distances: the blur goes with
+    the difference of the inverse distances, so a far focus leaves what is
+    a few meters away nearly sharp (a first form, K (1 - F / d), blurred
+    the whole world as foreground when the crosshair was on the sky). S is
+    `r_dofAperture` percent of the primary view's height times 128 (the
+    far distance's blur when F is 128 units) times the zoom: the
+    projection's [5] over 1.589 (fov 80 at 4:3; the game keeps the
+    vertical field at every aspect, Hor+), clamped to 0.5 to 4. A camera
+    lens of the same f-number would blur with the square of its focal
+    length; a scope's 4 times the zoom would then blur 16 times as much,
+    hiding what isn't at the crosshair's distance, so the zoom counts once.
+    The view weapon (its class, or what is nearer than the world's depth
+    floor with `r_depthClamp`) has none and is never blurred over.
+  - *Focus* (`FOCUS`, one workgroup of 64). 8 x 8 points of the depth over
+    a square of 2 % of the height on each side of the primary view's
+    center; the weapon left out, the sky (and what nothing drew) at the far
+    distance. The distance that ranks at a quarter of the others is the
+    target: the nearest of what is under the crosshair, not a stray pixel,
+    nor a sliver of roof at the edge of the sky (left out, the sky gave
+    the few roof points the focus); with only the weapon there the focus
+    stays. `dofFocus`
+    holds 1 / F and eases toward 1 / target by 1 - exp(-dt / tau) a frame
+    (tau `r_dofFocusSpeed`, dt `vkt.frameMsec`, the game time between the
+    frames, smoothed), so near and far changes take as long; at once
+    without a last frame (a cut: `r_temporalCutDist`) or when the group is
+    made (0). `r_dofFocus` sets the target instead. While the game is
+    paused it still eases (the smoothed time keeps its last value).
+  - *Tiles* (`SETUP`, a workgroup of 8 x 8 a tile of T x T pixels, T =
+    max(16, height / 20), even: 54 at 1080, 72 at 1440, 108 at 2160). Each
+    texel of `dofHalf` has the blur of the nearest of its 2 x 2 pixels and
+    their color in linear light (gamma 2.2), each weighted 1 / (1 + the
+    difference of its blur from that one), so the foreground's blur takes
+    no background color at its outline; the tile's largest
+    foreground blur and largest blur into `dofTile`. `NEIGHBOR` the
+    largest of the 3 x 3 tiles around each into `dofNeighbor`.
+  - *Gather* (`GATHER`, half resolution). A golden angle spiral of 16, 32
+    or 48 samples (`r_dofQuality`), turned by an interleaved gradient noise
+    fixed per texel. The background over the texel's own blur, a sample
+    counting where it is background and what of min(its blur, the texel's)
+    reaches the offset (with a texel of slack): what is behind doesn't
+    spread over what is less blurred in front of it, and what is in focus
+    doesn't spread at all. The foreground over the largest foreground blur
+    around the tile, each foreground sample adding (R^2 / n) / r^2 of what
+    reaches the texel, R the gather's radius and r its own: the share of
+    its disc that the sample stands for, which sums to its opacity (1
+    inside a blurred object, about half at its edge). A tile without blur
+    reads one texel.
+  - *Apply* (`APPLY`, the views' pixels). Where the tile has no blur, or on
+    the weapon, the sharp scene unchanged. Else the 3 x 3 half-resolution
+    texels around the nearest, a tent of 1.5 texels (which smooths the
+    gather's noise): the background from the texels that are background
+    only (no edge of what is in focus bleeds into it), put over the pixel
+    by smoothstep(0.5, 2) of its own blur; the foreground over that by its
+    opacity, at least smoothstep(0.5, 2) of the pixel's own foreground blur
+    (its edge pixels would keep half of their sharp outline otherwise).
+    Into `dofResult`, gamma-encoded as the scene, alpha 1 where the pixel is
+    the scene's unchanged (the composite sharpens those), 0 where blurred.
+    `r_temporalShow 13` draws the blur there instead: the foreground's in
+    red, the background's in blue (1 at 8 pixels), the focus area's square
+    in green over the scene in gray.
+  - *Checked* (1600x900, `fixedtime 16`): in the `mohdm6` room the
+    ceiling above the camera blurs and the far wall under the crosshair is
+    sharp; in the crate hall the near crates and the pillar blur over the
+    floor without a sharp outline or a halo; `r_dofFocus 48` blurs all
+    beyond; the rifle in hand stays sharp with the room behind it blurred
+    (`r_dofFocus 4000`, `r_dofAperture 2`). The focus released from 48
+    with the crosshair on the far wall: the crate in front of the camera
+    goes from behind the focus to in front of it in about 0.3 s and the
+    wall is sharp at 1 s. With `r_dof 0` the frames of the room and the
+    hall are the build before's to the bit, with the anti-aliasing; with
+    `r_dof 1` and `r_dofAperture 0` (nothing blurred, the passes running)
+    they are those of `r_dof 0` to the bit, the sharpening included. A
+    teleport focuses at once (with `r_dofFocusSpeed 5`). The crosshair on
+    the sky over the yard focuses at the far distance; with the far
+    building under a quarter of the focus area or more, on it. No
+    validation layer on this machine: not run under validation.
+  - *Limits.* Translucent surfaces (smoke, glass, effects, muzzle
+    flashes) write no depth: they take the blur of what is behind them.
+    Portal and sky portal views take the primary view's lens. While the
+    game is paused the focus still eases (the smoothed game time keeps its
+    last value). The gather's noise is fixed per pixel and hidden by the
+    tent; at quality 0 it shows a little in strong blur.
+  - *Cost* (RTX 4070 Ti, GPU time a frame, the `dm/mohdm6` room at
+    2560x1440 with the anti-aliasing, `perf.py`, 3 runs, a third of the
+    view blurred): 0.392 ms without, 0.650 at quality 1 (0.624 and 0.695
+    at quality 0 and 2 with the sharpening still in the apply pass, which
+    cost about 0.01). Not optimized yet: the apply pass reads 27 texels a
+    blurred pixel at full resolution, and the passes run over the whole
+    view even where nothing is blurred.
 - **HDR output (Plan 43).** `r_hdrOutput` (latched; `vk_output.c`,
   `shaders/output.frag`).
   - *Why not HDR rendering.* The plan before it kept the lightmaps in
@@ -9995,6 +10135,15 @@ Done:
     the view weapon by its own motion only. With it off, and on in still
     views, the views of `mohdm6` are the build before's to the bit, also
     with the anti-aliasing; in motion as described there.
+47. Depth of field (2026-10-29, the user's request: an implementation of
+    depth of field; see Status and Implementation notes, Depth of
+    field): `r_dof`, the user's choices: autofocus at the crosshair, a
+    bokeh gather, Vulkan only (the metal port can follow). With it off
+    the views of `mohdm6` are the build before's to the bit, also with the
+    anti-aliasing, and with it on so is what is in focus. A review pass
+    (2026-10-30): the scope's blur by its zoom, not its square; the focus
+    from the primary view, the sky counted as far; the sharpening back in
+    the composite; the half resolution's color weighted by blur.
 
 Remaining:
 
