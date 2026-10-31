@@ -80,14 +80,14 @@ final class LauncherModel: ObservableObject {
     /// The config last read, and when it was written: read again when it changes
     private var configSeen: (URL?, Date?) = (nil, nil)
     private var ticker: Timer?
-    let displaySizes: [Resolution]
+    /// The resolution menu's sizes (resolutionList)
+    let listedSizes: [Resolution]
     /// The main display's size, (0, 0) if unknown: what r_mode -2 shows
     let desktop: Resolution
 
     init() {
-        let display = LauncherModel.findDisplaySizes()
-        displaySizes = display.0
-        desktop = display.1
+        desktop = CGDisplayCopyDisplayMode(CGMainDisplayID()).map { Resolution($0.width, $0.height) } ?? Resolution(0, 0)
+        listedSizes = resolutionList(desktop: desktop)
         findGame()
         loadSettings()
         askForFolder = folder == nil
@@ -370,7 +370,7 @@ final class LauncherModel: ObservableObject {
     }
 
     var resolutionEntries: [ResolutionEntry] {
-        var entries = displaySizes.map { ResolutionEntry(mode: -1, width: $0.width, height: $0.height) }
+        var entries = listedSizes.map { ResolutionEntry(mode: -1, width: $0.width, height: $0.height) }
         let current = currentResolution
         if !entries.contains(current) {
             // the config's own size, where it belongs in the list
@@ -394,7 +394,7 @@ final class LauncherModel: ObservableObject {
         if rModeSizes.indices.contains(mode) {
             return ResolutionEntry(mode: -1, width: rModeSizes[mode].width, height: rModeSizes[mode].height)
         }
-        let size = desktop.width > 0 ? desktop : displaySizes.first ?? minResolution
+        let size = desktop.width > 0 ? desktop : listedSizes.first ?? minResolution
         return ResolutionEntry(mode: -1, width: size.width, height: size.height)
     }
 
@@ -406,17 +406,6 @@ final class LauncherModel: ObservableObject {
                 self.edits.set("r_customheight", String(entry.height))
             }
         })
-    }
-
-    private static func findDisplaySizes() -> ([Resolution], Resolution) {
-        let display = CGMainDisplayID()
-        var desktop = Resolution(0, 0)
-        if let mode = CGDisplayCopyDisplayMode(display) {
-            desktop = Resolution(mode.width, mode.height)
-        }
-        let options = [kCGDisplayShowDuplicateLowResolutionModes as String: true] as CFDictionary
-        let modes = (CGDisplayCopyAllDisplayModes(display, options) as? [CGDisplayMode]) ?? []
-        return (resolutionList(displayModes: modes.map { Resolution($0.width, $0.height) }, desktop: desktop), desktop)
     }
 
     // MARK: Starting the game

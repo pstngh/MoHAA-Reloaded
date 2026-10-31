@@ -336,23 +336,25 @@ public func aspectRatio(_ width: Int, _ height: Int) -> String {
     return "\(width / a):\(height / a)"
 }
 
-/// The sizes to offer: the display's, and the common ones and numbered modes (r_mode 0 to 11) that fit it, from
-/// 640 x 480 up, largest first, without duplicates (a config's own size, if it isn't one of them, is added to the
-/// menu by the app)
-public func resolutionList(displayModes: [Resolution], desktop: Resolution) -> [Resolution] {
-    let common = [
-        (3840, 2160), (3440, 1440), (2560, 1600), (2560, 1440), (2560, 1080), (1920, 1200), (1920, 1080),
-        (1680, 1050), (1600, 900), (1440, 1080), (1440, 900), (1366, 768), (1280, 1024), (1280, 960), (1280, 800),
-        (1280, 720),
-        (1024, 768), (800, 600), (640, 480),
-    ].map { Resolution($0.0, $0.1) }
+/// The common sizes, largest first: the ultrawides, 4K, QHD and 16:10, 1080p, then the 4:3 and 5:4 ones played
+/// stretched
+public let commonResolutions: [Resolution] = [
+    (5120, 1440), (3840, 2160), (3440, 1440), (2560, 1600), (2560, 1440), (2560, 1080), (1920, 1200), (1920, 1080),
+    (1680, 1050), (1600, 1200), (1600, 900), (1440, 1080), (1440, 900), (1366, 768), (1280, 1024), (1280, 960),
+    (1280, 720), (1152, 864), (1024, 768), (800, 600), (640, 480),
+].map { Resolution($0.0, $0.1) }
+
+/// The sizes to offer: the screen's own and the common ones that fit it, largest first, without duplicates. Exclusive
+/// fullscreen scales any size to the screen, so the display's own modes don't matter, and nothing larger than the
+/// screen is offered (the game refuses it in fullscreen). A config's own size, if it isn't one of them, is added to
+/// the menu by the app.
+public func resolutionList(desktop: Resolution) -> [Resolution] {
     var list: [Resolution] = []
     func add(_ r: Resolution) {
         if r.width >= minResolution.width && r.height >= minResolution.height && !list.contains(r) { list.append(r) }
     }
     add(desktop)
-    displayModes.forEach(add)
-    for r in common + rModeSizes where desktop.width <= 0 || (r.width <= desktop.width && r.height <= desktop.height) {
+    for r in commonResolutions where desktop.width <= 0 || (r.width <= desktop.width && r.height <= desktop.height) {
         add(r)
     }
     return list.sorted { $0.width != $1.width ? $0.width > $1.width : $0.height > $1.height }

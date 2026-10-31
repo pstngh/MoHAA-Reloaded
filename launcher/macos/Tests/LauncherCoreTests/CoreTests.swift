@@ -132,24 +132,19 @@ final class CoreTests: XCTestCase {
         DisplayMode.space.apply(to: &e)
         XCTAssertEqual(e.get("r_borderlessWindow"), "0")
 
-        let list = resolutionList(displayModes: [Resolution(1920, 1080), Resolution(1280, 720), Resolution(320, 200)],
-                                  desktop: Resolution(1920, 1080))
-        XCTAssertEqual(list.first, Resolution(1920, 1080))
-        XCTAssertEqual(list.filter { $0 == Resolution(1920, 1080) }.count, 1)
-        XCTAssertFalse(list.contains(Resolution(2560, 1440)))
-        XCTAssertFalse(list.contains(Resolution(320, 200)))
-        // the numbered modes that fit, from 640 x 480 up: not 2048 x 1536 or 1600 x 1200 on a 1080p desktop, nor
-        // 320 x 240, 400 x 300 and 512 x 384
-        for (w, h) in [(1152, 864), (1024, 768), (960, 720), (856, 480), (800, 600)] {
-            XCTAssertTrue(list.contains(Resolution(w, h)))
-        }
-        for (w, h) in [(2048, 1536), (1600, 1200), (512, 384), (400, 300), (320, 240)] {
-            XCTAssertFalse(list.contains(Resolution(w, h)))
-        }
-        XCTAssertEqual(list.last, Resolution(640, 480))
-        // 4:3 at the screen's height, where it fits
-        XCTAssertTrue(list.contains(Resolution(1440, 1080)))
-        XCTAssertFalse(resolutionList(displayModes: [], desktop: Resolution(1366, 768)).contains(Resolution(1440, 1080)))
+        // a 1080p screen: the common sizes up to its own, nothing larger, none of the display's odd modes
+        let list = resolutionList(desktop: Resolution(1920, 1080))
+        XCTAssertEqual(list, [(1920, 1080), (1680, 1050), (1600, 900), (1440, 1080), (1440, 900), (1366, 768),
+                              (1280, 1024), (1280, 960), (1280, 720), (1152, 864), (1024, 768), (800, 600),
+                              (640, 480)].map { Resolution($0.0, $0.1) })
+        // QHD and 4K where the screen is that large; a screen's own odd size first (a MacBook's, in points)
+        XCTAssertTrue(resolutionList(desktop: Resolution(2560, 1440)).contains(Resolution(2560, 1440)))
+        XCTAssertFalse(resolutionList(desktop: Resolution(2560, 1440)).contains(Resolution(3840, 2160)))
+        XCTAssertTrue(resolutionList(desktop: Resolution(3840, 2160)).contains(Resolution(3840, 2160)))
+        XCTAssertEqual(resolutionList(desktop: Resolution(1512, 982)).first, Resolution(1512, 982))
+        XCTAssertFalse(resolutionList(desktop: Resolution(1366, 768)).contains(Resolution(1440, 1080)))
+        // an unknown screen: every common size
+        XCTAssertEqual(resolutionList(desktop: Resolution(0, 0)), commonResolutions)
 
         // below 640 x 480: 640 x 480, passed as a change
         func raised(_ config: Cvars) -> CvarEdits {
