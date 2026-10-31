@@ -28,6 +28,9 @@ const CVAR_DEFAULTS: [(&str, &str); 10] = [
     ("r_noborder", "0"),
 ];
 
+/// The launcher's settings, in the game folder
+const SETTINGS_FILE: &str = "mohlauncher.json";
+
 const COLOR_PRESETS: [(&str, u32); 7] = [
     ("White", 0xFFFFFF),
     ("Green", 0x00FF00),
@@ -50,9 +53,11 @@ enum Dialog {
 }
 
 struct State {
+    /// The launcher's settings: mohlauncher.json in the game folder
     settings: Settings,
-    settings_paths: [PathBuf; 2],
     own_folder: PathBuf,
+    /// The game folder chosen with the folder dialog, for this session: it's kept nowhere outside the game folder
+    chosen: Option<PathBuf>,
     game: usize,
     edits: CvarEdits,
     sizes: Vec<Resolution>,
@@ -69,21 +74,12 @@ fn modified(path: Option<&Path>) -> Option<SystemTime> {
 
 impl State {
     fn new() -> State {
-        let settings_paths = platform::settings_paths();
-        let settings = settings_paths.iter().find_map(|p| std::fs::read_to_string(p).ok()).map_or_else(
-            || {
-                let mut s = Settings::default();
-                s.normalize();
-                s
-            },
-            |text| Settings::from_json(&text),
-        );
         let (modes, desktop) = platform::display_sizes();
         let mut state = State {
-            game: settings.game,
-            settings,
-            settings_paths,
+            game: 0,
+            settings: Settings::from_json("{}"),
             own_folder: platform::own_folder(),
+            chosen: None,
             edits: CvarEdits::new(&CVAR_DEFAULTS),
             sizes: resolution_list(&modes, desktop),
             resolution_entries: Vec::new(),
@@ -91,20 +87,32 @@ impl State {
             config_seen: (None, None),
             dialog: Dialog::None,
         };
-        // an expansion picked last time whose data has gone
-        if !state.available(state.game) {
-            state.game = 0;
-        }
-        state.reload_config();
+        state.load_settings();
         state
     }
 
-    /// The game folder: the first with the game's data (main/Pak0.pk3) of the one chosen last, the launcher's own
-    /// and the current folder
+    /// The game folder's mohlauncher.json (none yet: the defaults), and its config
+    fn load_settings(&mut self) {
+        self.settings = self
+            .game_folder()
+            .and_then(|folder| std::fs::read_to_string(folder.join(SETTINGS_FILE)).ok())
+            .map_or_else(|| Settings::from_json("{}"), |text| Settings::from_json(&text));
+        self.game = self.settings.game;
+        // an expansion picked last time whose data has gone
+        if !self.available(self.game) {
+            self.game = 0;
+        }
+        self.reload_config();
+    }
+
+    /// The game folder: the first with the game's data (main/Pak0.pk3) of the one chosen in this session, the
+    /// launcher's own and the current folder. Everything the launcher and the game write goes there.
     fn game_folder(&self) -> Option<PathBuf> {
-        let chosen = self.settings.game_folder.as_ref().map(PathBuf::from);
         let current = std::env::current_dir().ok();
-        [chosen, Some(self.own_folder.clone()), current].into_iter().flatten().find(|f| platform::has_game_data(f))
+        [self.chosen.clone(), Some(self.own_folder.clone()), current]
+            .into_iter()
+            .flatten()
+            .find(|f| platform::has_game_data(f))
     }
 
     /// The game: beside the launcher (the download's folder), else in the game folder
@@ -125,10 +133,30 @@ impl State {
         game == 0 || self.game_folder().is_none_or(|folder| platform::has_subdir(&folder, GAME_DIRS[game]))
     }
 
+    /// The game's config: the game folder's (the game is started with its home there), else the one an earlier
+    /// start without the launcher left where the game keeps it by default, which the next start copies over
     fn config_path(&self) -> Option<PathBuf> {
-        let mut homes = platform::engine_homes();
-        homes.extend(self.game_folder());
+        let mut homes: Vec<PathBuf> = self.game_folder().into_iter().collect();
+        homes.extend(platform::engine_homes());
         find_config(&homes, self.game)
+    }
+
+    /// The configs the game kept outside the game folder before, copied into it once (for the data folders it has),
+    /// so that the settings carry over; nothing is written outside the game folder
+    fn import_configs(&self, folder: &Path) {
+        for dir in GAME_DIRS {
+            let target = folder.join(dir).join("configs").join("omconfig.cfg");
+            if target.exists() || !platform::has_subdir(folder, dir) {
+                continue;
+            }
+            let old = platform::engine_homes().into_iter().map(|h| h.join(dir).join("configs").join("omconfig.cfg"));
+            if let Some(old) = old.into_iter().find(|p| p.is_file()) {
+                if let Some(parent) = target.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::copy(&old, &target);
+            }
+        }
     }
 
     fn reload_config(&mut self) {
@@ -172,27 +200,21 @@ impl State {
         }
     }
 
+    /// mohlauncher.json in the game folder, and nowhere else (with no game folder, nowhere)
     fn save(&mut self) {
         self.settings.game = self.game;
+        let Some(folder) = self.game_folder() else { return };
         let Ok(json) = serde_json::to_string_pretty(&self.settings) else { return };
-        // beside the launcher, else in the player's settings folder
-        for (k, path) in self.settings_paths.iter().enumerate() {
-            if k > 0 {
-                if let Some(dir) = path.parent() {
-                    let _ = std::fs::create_dir_all(dir);
-                }
+        // a new file in place of the old one, readable by the player only: it holds passwords
+        let path = folder.join(SETTINGS_FILE);
+        let tmp = folder.join(format!("{SETTINGS_FILE}.tmp"));
+        if std::fs::write(&tmp, json).is_ok() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
             }
-            // a new file in place of the old one, readable by the player only: it holds passwords
-            let tmp = path.with_extension("json.tmp");
-            if std::fs::write(&tmp, &json).is_ok() {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-                }
-                if std::fs::rename(&tmp, path).is_ok() {
-                    return;
-                }
+            if std::fs::rename(&tmp, &path).is_err() {
                 let _ = std::fs::remove_file(&tmp);
             }
         }
@@ -378,12 +400,8 @@ fn choose_folder(ui: &LauncherWindow, state: &Shared) {
         return;
     }
     let same = folder.canonicalize().ok() == st.own_folder.canonicalize().ok();
-    st.settings.game_folder = if same { None } else { Some(folder.display().to_string()) };
-    if !st.available(st.game) {
-        st.game = 0;
-    }
-    st.reload_config();
-    st.save();
+    st.chosen = if same { None } else { Some(folder) };
+    st.load_settings();
     show_all(ui, &mut st);
 }
 
@@ -411,9 +429,12 @@ fn start(ui: &LauncherWindow, state: &Shared, connect: bool) {
         return;
     }
 
-    // what the config holds now, so that only the changes made here are passed
+    // the settings an earlier start kept outside the game folder, carried over once; then what the config holds
+    // now, so that only the changes made here are passed
+    st.import_configs(&folder);
     st.reload_config();
-    let mut launch = Launch { game: st.game, ..Default::default() };
+    // everything the game writes (configs, saves, screenshots, demos, logs) goes into the game folder
+    let mut launch = Launch { game: st.game, homepath: folder.display().to_string(), ..Default::default() };
     // the game finds its data beside itself; elsewhere it's told where
     if exe.parent().and_then(|p| p.canonicalize().ok()) != folder.canonicalize().ok() {
         launch.basepath = folder.display().to_string();

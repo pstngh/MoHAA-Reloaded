@@ -221,6 +221,8 @@ pub fn engine_arg(value: &str) -> String {
 
 #[derive(Clone, Debug, Default)]
 pub struct Launch {
+    /// fs_homepath: where the game writes everything (the game folder), if not empty
+    pub homepath: String,
     /// fs_basepath: the game folder when the game isn't in it, else empty
     pub basepath: String,
     pub game: usize,
@@ -230,12 +232,16 @@ pub struct Launch {
     pub rcon: String,
 }
 
-/// The game's arguments: +set fs_basepath, +set com_target_game N, the cvars, the passwords, +connect
+/// The game's arguments: +set fs_homepath, +set fs_basepath, +set com_target_game N, the cvars, the passwords,
+/// +connect
 pub fn build_args(launch: &Launch) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
     let mut set = |name: &str, value: &str| {
         args.extend(["+set".to_string(), name.to_string(), engine_arg(value)]);
     };
+    if !launch.homepath.is_empty() {
+        set("fs_homepath", &launch.homepath);
+    }
     if !launch.basepath.is_empty() {
         set("fs_basepath", &launch.basepath);
     }
@@ -433,14 +439,11 @@ pub fn resolution_entries(sizes: &[Resolution], edits: &CvarEdits) -> (Vec<Resol
     (entries, k)
 }
 
-/// The launcher's own settings, as launcher.json holds them (the macOS launcher's are the same)
+/// The launcher's own settings, as the game folder's mohlauncher.json holds them (the macOS launcher's are the same)
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
     pub game: usize,
-    /// Chosen with "Game folder"; None for the folder the launcher is in
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub game_folder: Option<String>,
     pub slots: Vec<GameSlot>,
 }
 
@@ -618,6 +621,7 @@ mod tests {
         assert_eq!(engine_arg("\u{00FC}n\u{00EF}"), "\u{00FC}n\u{00EF}");
 
         let launch = Launch {
+            homepath: String::new(),
             basepath: String::new(),
             game: 1,
             cvars: vec![("name".into(), "A B".into()), ("cg_crosshair_color".into(), "00FF00".into())],
@@ -631,8 +635,11 @@ mod tests {
         ];
         assert_eq!(build_args(&launch), want);
         assert_eq!(build_args(&Launch::default()), ["+set", "com_target_game", "0"]);
-        let elsewhere = Launch { basepath: "/games/MOH AA".into(), ..Default::default() };
-        assert_eq!(build_args(&elsewhere), ["+set", "fs_basepath", "/games/MOH AA", "+set", "com_target_game", "0"]);
+        let elsewhere = Launch { homepath: "/games/MOH AA".into(), basepath: "/games/MOH AA".into(), ..Default::default() };
+        assert_eq!(
+            build_args(&elsewhere),
+            ["+set", "fs_homepath", "/games/MOH AA", "+set", "fs_basepath", "/games/MOH AA", "+set", "com_target_game", "0"]
+        );
     }
 
     #[test]

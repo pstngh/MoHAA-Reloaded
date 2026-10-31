@@ -12,7 +12,8 @@ fn env_path(name: &str) -> Option<PathBuf> {
     std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
-/// The folders the game keeps its configs in, as its Sys_DefaultHomeConfigPath finds them
+/// Where the game keeps its configs when it isn't told otherwise (its Sys_DefaultHomeConfigPath): only read, to
+/// carry the settings of earlier starts over into the game folder
 pub fn engine_homes() -> Vec<PathBuf> {
     let mut homes = Vec::new();
     #[cfg(windows)]
@@ -32,18 +33,6 @@ pub fn engine_homes() -> Vec<PathBuf> {
         }
     }
     homes
-}
-
-/// Where the launcher keeps its settings, in order: mohlauncher.json beside the launcher (portable: it goes where
-/// the launcher goes), else, where that folder can't be written (Program Files), in the player's settings folder
-pub fn settings_paths() -> [PathBuf; 2] {
-    #[cfg(windows)]
-    let base = env_path("APPDATA").unwrap_or_else(|| PathBuf::from("."));
-    #[cfg(not(windows))]
-    let base = env_path("XDG_CONFIG_HOME")
-        .or_else(|| env_path("HOME").map(|h| h.join(".config")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    [own_folder().join("mohlauncher.json"), base.join("openmohaa").join("mohlauncher.json")]
 }
 
 /// The folder the launcher is in: the game folder, if the game is beside it
