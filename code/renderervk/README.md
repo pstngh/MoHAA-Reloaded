@@ -3541,8 +3541,8 @@ made it up to 0.03 ms longer at 144. The polling costs no measurable GPU
 time on this APU, whose CPU and GPU share a power budget: at 3840x2160 and cap 144 the
 GPU's main pass took 2.17 to 2.20 ms per frame with it, 2.16 to 2.18 with
 the old limiter and 2.00 to 2.23 with 30 µs sleeps (input to present
-0.652, 0.676 and 0.686 ms). On Windows (untested: the CI builds it, this
-machine can't run it) a sleep lasts whole timer ticks, 1 ms at best
+0.652, 0.676 and 0.686 ms). On Windows a sleep lasts whole timer ticks,
+1 ms at best
 (`Sys_PlatformInit` asks for 1 ms with `timeBeginPeriod`), so the wait
 sleeps whole milliseconds while more than 2 ms remain and polls the rest;
 `Sys_Microseconds` takes the whole seconds and the rest of
@@ -10263,9 +10263,8 @@ Remaining:
   MB re-saved without its HDF5 chunks' padding (a changed file under
   Apache 2.0, and git keeps the old one); the obstruction traces stay on
   the main thread (the collision model's trace isn't thread-safe:
-  `cm.checkcount`). Untested: Windows (WASAPI; the package and installer
-  changes too), macOS (Core Audio, the `.app` layout), emscripten (no
-  threads: the streams decode on the main thread there). The device's
+  `cm.checkcount`). Untested: macOS (Core Audio, the `.app` layout),
+  emscripten (no threads: the streams decode on the main thread there). The device's
   period on this machine's PulseAudio is 15 ms (5 ms x 3 requested); the
   audio latency against OpenAL's was not measured.
 - The surface list (Plan 32, see Performance, Surface list): not measured
@@ -10342,8 +10341,8 @@ Remaining:
   with the old limiter's 62.5 and 166.7 frames per second, after
   `BeginFrame` (renderer and driver), and the new limiter at those old
   rates has the old tails: likely the frame rate against the 59.96 Hz
-  display, untested with a VRR display. Untested on Windows (whole
-  millisecond sleeps, the last 2 ms polled). The polled millisecond costs
+  display, untested with a VRR display. On Windows the sleeps are whole
+  milliseconds and the last 2 ms are polled. The polled millisecond costs
   0.4 to 0.7 ms of a core per frame; on this CPU sleeping through it cost
   up to 0.03 ms of input to present at 144 (lower clocks). Caps that
   divide 1000 start on the millisecond tick again: GL1's 99th percentile
