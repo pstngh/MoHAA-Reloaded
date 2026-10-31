@@ -602,6 +602,7 @@ fn main() -> Result<(), slint::PlatformError> {
         mode_to_cvars(index as usize, &mut st.edits);
         show_display(&ui, &mut st);
     });
+    ui.on_open_url(|url| platform::open_url(&url));
     {
         let weak = ui.as_weak();
         let state = state.clone();

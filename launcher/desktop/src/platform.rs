@@ -64,6 +64,33 @@ pub fn has_subdir(folder: &Path, name: &str) -> bool {
     })
 }
 
+/// A web page in the default browser
+pub fn open_url(url: &str) {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::Shell::ShellExecuteW;
+        use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+        let (verb, file) = (wide("open"), wide(url));
+        // SAFETY: both strings are NUL-terminated and outlive the call
+        unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                verb.as_ptr(),
+                file.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                SW_SHOWNORMAL,
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    if let Ok(mut child) = std::process::Command::new("xdg-open").arg(url).spawn() {
+        // reaped when it's done
+        std::thread::spawn(move || child.wait());
+    }
+}
+
 /// The retail game's data: main/Pak0.pk3, in any case
 pub fn has_game_data(folder: &Path) -> bool {
     let find = |dir: &Path, name: &str| -> Option<PathBuf> {

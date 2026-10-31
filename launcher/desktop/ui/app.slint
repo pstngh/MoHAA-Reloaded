@@ -124,6 +124,7 @@ component IconButton inherits Rectangle {
     in property <image> icon;
     in property <bool> enabled: true;
     in property <bool> accent;
+    in property <styled-text> tip;
     callback clicked;
 
     width: 28px;
@@ -143,6 +144,31 @@ component IconButton inherits Rectangle {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
+    Tooltip { text: root.tip; }
+}
+
+/// An icon that opens a web page
+component LinkIcon inherits Rectangle {
+    in property <image> icon;
+    in property <color> hover-color: Palette.foreground;
+    in property <styled-text> tip;
+    callback clicked;
+
+    width: 28px;
+    height: 28px;
+    border-radius: 4px;
+    background: touch.has-hover ? Theme.hover : transparent;
+    Image {
+        source: root.icon;
+        width: 17px;
+        height: 17px;
+        colorize: touch.has-hover ? root.hover-color : Theme.secondary;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    Tooltip { text: root.tip; }
 }
 
 component ServerRow inherits Rectangle {
@@ -193,6 +219,7 @@ component ServerRow inherits Rectangle {
             alignment: center;
             IconButton {
                 icon: @image-url("icons/edit.svg");
+                tip: @markdown("Rename");
                 clicked => { root.rename(); }
             }
         }
@@ -200,6 +227,7 @@ component ServerRow inherits Rectangle {
             alignment: center;
             IconButton {
                 icon: @image-url("icons/trash.svg");
+                tip: @markdown("Remove");
                 clicked => { root.remove(); }
             }
         }
@@ -212,6 +240,7 @@ component ServerRow inherits Rectangle {
                 Rectangle {
                     width: 28px;
                     height: 28px;
+                    Tooltip { text: @markdown("Always in the list"); }
                     Image {
                         source: @image-url("icons/pin.svg");
                         width: 13px;
@@ -225,6 +254,7 @@ component ServerRow inherits Rectangle {
             alignment: center;
             IconButton {
                 icon: @image-url("icons/play.svg");
+                tip: @markdown("Join");
                 accent: true;
                 enabled: root.can-start;
                 clicked => { root.connect(); }
@@ -322,6 +352,7 @@ export component LauncherWindow inherits Window {
     callback resolution-selected(int);
     callback mode-selected(int);
     callback choose-folder();
+    callback open-url(string);
     callback single-player();
     callback connect();
     callback dialog-accepted();
@@ -540,9 +571,29 @@ export component LauncherWindow inherits Window {
             }
         }
 
-        // where the game is (a click changes it), and the buttons
+        // the project's links, where the game is (a click changes it), and the buttons
         HorizontalLayout {
             spacing: 8px;
+            HorizontalLayout {
+                spacing: 2px;
+                VerticalLayout {
+                    alignment: center;
+                    LinkIcon {
+                        icon: @image-url("icons/github.svg");
+                        tip: @markdown("MoHAA Reloaded on GitHub");
+                        clicked => { root.open-url("https://github.com/pstngh/MoHAA-Reloaded"); }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    LinkIcon {
+                        icon: @image-url("icons/discord.svg");
+                        hover-color: #5865f2; // Discord's blurple
+                        tip: @markdown("Forte's Discord");
+                        clicked => { root.open-url("https://dsc.gg/ForteFFA"); }
+                    }
+                }
+            }
             Rectangle {
                 horizontal-stretch: 1;
                 min-width: 0px;
@@ -586,6 +637,7 @@ export component LauncherWindow inherits Window {
                     mouse-cursor: pointer;
                     clicked => { root.choose-folder(); }
                 }
+                Tooltip { text: @markdown("The game folder: click to choose another"); }
             }
             Button {
                 text: "Single player";
