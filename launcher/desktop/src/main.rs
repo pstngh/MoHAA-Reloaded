@@ -260,7 +260,7 @@ fn show_crosshair(ui: &LauncherWindow, st: &State) {
     // three preview pixels to a HUD pixel as long as it fits, else scaled down to fit
     let parse = |s: &str| s.trim().parse::<f64>().unwrap_or(0.0);
     let (arms, extent) = crosshair_boxes(parse(length), parse(gap), parse(thickness));
-    let size = 80.0_f32;
+    let size = 96.0_f32; // ui/app.slint's Theme.preview
     let room = size - 8.0;
     let mut zoom = 3.0_f32;
     if extent as f32 * zoom > room {

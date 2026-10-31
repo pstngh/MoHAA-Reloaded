@@ -1,6 +1,9 @@
 // MoHAA Launcher's window, in Slint's Fluent style (dark; build.rs picks it), as small as its contents: the games
 // along the top, the player and the servers, the crosshair and the display, and the buttons. main.rs fills it and
 // acts on its callbacks.
+//
+// One spacing system throughout (Theme): every field is a block of a label over its control (label-gap apart),
+// and blocks, cards and sections are `gap` apart, with `gap` of padding inside each card and around the window.
 import { Button, LineEdit, SpinBox, ComboBox, ListView, Palette } from "std-widgets.slint";
 
 export struct ServerItem {
@@ -27,7 +30,14 @@ global Theme {
     out property <color> selected: #ffffff17;
     out property <color> secondary: #ffffffa3;
     out property <color> tertiary: #ffffff70;
-    out property <length> row: 34px;
+
+    out property <length> gap: 12px;         // between blocks, cards and sections; a card's padding
+    out property <length> label-gap: 4px;    // between a label and its control
+    out property <length> label-height: 16px;
+    out property <length> field: 32px;       // a control's height
+    out property <length> row: 34px;         // a server's row
+    // the crosshair preview spans two blocks' controls: from the first's top to the second's bottom
+    out property <length> preview: 2 * field + gap + label-height + label-gap;
 }
 
 component GameTab inherits Rectangle {
@@ -37,8 +47,8 @@ component GameTab inherits Rectangle {
     in property <bool> available: true;
     callback clicked;
 
-    height: 40px;
-    border-radius: 6px;
+    height: 46px;
+    border-radius: 8px;
     background: root.selected ? Theme.selected : touch.has-hover ? Theme.hover : Theme.card;
     border-width: 1px;
     border-color: Theme.stroke;
@@ -46,32 +56,47 @@ component GameTab inherits Rectangle {
     animate background { duration: 120ms; }
 
     HorizontalLayout {
-        alignment: center;
-        spacing: 8px;
-        VerticalLayout {
-            alignment: center;
+        padding: 5px;
+        // the game's icon in a box of its own, lifted off the tab
+        Rectangle {
+            width: 36px;
+            height: 36px;
+            border-radius: 6px;
+            background: root.selected ? #ffffff1f : #ffffff12;
+            border-width: 1px;
+            border-color: #ffffff1a;
+            drop-shadow-blur: 6px;
+            drop-shadow-offset-y: 1px;
+            drop-shadow-color: #00000080;
             Image {
                 source: root.icon;
                 width: 24px;
                 height: 24px;
             }
         }
-        Text {
-            text: root.title;
-            vertical-alignment: center;
-            font-weight: root.selected ? 600 : 400;
-            color: Palette.foreground;
+        // the name, centered in the rest, and the selection bar as wide as it
+        Rectangle {
+            horizontal-stretch: 1;
+            label := Text {
+                x: (parent.width - self.width) / 2;
+                width: self.preferred-width;
+                text: root.title;
+                vertical-alignment: center;
+                font-weight: root.selected ? 600 : 400;
+                color: Palette.foreground;
+            }
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: parent.height - self.height - 1px;
+                width: root.selected ? label.width : 0px;
+                height: 3px;
+                border-radius: 1.5px;
+                background: Palette.accent-background;
+                animate width { duration: 160ms; easing: ease-out; }
+            }
         }
-    }
-
-    // the selected game's marker, as Windows' selector bars show it
-    Rectangle {
-        y: parent.height - self.height - 1px;
-        width: root.selected ? 32px : 0px;
-        height: 3px;
-        border-radius: 1.5px;
-        background: Palette.accent-background;
-        animate width { duration: 160ms; easing: ease-out; }
+        // balances the icon's box, so the name sits in the middle of the tab
+        Rectangle { width: 12px; }
     }
 
     touch := TouchArea {
@@ -88,36 +113,25 @@ component Card inherits Rectangle {
     border-color: Theme.stroke;
 
     VerticalLayout {
-        padding: 12px;
-        spacing: 10px;
+        padding: Theme.gap;
+        spacing: Theme.gap;
         @children
     }
 }
 
 component FieldLabel inherits Text {
-    height: 18px;
-    vertical-alignment: top;
+    height: Theme.label-height;
+    vertical-alignment: center;
     color: Theme.secondary;
     font-size: 12px;
 }
 
-component TextLink inherits Rectangle {
-    in property <string> text;
-    callback clicked;
-
-    height: 22px;
-    width: label.preferred-width + 12px;
-    border-radius: 4px;
-    background: touch.has-hover ? Theme.hover : transparent;
-    label := Text {
-        text: root.text;
-        font-size: 12px;
-        color: Palette.accent-background;
-    }
-    touch := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
-    }
+/// A field: its label over its control
+component Field inherits VerticalLayout {
+    in property <string> label;
+    spacing: Theme.label-gap;
+    FieldLabel { text: root.label; }
+    @children
 }
 
 component IconButton inherits Rectangle {
@@ -192,7 +206,7 @@ component ServerRow inherits Rectangle {
     }
 
     HorizontalLayout {
-        padding-left: 10px;
+        padding-left: Theme.gap;
         padding-right: 3px;
         spacing: 2px;
         // two even columns, whatever the texts' lengths
@@ -268,8 +282,8 @@ component CrosshairPreview inherits Rectangle {
     in property <color> arm-color;
     in property <bool> dark-color;
 
-    width: 80px;
-    height: 80px;
+    width: Theme.preview;
+    height: Theme.preview;
     border-radius: 6px;
     clip: true;
     // the game's sky or a wall behind it: black, grey for a dark crosshair
@@ -361,11 +375,11 @@ export component LauncherWindow inherits Window {
     callback game-exited();
 
     main-layout := VerticalLayout {
-        padding: 12px;
-        spacing: 10px;
+        padding: Theme.gap;
+        spacing: Theme.gap;
 
         HorizontalLayout {
-            spacing: 6px;
+            spacing: Theme.gap / 2;
             GameTab {
                 icon: @image-url("../../assets/game-aa-64.png");
                 title: "Allied Assault";
@@ -391,51 +405,46 @@ export component LauncherWindow inherits Window {
         // the player, the server and the servers played on
         Card {
             GridLayout {
-                spacing-horizontal: 10px;
-                spacing-vertical: 2px;
+                spacing: Theme.gap;
                 Row {
-                    FieldLabel { text: "Player name"; }
-                    FieldLabel { text: "Server"; }
-                }
-                Row {
-                    LineEdit {
-                        text <=> root.name;
-                        placeholder-text: "UnnamedSoldier";
-                        edited(text) => { root.name-edited(text); }
+                    Field {
+                        label: "Player name";
+                        LineEdit {
+                            text <=> root.name;
+                            placeholder-text: "UnnamedSoldier";
+                            edited(text) => { root.name-edited(text); }
+                        }
                     }
-                    LineEdit {
-                        text <=> root.address;
-                        placeholder-text: "host:port";
-                        edited(text) => { root.address-edited(text); }
-                        accepted(text) => { root.connect(); }
-                    }
-                }
-                Row {
-                    FieldLabel {
-                        text: "Server password";
-                        height: 26px;
-                        vertical-alignment: bottom;
-                    }
-                    FieldLabel {
-                        text: "RCON password";
-                        height: 26px;
-                        vertical-alignment: bottom;
+                    Field {
+                        label: "Server";
+                        LineEdit {
+                            text <=> root.address;
+                            placeholder-text: "host:port";
+                            edited(text) => { root.address-edited(text); }
+                            accepted(text) => { root.connect(); }
+                        }
                     }
                 }
                 Row {
-                    LineEdit {
-                        text <=> root.password;
-                        input-type: InputType.password;
-                        placeholder-text: "If the server has one";
-                        edited(text) => { root.password-edited(text); }
-                        accepted(text) => { root.connect(); }
+                    Field {
+                        label: "Server password";
+                        LineEdit {
+                            text <=> root.password;
+                            input-type: InputType.password;
+                            placeholder-text: "If the server has one";
+                            edited(text) => { root.password-edited(text); }
+                            accepted(text) => { root.connect(); }
+                        }
                     }
-                    LineEdit {
-                        text <=> root.rcon;
-                        input-type: InputType.password;
-                        placeholder-text: "For server admins";
-                        edited(text) => { root.rcon-edited(text); }
-                        accepted(text) => { root.connect(); }
+                    Field {
+                        label: "RCON password";
+                        LineEdit {
+                            text <=> root.rcon;
+                            input-type: InputType.password;
+                            placeholder-text: "For server admins";
+                            edited(text) => { root.rcon-edited(text); }
+                            accepted(text) => { root.connect(); }
+                        }
                     }
                 }
             }
@@ -475,72 +484,80 @@ export component LauncherWindow inherits Window {
         }
 
         HorizontalLayout {
-            spacing: 10px;
+            spacing: Theme.gap;
 
-            // the crosshair
+            // the crosshair: its preview, as tall as the two rows of fields beside it
             Card {
                 HorizontalLayout {
-                    spacing: 14px;
+                    spacing: Theme.gap;
                     VerticalLayout {
-                        alignment: center;
-                        spacing: 4px;
+                        spacing: Theme.label-gap;
+                        HorizontalLayout {
+                            FieldLabel {
+                                text: "Crosshair";
+                                horizontal-stretch: 1;
+                            }
+                            reset := Text {
+                                text: "Reset";
+                                height: Theme.label-height;
+                                vertical-alignment: center;
+                                font-size: 12px;
+                                color: reset-touch.has-hover ? Palette.foreground : Palette.accent-background;
+                                reset-touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.reset-crosshair(); }
+                                }
+                            }
+                        }
                         CrosshairPreview {
                             arms: root.arms;
                             arm-color: root.crosshair-color;
                             dark-color: root.crosshair-dark;
                         }
-                        HorizontalLayout {
-                            alignment: center;
-                            TextLink {
-                                text: "Reset";
-                                clicked => { root.reset-crosshair(); }
-                            }
-                        }
                     }
                     GridLayout {
-                        spacing-horizontal: 10px;
-                        spacing-vertical: 2px;
+                        spacing: Theme.gap;
                         Row {
-                            FieldLabel { text: "Crosshair length"; }
-                            FieldLabel { text: "Gap"; }
-                        }
-                        Row {
-                            SpinBox {
-                                minimum: 1;
-                                maximum: 128;
-                                value <=> root.length;
-                                edited(value) => { root.length-edited(value); }
+                            Field {
+                                label: "Length";
+                                SpinBox {
+                                    height: Theme.field;
+                                    minimum: 1;
+                                    maximum: 128;
+                                    value <=> root.length;
+                                    edited(value) => { root.length-edited(value); }
+                                }
                             }
-                            SpinBox {
-                                minimum: 1;
-                                maximum: 64;
-                                value <=> root.gap;
-                                edited(value) => { root.gap-edited(value); }
-                            }
-                        }
-                        Row {
-                            FieldLabel {
-                                text: "Thickness";
-                                height: 26px;
-                                vertical-alignment: bottom;
-                            }
-                            FieldLabel {
-                                text: "Color";
-                                height: 26px;
-                                vertical-alignment: bottom;
+                            Field {
+                                label: "Gap";
+                                SpinBox {
+                                    height: Theme.field;
+                                    minimum: 1;
+                                    maximum: 64;
+                                    value <=> root.gap;
+                                    edited(value) => { root.gap-edited(value); }
+                                }
                             }
                         }
                         Row {
-                            SpinBox {
-                                minimum: 1;
-                                maximum: 16;
-                                value <=> root.thickness;
-                                edited(value) => { root.thickness-edited(value); }
+                            Field {
+                                label: "Thickness";
+                                SpinBox {
+                                    height: Theme.field;
+                                    minimum: 1;
+                                    maximum: 16;
+                                    value <=> root.thickness;
+                                    edited(value) => { root.thickness-edited(value); }
+                                }
                             }
-                            ComboBox {
-                                model: root.color-names;
-                                current-index <=> root.color-index;
-                                selected(value) => { root.color-selected(self.current-index); }
+                            Field {
+                                label: "Color";
+                                ComboBox {
+                                    height: Theme.field;
+                                    model: root.color-names;
+                                    current-index <=> root.color-index;
+                                    selected(value) => { root.color-selected(self.current-index); }
+                                }
                             }
                         }
                     }
@@ -549,20 +566,19 @@ export component LauncherWindow inherits Window {
 
             // the display
             Card {
-                VerticalLayout {
-                    spacing: 2px;
-                    FieldLabel { text: "Resolution"; }
+                Field {
+                    label: "Resolution";
                     ComboBox {
+                        height: Theme.field;
                         model: root.resolutions;
                         current-index <=> root.resolution-index;
                         selected(value) => { root.resolution-selected(self.current-index); }
                     }
-                    FieldLabel {
-                        text: "Display mode";
-                        height: 26px;
-                        vertical-alignment: bottom;
-                    }
+                }
+                Field {
+                    label: "Display mode";
                     ComboBox {
+                        height: Theme.field;
                         model: root.modes;
                         current-index <=> root.mode-index;
                         selected(value) => { root.mode-selected(self.current-index); }
@@ -573,25 +589,22 @@ export component LauncherWindow inherits Window {
 
         // the project's links, where the game is (a click changes it), and the buttons
         HorizontalLayout {
-            spacing: 8px;
-            HorizontalLayout {
-                spacing: 2px;
-                VerticalLayout {
-                    alignment: center;
-                    LinkIcon {
-                        icon: @image-url("icons/github.svg");
-                        tip: @markdown("MoHAA Reloaded on GitHub");
-                        clicked => { root.open-url("https://github.com/pstngh/MoHAA-Reloaded"); }
-                    }
+            spacing: Theme.gap / 2;
+            VerticalLayout {
+                alignment: center;
+                LinkIcon {
+                    icon: @image-url("icons/github.svg");
+                    tip: @markdown("MoHAA Reloaded on GitHub");
+                    clicked => { root.open-url("https://github.com/pstngh/MoHAA-Reloaded"); }
                 }
-                VerticalLayout {
-                    alignment: center;
-                    LinkIcon {
-                        icon: @image-url("icons/discord.svg");
-                        hover-color: #5865f2; // Discord's blurple
-                        tip: @markdown("Forte's Discord");
-                        clicked => { root.open-url("https://dsc.gg/ForteFFA"); }
-                    }
+            }
+            VerticalLayout {
+                alignment: center;
+                LinkIcon {
+                    icon: @image-url("icons/discord.svg");
+                    hover-color: #5865f2; // Discord's blurple
+                    tip: @markdown("Forte's Discord");
+                    clicked => { root.open-url("https://dsc.gg/ForteFFA"); }
                 }
             }
             Rectangle {
@@ -639,6 +652,7 @@ export component LauncherWindow inherits Window {
                 }
                 Tooltip { text: @markdown("The game folder: click to choose another"); }
             }
+            Rectangle { width: Theme.gap / 2; }
             Button {
                 text: "Single player";
                 icon: @image-url("icons/person.svg");
@@ -676,50 +690,49 @@ export component LauncherWindow inherits Window {
                 }
                 reject
             }
-        Rectangle {
-            width: min(400px, parent.width - 32px);
-            height: dialog-layout.preferred-height;
-            background: #2c2c2c;
-            border-radius: 8px;
-            border-width: 1px;
-            border-color: #ffffff1a;
-            drop-shadow-blur: 32px;
-            drop-shadow-color: #00000080;
-            dialog-layout := VerticalLayout {
-                padding: 20px;
-                spacing: 12px;
-                Text {
-                    text: root.dialog-title;
-                    font-size: 17px;
-                    font-weight: 600;
-                    color: Palette.foreground;
-                }
-                Text {
-                    text: root.dialog-text;
-                    wrap: word-wrap;
-                    color: Palette.foreground;
-                }
-                if root.dialog-input: LineEdit {
-                    text <=> root.dialog-value;
-                    accepted(text) => { root.dialog-accepted(); }
-                    init => { self.focus(); }
-                }
-                HorizontalLayout {
-                    padding-top: 4px;
-                    spacing: 8px;
-                    alignment: end;
-                    if root.dialog-cancel != "": Button {
-                        text: root.dialog-cancel;
-                        clicked => { root.dialog-cancelled(); }
+            Rectangle {
+                width: min(400px, parent.width - 2 * Theme.gap);
+                height: dialog-layout.preferred-height;
+                background: #2c2c2c;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: #ffffff1a;
+                drop-shadow-blur: 32px;
+                drop-shadow-color: #00000080;
+                dialog-layout := VerticalLayout {
+                    padding: 2 * Theme.gap;
+                    spacing: Theme.gap;
+                    Text {
+                        text: root.dialog-title;
+                        font-size: 17px;
+                        font-weight: 600;
+                        color: Palette.foreground;
                     }
-                    Button {
-                        text: root.dialog-ok;
-                        primary: true;
-                        clicked => { root.dialog-accepted(); }
+                    Text {
+                        text: root.dialog-text;
+                        wrap: word-wrap;
+                        color: Palette.foreground;
+                    }
+                    if root.dialog-input: LineEdit {
+                        text <=> root.dialog-value;
+                        accepted(text) => { root.dialog-accepted(); }
+                        init => { self.focus(); }
+                    }
+                    HorizontalLayout {
+                        spacing: Theme.gap / 1.5;
+                        alignment: end;
+                        if root.dialog-cancel != "": Button {
+                            text: root.dialog-cancel;
+                            clicked => { root.dialog-cancelled(); }
+                        }
+                        Button {
+                            text: root.dialog-ok;
+                            primary: true;
+                            clicked => { root.dialog-accepted(); }
+                        }
                     }
                 }
             }
-        }
         }
     }
 }
