@@ -212,6 +212,7 @@ fn show_status(ui: &LauncherWindow, st: &State) {
     ui.set_status(st.status().into());
     let can_start = st.can_start();
     ui.set_can_start(can_start);
+    ui.set_running(st.running);
     ui.set_can_connect(can_start && !st.slot().address.trim().is_empty());
 }
 
@@ -673,7 +674,26 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
-    let result = ui.run();
+    ui.show()?;
+    dark_title_bar(&ui);
+    let result = slint::run_event_loop();
+    let _ = ui.hide();
     state.borrow_mut().save();
     result
+}
+
+/// The window's title bar and frame dark too, whatever the system's theme (Windows' title bar, the X11 window
+/// manager's and Wayland's decorations), also after the system's theme changes
+fn dark_title_bar(ui: &LauncherWindow) {
+    use slint::winit_030::{winit, WinitWindowAccessor};
+    let dark = || Some(winit::window::Theme::Dark);
+    ui.window().with_winit_window(|window| window.set_theme(dark()));
+    ui.window().on_winit_window_event(move |window, event| {
+        if let winit::event::WindowEvent::ThemeChanged(theme) = event {
+            if *theme != winit::window::Theme::Dark {
+                window.with_winit_window(|w| w.set_theme(dark()));
+            }
+        }
+        slint::winit_030::EventResult::Propagate
+    });
 }

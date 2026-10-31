@@ -20,7 +20,7 @@ export struct ArmBox {
 }
 
 global Theme {
-    out property <color> base: #1c1c1c;
+    out property <color> base: #202020; // Windows 11's dark title bar
     out property <color> card: #ffffff09;
     out property <color> stroke: #ffffff12;
     out property <color> hover: #ffffff0f;
@@ -203,8 +203,24 @@ component ServerRow inherits Rectangle {
                 clicked => { root.remove(); }
             }
         }
-        // the same columns as the other rows
-        if root.builtin: Rectangle { width: 2 * 28px + 2px; }
+        // the same columns as the other rows, and a pin for a server that stays
+        if root.builtin: HorizontalLayout {
+            width: 2 * 28px + 2px;
+            alignment: end;
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 28px;
+                    height: 28px;
+                    Image {
+                        source: @image-url("icons/pin.svg");
+                        width: 13px;
+                        height: 13px;
+                        colorize: Theme.tertiary;
+                    }
+                }
+            }
+        }
         VerticalLayout {
             alignment: center;
             IconButton {
@@ -244,6 +260,9 @@ export component LauncherWindow inherits Window {
     title: "MoHAA Launcher";
     icon: @image-url("../../assets/app-icon-128.png");
     background: Theme.base;
+    // as big as the contents, no bigger
+    max-width: main-layout.preferred-width;
+    max-height: main-layout.preferred-height;
 
     // the game
     in property <int> game;
@@ -252,6 +271,7 @@ export component LauncherWindow inherits Window {
     in property <string> status;
     in property <bool> can-start;
     in property <bool> can-connect;
+    in property <bool> running;
 
     // the player and the servers
     in-out property <string> name;
@@ -309,7 +329,7 @@ export component LauncherWindow inherits Window {
     // the game quit (from the thread that waited for it)
     callback game-exited();
 
-    VerticalLayout {
+    main-layout := VerticalLayout {
         padding: 12px;
         spacing: 10px;
 
@@ -407,8 +427,14 @@ export component LauncherWindow inherits Window {
                         remove => { root.server-remove(i); }
                     }
                 }
-                if root.servers.length == 0: Text {
-                    text: "The servers you join are kept here: double-click one to join it again.";
+                // the room the list doesn't fill yet
+                if root.servers.length < 3: Text {
+                    y: root.servers.length * Theme.row + 2px;
+                    height: parent.height - self.y;
+                    width: parent.width;
+                    text: root.servers.length == 0
+                        ? "The servers you join are kept here: double-click one to join it again."
+                        : "The servers you join are kept here.";
                     font-size: 12px;
                     color: Theme.tertiary;
                     horizontal-alignment: center;
@@ -528,11 +554,21 @@ export component LauncherWindow inherits Window {
                     spacing: 6px;
                     VerticalLayout {
                         alignment: center;
-                        Image {
+                        if !root.running: Image {
                             source: @image-url("icons/folder.svg");
                             width: 14px;
                             height: 14px;
                             colorize: Theme.secondary;
+                        }
+                        if root.running: Rectangle {
+                            width: 14px;
+                            height: 14px;
+                            Rectangle {
+                                width: 8px;
+                                height: 8px;
+                                border-radius: 4px;
+                                background: #6ccb5f;
+                            }
                         }
                     }
                     Text {
@@ -574,6 +610,20 @@ export component LauncherWindow inherits Window {
     if root.dialog-visible: Rectangle {
         background: #00000099;
         TouchArea { }
+        // Esc cancels, Enter confirms (a field's own Enter too)
+        FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if (event.text == Key.Escape) {
+                    root.dialog-cancel != "" ? root.dialog-cancelled() : root.dialog-accepted();
+                    return accept;
+                }
+                if (event.text == Key.Return) {
+                    root.dialog-accepted();
+                    return accept;
+                }
+                reject
+            }
         Rectangle {
             width: min(400px, parent.width - 32px);
             height: dialog-layout.preferred-height;
@@ -617,6 +667,7 @@ export component LauncherWindow inherits Window {
                     }
                 }
             }
+        }
         }
     }
 }
