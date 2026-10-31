@@ -1,0 +1,186 @@
+##########################
+#
+# MoHAA Launcher: macOS (SwiftUI), Windows and Linux (Rust and Slint, one code base)
+#
+# Builds and tests the three launchers, runs each against a stand-in game folder for a screenshot, and uploads them
+# as workflow artifacts, packed to go next to the game in each release's download. No release, no tag, no secrets.
+##########################
+name: "Launcher"
+
+on:
+  push:
+    paths:
+      - 'launcher/**'
+      - '.github/workflows/launcher.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: "macOS (arm64)"
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Toolchain
+      run: |
+        xcodebuild -version
+        swift --version
+        sw_vers
+
+    - name: Test the logic
+      working-directory: launcher/macos
+      run: swift test
+
+    # a stand-in game folder: openmohaa.app, Allied Assault's and Spearhead's data, a config, saved servers
+    - name: Build into a stand-in game folder
+      run: |
+        game="$RUNNER_TEMP/game"
+        mkdir -p "$game/openmohaa.app/Contents" "$game/main/configs" "$game/mainta"
+        printf '%s\n' 'seta name "lol"' 'seta cg_crosshair_length "5"' 'seta cg_crosshair_thickness "2"' \
+          'seta r_mode "-1"' 'seta r_customwidth "1920"' 'seta r_customheight "1080"' \
+          'seta r_fullscreen "1"' 'seta r_noborder "1"' > "$game/main/configs/omconfig.cfg"
+        mkdir -p "$HOME/Library/Application Support/openmohaa"
+        cat > "$HOME/Library/Application Support/openmohaa/launcher.json" <<'EOF'
+        {"game": 0, "slots": [{"address": "78.141.207.18:12603", "password": "abc", "rcon": "secret",
+          "servers": [{"name": "Forte FFA", "address": "forte.example:12203"},
+                      {"name": "forte war", "address": "forte.example:12204"},
+                      {"name": "78.141.207.18:12603", "address": "78.141.207.18:12603", "password": "abc"}]},
+          {}, {}]}
+        EOF
+        launcher/macos/build.sh "$game"
+
+    - name: Screenshot
+      continue-on-error: true
+      run: |
+        "$RUNNER_TEMP/game/MoHAA Launcher.app/Contents/MacOS/MoHAALauncher" --snapshot "$RUNNER_TEMP/launcher-macos.png"
+        sips -g pixelWidth -g pixelHeight "$RUNNER_TEMP/launcher-macos.png"
+
+    - name: Screenshot as text (review)
+      continue-on-error: true
+      run: |
+        sips -Z 900 "$RUNNER_TEMP/launcher-macos.png" --out "$RUNNER_TEMP/review.png" >/dev/null
+        echo "REVIEW-BEGIN"; base64 -i "$RUNNER_TEMP/review.png" | tr -d '\n' | fold -w 3000; echo; echo "REVIEW-END"
+
+    - name: Package
+      run: |
+        mkdir -p out
+        ditto -c -k --keepParent "$RUNNER_TEMP/game/MoHAA Launcher.app" out/mohaa-launcher-macos-arm64.zip
+        cp "$RUNNER_TEMP/launcher-macos.png" out/ || true
+        shasum -a 256 out/*.zip
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: launcher-macos-arm64
+        retention-days: 7
+        path: out/
+
+  linux:
+    name: "Linux (x86-64)"
+    # the game's own Linux build is made on 22.04 for glibc 2.34+: the launcher too
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: launcher/desktop
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Packages
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libfontconfig1-dev libxkbcommon-dev libxkbcommon-x11-0 xvfb xdotool imagemagick
+
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          launcher/desktop/target
+        key: linux-cargo-${{ hashFiles('launcher/desktop/Cargo.lock') }}
+
+    - name: Test and build
+      run: |
+        rustc --version
+        cargo test --locked
+        cargo build --release --locked
+        ls -l target/release/mohaa-launcher
+
+    # a stand-in game folder (Allied Assault's and Spearhead's data, a config, saved servers) for a screenshot
+    - name: Screenshot
+      continue-on-error: true
+      run: |
+        game="$RUNNER_TEMP/game"; home="$RUNNER_TEMP/home"
+        mkdir -p "$game/main" "$game/mainta" "$home/.config/openmohaa/main/configs"
+        cp /bin/true "$game/openmohaa"
+        cp target/release/mohaa-launcher "$game/"
+        printf '%s\n' 'seta name "lol"' 'seta cg_crosshair_length "5"' 'seta cg_crosshair_thickness "2"' \
+          'seta r_mode "-1"' 'seta r_customwidth "1920"' 'seta r_customheight "1080"' \
+          > "$home/.config/openmohaa/main/configs/omconfig.cfg"
+        echo '{"slots": [{"address": "151.80.234.90:12203", "servers": [{"name": "78.141.207.18:12603", "address": "78.141.207.18:12603"}]}]}' \
+          > "$home/.config/openmohaa/launcher.json"
+        Xvfb :99 -screen 0 1280x800x24 & xvfb=$!
+        sleep 1
+        export DISPLAY=:99 HOME="$home"
+        xdotool mousemove 1270 790
+        "$game/mohaa-launcher" & launcher=$!
+        sleep 3
+        import -window root -trim "$RUNNER_TEMP/launcher-linux.png"
+        kill $launcher $xvfb
+
+    - name: Package
+      run: |
+        mkdir -p "$GITHUB_WORKSPACE/out"
+        tar -czf "$GITHUB_WORKSPACE/out/mohaa-launcher-linux-amd64.tar.gz" -C target/release mohaa-launcher
+        cp "$RUNNER_TEMP/launcher-linux.png" "$GITHUB_WORKSPACE/out/" || true
+        sha256sum "$GITHUB_WORKSPACE"/out/*.tar.gz
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: launcher-linux-amd64
+        retention-days: 7
+        path: out/
+
+  windows:
+    name: "Windows (x64)"
+    runs-on: windows-2025
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+        working-directory: launcher/desktop
+    steps:
+    - uses: actions/checkout@v5
+
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          launcher/desktop/target
+        key: windows-cargo-${{ hashFiles('launcher/desktop/Cargo.lock') }}
+
+    - name: Test and build
+      run: |
+        rustc --version
+        cargo test --locked
+        cargo build --release --locked
+        ls -l target/release/mohaa-launcher.exe
+
+    - name: Package
+      run: |
+        mkdir -p "$GITHUB_WORKSPACE/out"
+        cp target/release/mohaa-launcher.exe "$GITHUB_WORKSPACE/out/"
+        cd "$GITHUB_WORKSPACE/out" && 7z a -tzip mohaa-launcher-windows-x64.zip mohaa-launcher.exe && rm mohaa-launcher.exe
+        sha256sum mohaa-launcher-windows-x64.zip
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: launcher-windows-x64
+        retention-days: 7
+        path: out/

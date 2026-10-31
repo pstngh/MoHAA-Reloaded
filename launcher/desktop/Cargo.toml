@@ -1,0 +1,28 @@
+[package]
+name = "mohaa-launcher"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.85"
+description = "MoHAA Launcher for Windows and Linux: starts MoHAA Reloaded's game for Allied Assault, Spearhead or Breakthrough"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "renderer-software", "accessibility", "raw-window-handle-06"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rfd = "0.17"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi"] }
+
+[build-dependencies]
+slint-build = "1.18"
+
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
