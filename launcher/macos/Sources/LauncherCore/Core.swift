@@ -303,6 +303,26 @@ public let rModeSizes: [Resolution] = [
     (1600, 1200), (2048, 1536), (856, 480),
 ].map { Resolution($0.0, $0.1) }
 
+/// The smallest size the launcher offers or passes
+public let minResolution = Resolution(640, 480)
+
+/// A config's size below 640 x 480 (r_mode 0 to 2, or a custom size) as 640 x 480: the menu shows it, and starting
+/// the game passes it, as a change made in the launcher
+public func raiseSmallResolution(_ edits: inout CvarEdits) {
+    let mode = Int(edits.get("r_mode")) ?? -2
+    var size: Resolution?
+    if mode == -1 {
+        size = Resolution(Int(edits.get("r_customwidth")) ?? 0, Int(edits.get("r_customheight")) ?? 0)
+    } else if rModeSizes.indices.contains(mode) {
+        size = rModeSizes[mode]
+    }
+    if let size, size.width < minResolution.width || size.height < minResolution.height {
+        edits.set("r_mode", "-1")
+        edits.set("r_customwidth", String(minResolution.width))
+        edits.set("r_customheight", String(minResolution.height))
+    }
+}
+
 /// A size's aspect ratio, by the common name it's within 3% of (1366 x 768 is 16:9), else as a reduced fraction
 public func aspectRatio(_ width: Int, _ height: Int) -> String {
     guard width > 0, height > 0 else { return "" }
@@ -327,7 +347,7 @@ public func resolutionList(displayModes: [Resolution], desktop: Resolution) -> [
     ].map { Resolution($0.0, $0.1) }
     var list: [Resolution] = []
     func add(_ r: Resolution) {
-        if r.width >= 640 && r.height >= 480 && !list.contains(r) { list.append(r) }
+        if r.width >= minResolution.width && r.height >= minResolution.height && !list.contains(r) { list.append(r) }
     }
     add(desktop)
     displayModes.forEach(add)

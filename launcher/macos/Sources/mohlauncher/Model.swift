@@ -10,8 +10,7 @@ struct ColorPreset: Identifiable {
     var id: UInt32 { rgb }
 }
 
-/// An entry of the resolution menu: the desktop's (r_mode -2) or a size (r_mode -1 with r_customwidth and
-/// r_customheight)
+/// An entry of the resolution menu: a size (r_mode -1 with r_customwidth and r_customheight)
 struct ResolutionEntry: Hashable, Identifiable {
     var mode: Int
     var width = 0
@@ -19,7 +18,7 @@ struct ResolutionEntry: Hashable, Identifiable {
     var id: Self { self }
 
     var label: String {
-        mode == -1 ? "\(width) × \(height) (\(aspectRatio(width, height)))" : "Desktop resolution"
+        "\(width) × \(height) (\(aspectRatio(width, height)))"
     }
 }
 
@@ -81,9 +80,13 @@ final class LauncherModel: ObservableObject {
     private var configSeen: (URL?, Date?) = (nil, nil)
     private var ticker: Timer?
     let displaySizes: [Resolution]
+    /// The main display's size, (0, 0) if unknown: what r_mode -2 shows
+    let desktop: Resolution
 
     init() {
-        displaySizes = LauncherModel.findDisplaySizes()
+        let display = LauncherModel.findDisplaySizes()
+        displaySizes = display.0
+        desktop = display.1
         findGame()
         loadSettings()
         askForFolder = folder == nil
@@ -271,6 +274,7 @@ final class LauncherModel: ObservableObject {
     func reloadConfig() {
         let path = configPath
         edits.load(path.flatMap(readConfig) ?? [:])
+        raiseSmallResolution(&edits)
         configSeen = (path, modified(path))
     }
 
@@ -344,12 +348,11 @@ final class LauncherModel: ObservableObject {
     }
 
     var resolutionEntries: [ResolutionEntry] {
-        var entries = [ResolutionEntry(mode: -2)]
-            + displaySizes.map { ResolutionEntry(mode: -1, width: $0.width, height: $0.height) }
+        var entries = displaySizes.map { ResolutionEntry(mode: -1, width: $0.width, height: $0.height) }
         let current = currentResolution
         if !entries.contains(current) {
             // the config's own size, where it belongs in the list
-            let k = entries.dropFirst().firstIndex(where: {
+            let k = entries.firstIndex(where: {
                 $0.width < current.width || ($0.width == current.width && $0.height < current.height)
             }) ?? entries.endIndex
             entries.insert(current, at: k)
@@ -357,8 +360,9 @@ final class LauncherModel: ObservableObject {
         return entries
     }
 
-    /// The config's: a numbered mode (r_mode 0 to 11) is its size (nothing is passed to the game unless the player
-    /// picks another entry); a number the game doesn't have is the desktop's resolution
+    /// The config's: a numbered mode (r_mode 0 to 11) is its size, and the desktop's resolution (r_mode -2, the game's
+    /// default, or a number the game doesn't have) the desktop's size; nothing is passed to the game unless the player
+    /// picks another entry, so r_mode -2 keeps following the desktop
     private var currentResolution: ResolutionEntry {
         let mode = Int(edits.get("r_mode")) ?? -2
         if mode == -1 {
@@ -368,7 +372,8 @@ final class LauncherModel: ObservableObject {
         if rModeSizes.indices.contains(mode) {
             return ResolutionEntry(mode: -1, width: rModeSizes[mode].width, height: rModeSizes[mode].height)
         }
-        return ResolutionEntry(mode: -2)
+        let size = desktop.width > 0 ? desktop : displaySizes.first ?? minResolution
+        return ResolutionEntry(mode: -1, width: size.width, height: size.height)
     }
 
     var resolution: Binding<ResolutionEntry> {
@@ -381,7 +386,7 @@ final class LauncherModel: ObservableObject {
         })
     }
 
-    private static func findDisplaySizes() -> [Resolution] {
+    private static func findDisplaySizes() -> ([Resolution], Resolution) {
         let display = CGMainDisplayID()
         var desktop = Resolution(0, 0)
         if let mode = CGDisplayCopyDisplayMode(display) {
@@ -389,7 +394,7 @@ final class LauncherModel: ObservableObject {
         }
         let options = [kCGDisplayShowDuplicateLowResolutionModes as String: true] as CFDictionary
         let modes = (CGDisplayCopyAllDisplayModes(display, options) as? [CGDisplayMode]) ?? []
-        return resolutionList(displayModes: modes.map { Resolution($0.width, $0.height) }, desktop: desktop)
+        return (resolutionList(displayModes: modes.map { Resolution($0.width, $0.height) }, desktop: desktop), desktop)
     }
 
     // MARK: Starting the game

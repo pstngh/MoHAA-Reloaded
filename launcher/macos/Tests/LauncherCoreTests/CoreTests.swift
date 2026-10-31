@@ -148,6 +148,21 @@ final class CoreTests: XCTestCase {
         }
         XCTAssertEqual(list.last, Resolution(640, 480))
 
+        // below 640 x 480: 640 x 480, passed as a change
+        func raised(_ config: Cvars) -> CvarEdits {
+            var e = CvarEdits(defaults: [("r_mode", "-2"), ("r_customwidth", "1600"), ("r_customheight", "1024")])
+            e.load(config)
+            raiseSmallResolution(&e)
+            return e
+        }
+        var e = raised(["r_mode": "1"])
+        XCTAssertEqual([e.get("r_mode"), e.get("r_customwidth"), e.get("r_customheight")], ["-1", "640", "480"])
+        XCTAssertEqual(e.changes.count, 3)
+        XCTAssertTrue(raised(["r_mode": "11"]).changes.isEmpty)
+        XCTAssertTrue(raised(["r_mode": "-2"]).changes.isEmpty)
+        e = raised(["r_mode": "-1", "r_customwidth": "320", "r_customheight": "200"])
+        XCTAssertEqual([e.get("r_customwidth"), e.get("r_customheight")], ["640", "480"])
+
         XCTAssertEqual(aspectRatio(1920, 1080), "16:9")
         XCTAssertEqual(aspectRatio(1366, 768), "16:9")
         XCTAssertEqual(aspectRatio(856, 480), "16:9")
