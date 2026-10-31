@@ -425,6 +425,7 @@ struct CrosshairSection: View {
                         NumberField(value: model.number("cg_crosshair_length", 1...128), range: 1...128)
                             .frame(height: Metrics.control)
                     }
+                    .fixedSize(horizontal: true, vertical: false) // the column as wide as its fields: the rest to Color's
                     Field("Gap") {
                         NumberField(value: model.number("cg_crosshair_gap", 1...64), range: 1...64)
                             .frame(height: Metrics.control)
@@ -435,6 +436,7 @@ struct CrosshairSection: View {
                         NumberField(value: model.number("cg_crosshair_thickness", 1...16), range: 1...16)
                             .frame(height: Metrics.control)
                     }
+                    .fixedSize(horizontal: true, vertical: false)
                     Field("Color") {
                         HStack(spacing: 6) {
                             Picker("Color", selection: model.colorPreset) {
@@ -443,9 +445,8 @@ struct CrosshairSection: View {
                                 }
                                 Text("Custom").tag(Int64(-1))
                             }
-                            .fixedSize() // the names whole: the swatch gives way
+                            .fixedSize() // the names whole
                             ColorPicker("Any color", selection: model.color, supportsOpacity: false)
-                                .frame(width: 36)
                         }
                         .frame(height: Metrics.control)
                     }
