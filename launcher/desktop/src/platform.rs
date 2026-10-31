@@ -1,6 +1,6 @@
 //! What differs between Windows and Linux: where the game and the launcher keep their files, and the display's sizes.
 
-use crate::logic::Resolution;
+use crate::logic::{plain_path, Resolution};
 use std::path::{Path, PathBuf};
 
 #[cfg(windows)]
@@ -35,11 +35,11 @@ pub fn engine_homes() -> Vec<PathBuf> {
     homes
 }
 
-/// The folder the launcher is in: the game folder, if the game is beside it
+/// The folder the launcher is in: the game folder, if the game is beside it (links resolved, as a plain path)
 pub fn own_folder() -> PathBuf {
     std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.canonicalize().ok().or(Some(exe)))
+        .and_then(|exe| exe.canonicalize().ok().map(|exe| plain_path(&exe)).or(Some(exe)))
         .and_then(|exe| exe.parent().map(Path::to_path_buf))
         .unwrap_or_else(|| PathBuf::from("."))
 }

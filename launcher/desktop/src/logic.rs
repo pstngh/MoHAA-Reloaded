@@ -545,6 +545,23 @@ pub fn listed_servers(settings: &Settings, game: usize) -> Vec<Listed> {
     list
 }
 
+/// A path without the verbatim prefix Windows' canonical paths have (`\\?\C:\x`, `\\?\UNC\server\share\x`), for the
+/// game's fs_homepath and fs_basepath: the game appends to the path it's given and merges repeated separators, which
+/// turns `\\?\` into `\?\`, a folder it can't create. Any other path, and one that isn't Unicode, is kept as it is.
+pub fn plain_path(path: &Path) -> PathBuf {
+    let Some(text) = path.to_str() else { return path.to_path_buf() };
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        let b = rest.as_bytes();
+        if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+            return PathBuf::from(rest);
+        }
+    }
+    path.to_path_buf()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -750,5 +767,16 @@ mod tests {
         assert_eq!((list[0].saved, list[0].server.password.as_str()), (Some(1), "pw"));
         // the other games don't have it
         assert!(listed_servers(&s, 1).is_empty());
+    }
+
+    #[test]
+    fn plain_paths() {
+        let plain = |p: &str| plain_path(Path::new(p)).to_str().unwrap().to_string();
+        assert_eq!(plain(r"\\?\C:\Games\MOHAA"), r"C:\Games\MOHAA");
+        assert_eq!(plain(r"\\?\d:\"), r"d:\");
+        assert_eq!(plain(r"\\?\UNC\server\share\MOHAA"), r"\\server\share\MOHAA");
+        assert_eq!(plain(r"C:\Games\MOHAA"), r"C:\Games\MOHAA");
+        assert_eq!(plain(r"\\?\Volume{0}\MOHAA"), r"\\?\Volume{0}\MOHAA");
+        assert_eq!(plain("/home/player/Games/MOHAA"), "/home/player/Games/MOHAA");
     }
 }
