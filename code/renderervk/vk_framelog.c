@@ -541,10 +541,10 @@ static void FL_Dump( const char *name ) {
 
 	FL_Printf( w, "# vkframelog 1: renderer_vulkan frame log (see code/renderervk/README.md, Performance)\n" );
 	FL_Printf( w, "# device %s, %s, present mode %s, %dx%d, %d swapchain images, r_swapInterval %d, com_maxfps %d, r_ext_multisample %d,"
-		" r_vkSubmitThread %d, %d frames in flight\n",
+		" r_vkSubmitThread %d, r_smp %d, %d frames in flight\n",
 		glConfig.renderer_string, glConfig.version_string, VK_SwapchainPresentModeName(), vk.width, vk.height,
 		vk.swapchainImageCount, ri.Cvar_VariableIntegerValue( "r_swapInterval" ), ri.Cvar_VariableIntegerValue( "com_maxfps" ),
-		ri.Cvar_VariableIntegerValue( "r_ext_multisample" ), vk.submitThread, VK_MAX_FRAMES );
+		ri.Cvar_VariableIntegerValue( "r_ext_multisample" ), vk.submitThread, glConfig.smpActive, VK_MAX_FRAMES );
 	FL_Printf( w, "# %d frames%s, %.1f s\n", n,
 		fl.lost ? va( " (%llu older ones overwritten: raise r_vkFrameLog)", (unsigned long long)fl.lost ) : "",
 		( FL_Record( fl.count - 1 )->start - FL_Record( first )->start ) / 1e6 );

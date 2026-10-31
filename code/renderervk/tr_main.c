@@ -982,10 +982,6 @@ qboolean SurfIsOffscreen(const srfSurfaceFace_t* surface, shader_t* shader, int 
 		return qfalse;
 	}
 	
-	if ( glConfig.smpActive ) {		// FIXME!  we can't do RB_BeginSurface/RB_EndSurface stuff with smp!
-		return qfalse;
-	}
-
 	if (entityNum == ENTITYNUM_WORLD) {
 		surfOr = tr.viewParms.world;
 	} else {

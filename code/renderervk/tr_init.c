@@ -688,6 +688,9 @@ const void *RB_TakeScreenshotCmd( const void *data ) {
 
 	cmd = (const screenshotCommand_t *)data;
 
+	// HDR output: this frame is saved as SDR
+	vk_sdr_frame();
+
 	if ( cmd->png ) {
 		type = SHOT_PNG;
 	} else if ( cmd->jpeg ) {
@@ -725,8 +728,9 @@ static void R_QueueScreenshot( int x, int y, int width, int height, char *name, 
 		return;
 	}
 	cmd->commandId = RC_SCREENSHOT;
-	// HDR output: this frame is saved as SDR
-	vk_sdr_frame();
+	// the engine's temporary memory and files, on the thread: waited for
+	// (R_IssueRenderCommands)
+	backEndData->syncAfterIssue = qtrue;
 
 	cmd->x = x;
 	cmd->y = y;
@@ -1162,6 +1166,8 @@ RB_TakeVideoFrameCmd
 */
 const void *RB_TakeVideoFrameCmd( const void *data )
 {
+	// HDR output: the video gets the SDR frame
+	vk_sdr_frame();
 	const videoFrameCommand_t	*cmd;
 	byte				*cBuf;
 	size_t				memcount, linelen;
@@ -1676,6 +1682,9 @@ void R_Register( void )
 	// 1: consecutive 2D draws of one shader are one surface, 2: DrawBox leaves
 	// out the boxes that change no pixel; 0 draws each as it comes (tr_draw.c)
 	r_batch2D = ri.Cvar_Get("r_batch2D", "3", 0);
+	// the back end on a render thread (tr_smp.c)
+	r_smp = ri.Cvar_Get("r_smp", "1", CVAR_ARCHIVE | CVAR_LATCH);
+	ri.Cvar_SetDescription(r_smp, "1: the back end (the draws' recording, the submission and the present) runs on a render thread while the game and the front end build the next frame; the frame rate is the slower half's, a frame's input to its present as before (see README, Render thread); 0: one thread");
 	r_drawbrushes = ri.Cvar_Get("r_drawbrushes", "1", CVAR_CHEAT);
 	r_drawbrushmodels = ri.Cvar_Get("r_drawbrushmodels", "1", CVAR_CHEAT);	
 	r_drawterrain = ri.Cvar_Get("r_drawterrain", "1", CVAR_CHEAT);
@@ -1879,13 +1888,26 @@ void R_Init( void ) {
 	if (max_termarks < MAX_TERMARKS)
 		max_termarks = MAX_TERMARKS;
 
-	ptr = ri.Malloc(sizeof(*backEndData) + sizeof(srfPoly_t) * max_polys + sizeof(polyVert_t) * max_polyverts + sizeof(srfMarkFragment_t) * max_termarks);
-	backEndData = (backEndData_t*)ptr;
-	backEndData->polys = (srfPoly_t*)((char*)ptr + sizeof(*backEndData));
-	backEndData->polyVerts = (polyVert_t*)((char*)ptr + sizeof(*backEndData) + sizeof(srfPoly_t) * max_polys);
-	backEndData->terMarks = (srfMarkFragment_t*)((char*)ptr + sizeof(*backEndData) + sizeof(srfPoly_t) * max_polys + sizeof(polyVert_t) * max_polyverts);
-	backEndData->staticModels = NULL;
-	backEndData->staticModelData = NULL;
+	// two with r_smp: the render thread reads one while the front end
+	// fills the other (R_InitNextFrame)
+	for (i = 0; i < (r_smp->integer ? 2 : 1); i++) {
+		size_t size = sizeof(*backEndData) + sizeof(srfPoly_t) * max_polys + sizeof(polyVert_t) * max_polyverts
+			+ sizeof(srfMarkFragment_t) * max_termarks + sizeof(terrainSlotChange_t) * MAX_TERRAIN_CHANGES;
+		backEndData_t *data;
+
+		ptr = ri.Malloc(size);
+		data = (backEndData_t*)ptr;
+		data->polys = (srfPoly_t*)((char*)ptr + sizeof(*backEndData));
+		data->polyVerts = (polyVert_t*)((char*)ptr + sizeof(*backEndData) + sizeof(srfPoly_t) * max_polys);
+		data->terMarks = (srfMarkFragment_t*)((char*)ptr + sizeof(*backEndData) + sizeof(srfPoly_t) * max_polys + sizeof(polyVert_t) * max_polyverts);
+		data->terrainChanges = (terrainSlotChange_t*)((char*)data->terMarks + sizeof(srfMarkFragment_t) * max_termarks);
+		data->staticModels = NULL;
+		data->staticModelData = NULL;
+		backEndDataArray[i] = data;
+	}
+	backEndDataArray[1] = backEndDataArray[1] ? backEndDataArray[1] : backEndDataArray[0];
+	tr.smpFrame = 0;
+	backEndData = backEndDataArray[0];
 	R_InitNextFrame();
 
 	InitGraphics();
@@ -1902,6 +1924,9 @@ void R_Init( void ) {
 
 	tr.pFontDebugStrings = R_LoadFont("verdana-14");
 	g_bInfoworldtris = qfalse;
+
+	// the render thread, once everything it uses exists
+	R_StartRenderThread();
 
 	ri.Printf( PRINT_ALL, "----- finished R_Init -----\n" );
 }
@@ -1931,6 +1956,8 @@ void RE_Shutdown( qboolean destroyWindow ) {
 		R_IssuePendingRenderCommands();
 		R_DeleteTextures();
 	}
+	// the render thread has run its last list (R_IssuePendingRenderCommands)
+	R_StopRenderThread();
 
 	R_FreeStaticGeometry();
 	R_ClearSkinData();
@@ -2035,10 +2062,25 @@ RE_SetRenderTime
 =============
 */
 void RE_SetRenderTime(int t) {
+	if ( glConfig.smpActive ) {
+		renderTimeCommand_t *cmd = R_GetCommandBuffer( sizeof( *cmd ) );
+
+		if ( cmd ) {
+			cmd->commandId = RC_SET_RENDER_TIME;
+			cmd->t = t;
+			cmd->refdefTime = tr.refdef.time;
+		}
+		return;
+	}
+	RB_SetRenderTime( t, tr.refdef.time );
+}
+
+// the render thread's RE_SetRenderTime (RC_SET_RENDER_TIME)
+void RB_SetRenderTime( int t, int refdefTime ) {
 	// the open 2D batch has the shader time it was made with
 	R_End2DBatch();
 	backEnd.refdef.floatTime = (long double)t / 1000.0;
-	R_UpdateGhostTextures();
+	R_UpdateGhostTextures( refdefTime );
 }
 
 /*

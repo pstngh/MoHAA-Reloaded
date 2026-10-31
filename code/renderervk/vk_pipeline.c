@@ -527,7 +527,7 @@ static void VK_RebuildTable( int size, qboolean ( *keep )( const vkPipelineEntry
 	vkPipelineEntry_t *table;
 	int i, n = 0;
 
-	table = ri.Malloc( sizeof( *table ) * size );
+	table = VK_Alloc( sizeof( *table ) * size );
 	Com_Memset( table, 0, sizeof( *table ) * size );
 	for ( i = 0; i < vk_pipelineTableSize; i++ ) {
 		if ( vk_pipelines[i].pipeline ) {
@@ -539,7 +539,7 @@ static void VK_RebuildTable( int size, qboolean ( *keep )( const vkPipelineEntry
 			}
 		}
 	}
-	ri.Free( vk_pipelines );
+	VK_Free( vk_pipelines );
 	vk_pipelines = table;
 	vk_pipelineTableSize = size;
 	vk_numPipelines = n;
@@ -770,19 +770,19 @@ static void VK_WriteRecordedKeys( void ) {
 	uint32_t *data;
 	int n, added;
 
-	keys = ri.Malloc( sizeof( *keys ) * VK_MAX_RECORDED_KEYS );
+	keys = VK_Alloc( sizeof( *keys ) * VK_MAX_RECORDED_KEYS );
 	n = VK_CollectRecordedKeys( keys, &added );
 	if ( added ) {
-		data = ri.Malloc( 16 + n * sizeof( *keys ) );
+		data = VK_Alloc( 16 + n * sizeof( *keys ) );
 		data[0] = VK_PIPELINE_KEYS_MAGIC;
 		data[1] = VK_PIPELINE_KEYS_VERSION;
 		data[2] = n;
 		data[3] = 0;
 		Com_Memcpy( data + 4, keys, n * sizeof( *keys ) );
 		ri.FS_WriteFile( VK_PIPELINE_KEYS_FILE, data, 16 + n * sizeof( *keys ) );
-		ri.Free( data );
+		VK_Free( data );
 	}
-	ri.Free( keys );
+	VK_Free( keys );
 }
 
 static qboolean VK_KeepUsed( const vkPipelineEntry_t *entry ) {
@@ -908,11 +908,11 @@ static void VK_WritePipelineCache( void ) {
 	if ( qvkGetPipelineCacheData( vk.device, vk.pipelineCache, &size, NULL ) != VK_SUCCESS || !size || size == vk_pipelineCacheLoaded ) {
 		return;
 	}
-	data = ri.Malloc( size );
+	data = VK_Alloc( size );
 	if ( qvkGetPipelineCacheData( vk.device, vk.pipelineCache, &size, data ) == VK_SUCCESS ) {
 		ri.FS_WriteFile( VK_PIPELINE_CACHE_FILE, data, size );
 	}
-	ri.Free( data );
+	VK_Free( data );
 }
 
 void VK_InitPipelines( void ) {
@@ -1012,7 +1012,7 @@ void VK_InitPipelines( void ) {
 	}
 
 	vk_pipelineTableSize = 256;
-	vk_pipelines = ri.Malloc( sizeof( *vk_pipelines ) * vk_pipelineTableSize );
+	vk_pipelines = VK_Alloc( sizeof( *vk_pipelines ) * vk_pipelineTableSize );
 	Com_Memset( vk_pipelines, 0, sizeof( *vk_pipelines ) * vk_pipelineTableSize );
 	vk_numPipelines = 0;
 	vk_prebuildLate = qfalse;
@@ -1030,7 +1030,7 @@ void VK_ShutdownPipelines( void ) {
 				qvkDestroyPipeline( vk.device, vk_pipelines[i].pipeline, NULL );
 			}
 		}
-		ri.Free( vk_pipelines );
+		VK_Free( vk_pipelines );
 		vk_pipelines = NULL;
 	}
 	vk_pipelineTableSize = 0;

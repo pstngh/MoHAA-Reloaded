@@ -186,6 +186,9 @@ queued commands, if any, run after the batch is drawn
 ================
 */
 void R_IssuePending2DCommands( void ) {
+	if ( R_OnRenderThread() ) {
+		return;
+	}
 	if ( tr.registered && backEndData->commands.used ) {
 		R_IssuePendingRenderCommands();
 	}
@@ -262,7 +265,7 @@ static void R_End2DStream( int firstVertex ) {
 Draw_SetColor
 ================
 */
-void Draw_SetColor(const vec4_t rgba) {
+void RB_Draw_SetColor(const vec4_t rgba) {
 #if 1
 	byte color[4];
 
@@ -290,7 +293,7 @@ void Draw_SetColor(const vec4_t rgba) {
 Draw_StretchPic
 ================
 */
-void Draw_StretchPic(float x, float y, float w, float h, float s1, float t1, float s2, float t2, qhandle_t hShader) {
+void RB_Draw_StretchPic(float x, float y, float w, float h, float s1, float t1, float s2, float t2, qhandle_t hShader) {
 #if 1
 	shader_t* shader;
 	int firstVertex;
@@ -337,7 +340,7 @@ void Draw_StretchPic(float x, float y, float w, float h, float s1, float t1, flo
 Draw_StretchPic2
 ================
 */
-void Draw_StretchPic2(float x, float y, float w, float h, float s1, float t1, float s2, float t2, float sx, float sy, qhandle_t hShader) {
+void RB_Draw_StretchPic2(float x, float y, float w, float h, float s1, float t1, float s2, float t2, float sx, float sy, qhandle_t hShader) {
 	shader_t* shader;
 	float halfWidth, halfHeight;
 	float scaledWidth1, scaledHeight1;
@@ -391,7 +394,7 @@ void Draw_StretchPic2(float x, float y, float w, float h, float s1, float t1, fl
 Draw_TilePic
 ================
 */
-void Draw_TilePic(float x, float y, float w, float h, qhandle_t hShader) {
+void RB_Draw_TilePic(float x, float y, float w, float h, qhandle_t hShader) {
 	shader_t* shader;
 	float		picw, pich;
 	int			firstVertex;
@@ -439,7 +442,7 @@ void Draw_TilePic(float x, float y, float w, float h, qhandle_t hShader) {
 Draw_TilePicOffset
 ================
 */
-void Draw_TilePicOffset(float x, float y, float w, float h, qhandle_t hShader, int offsetX, int offsetY) {
+void RB_Draw_TilePicOffset(float x, float y, float w, float h, qhandle_t hShader, int offsetX, int offsetY) {
 	shader_t* shader;
 	float		picw, pich;
 	int			firstVertex;
@@ -487,7 +490,7 @@ void Draw_TilePicOffset(float x, float y, float w, float h, qhandle_t hShader, i
 Draw_TrianglePic
 ================
 */
-void Draw_TrianglePic(const vec2_t vPoints[3], const vec2_t vTexCoords[3], qhandle_t hShader) {
+void RB_Draw_TrianglePic(const vec2_t vPoints[3], const vec2_t vTexCoords[3], qhandle_t hShader) {
 	int			i;
 	shader_t* shader;
 	int			firstVertex;
@@ -587,7 +590,7 @@ void RE_DrawBackground_DrawPixels(int cols, int rows, int bgr, byte* data) {
 AddBox
 ================
 */
-void AddBox(float x, float y, float w, float h) {
+void RB_AddBox(float x, float y, float w, float h) {
 	R_IssuePendingRenderCommands();
 
 	RB_SetColor4ubv(backEnd.color2D);
@@ -611,7 +614,7 @@ void AddBox(float x, float y, float w, float h) {
 DrawBox
 ================
 */
-void DrawBox(float x, float y, float w, float h) {
+void RB_DrawBox(float x, float y, float w, float h) {
 	R_IssuePendingRenderCommands();
 
 	RB_SetColor4ubv(backEnd.color2D);
@@ -643,7 +646,7 @@ DrawBox for count boxes (x, y, width, height) in one draw, in the color
 given (taken as Draw_SetColor takes it); the 2D color stays (the crosshair)
 ================
 */
-void DrawBoxes(const float (*boxes)[4], int count, const float *color) {
+void RB_DrawBoxes(const float (*boxes)[4], int count, const float *color) {
 	byte	rgba[4];
 	int		i;
 
@@ -679,7 +682,7 @@ void DrawBoxes(const float (*boxes)[4], int count, const float *color) {
 DrawLineLoop
 ================
 */
-void DrawLineLoop(const vec2_t* points, int count, int stipple_factor, int stipple_mask) {
+void RB_DrawLineLoop(const vec2_t* points, int count, int stipple_factor, int stipple_mask) {
 	int		i;
 
 	R_IssuePendingRenderCommands();
@@ -710,7 +713,7 @@ void DrawLineLoop(const vec2_t* points, int count, int stipple_factor, int stipp
 Set2DWindow
 ================
 */
-void Set2DWindow(int x, int y, int w, int h, float left, float right, float bottom, float top, float n, float f) {
+void RB_Set2DWindow(int x, int y, int w, int h, float left, float right, float bottom, float top, float n, float f) {
 	float	matrix[16];
 
 	R_IssuePendingRenderCommands();
@@ -750,7 +753,7 @@ void Set2DWindow(int x, int y, int w, int h, float left, float right, float bott
 RE_Scissor
 ================
 */
-void RE_Scissor(int x, int y, int width, int height) {
+void RB_Scissor2D(int x, int y, int width, int height) {
 	R_End2DBatch();
 	RB_SetScissor(x, y, width, height);
 }
@@ -760,7 +763,7 @@ void RE_Scissor(int x, int y, int width, int height) {
 Set2DInitialShaderTime
 ================
 */
-void Set2DInitialShaderTime(float startTime)
+void RB_Set2DInitialShaderTime(float startTime)
 {
 	if (backEnd.in2D)
 	{
@@ -770,3 +773,285 @@ void Set2DInitialShaderTime(float startTime)
 		backEnd.shaderStartTime = startTime;
 	}
 }
+
+/*
+====================================================================
+
+THE EXPORTS
+
+Without the render thread each runs its body (RB_*) at once, as before.
+With it (r_smp, tr_smp.c) each records a command the thread replays by
+running the same body, in the same order with the same state, so the same
+pixels; what the body reads of the back end's state (the 2D color, the
+shader time, the batch) is then the thread's, as of that point in the
+list. The bodies' R_IssuePending*Commands do nothing on the thread.
+
+====================================================================
+*/
+
+#define R_2D_COMMAND( type, id ) \
+	type *cmd = R_GetCommandBuffer( sizeof( *cmd ) ); \
+	if ( !cmd ) { \
+		return; \
+	} \
+	cmd->commandId = id;
+
+static qboolean R_2DQueued( void ) {
+	return glConfig.smpActive && !R_OnRenderThread();
+}
+
+void Draw_SetColor(const vec4_t rgba) {
+	if ( R_2DQueued() ) {
+		R_2D_COMMAND( set2DColorCommand_t, RC_2D_SET_COLOR );
+		cmd->isNull = rgba == NULL;
+		if ( rgba ) {
+			Vector4Copy( rgba, cmd->rgba );
+		}
+		return;
+	}
+	RB_Draw_SetColor( rgba );
+}
+
+void Draw_StretchPic(float x, float y, float w, float h, float s1, float t1, float s2, float t2, qhandle_t hShader) {
+	if ( R_2DQueued() ) {
+		R_2D_COMMAND( pic2DCommand_t, RC_2D_STRETCH_PIC );
+		cmd->x = x; cmd->y = y; cmd->w = w; cmd->h = h;
+		cmd->s1 = s1; cmd->t1 = t1; cmd->s2 = s2; cmd->t2 = t2;
+		cmd->hShader = hShader;
+		return;
+	}
+	RB_Draw_StretchPic( x, y, w, h, s1, t1, s2, t2, hShader );
+}
+
+void Draw_StretchPic2(float x, float y, float w, float h, float s1, float t1, float s2, float t2, float sx, float sy, qhandle_t hShader) {
+	if ( R_2DQueued() ) {
+		R_2D_COMMAND( pic2DCommand_t, RC_2D_STRETCH_PIC2 );
+		cmd->x = x; cmd->y = y; cmd->w = w; cmd->h = h;
+		cmd->s1 = s1; cmd->t1 = t1; cmd->s2 = s2; cmd->t2 = t2;
+		cmd->sx = sx; cmd->sy = sy;
+		cmd->hShader = hShader;
+		return;
+	}
+	RB_Draw_StretchPic2( x, y, w, h, s1, t1, s2, t2, sx, sy, hShader );
+}
+
+void Draw_TilePic(float x, float y, float w, float h, qhandle_t hShader) {
+	if ( R_2DQueued() ) {
+		R_2D_COMMAND( pic2DCommand_t, RC_2D_TILE_PIC );
+		cmd->x = x; cmd->y = y; cmd->w = w; cmd->h = h;
+		cmd->hShader = hShader;
+		return;
+	}
+	RB_Draw_TilePic( x, y, w, h, hShader );
+}
+
+void Draw_TilePicOffset(float x, float y, float w, float h, qhandle_t hShader, int offsetX, int offsetY) {
+	if ( R_2DQueued() ) {
+		R_2D_COMMAND( pic2DCommand_t, RC_2D_TILE_PIC_OFFSET );
+		cmd->x = x; cmd->y = y; cmd->w = w; cmd->h = h;
+		cmd->hShader = hShader;
+		cmd->offsetX = offsetX; cmd->offsetY = offsetY;
+		return;
+	}
+	RB_Draw_TilePicOffset( x, y, w, h, hShader, offsetX, offsetY );
+}
+
+void Draw_TrianglePic(const vec2_t vPoints[3], const vec2_t vTexCoords[3], qhandle_t hShader) {
+	if ( R_2DQueued() ) {
+		int i;
+		R_2D_COMMAND( trianglePic2DCommand_t, RC_2D_TRIANGLE_PIC );
+		for ( i = 0; i < 3; i++ ) {
+			cmd->points[i][0] = vPoints[i][0]; cmd->points[i][1] = vPoints[i][1];
+			cmd->texCoords[i][0] = vTexCoords[i][0]; cmd->texCoords[i][1] = vTexCoords[i][1];
+		}
+		cmd->hShader = hShader;
+		return;
+	}
+	RB_Draw_TrianglePic( vPoints, vTexCoords, hShader );
+}
+
+void AddBox(float x, float y, float w, float h) {
+	if ( R_2DQueued() ) {
+		R_2D_COMMAND( box2DCommand_t, RC_2D_ADD_BOX );
+		cmd->x = x; cmd->y = y; cmd->w = w; cmd->h = h;
+		return;
+	}
+	RB_AddBox( x, y, w, h );
+}
+
+void DrawBox(float x, float y, float w, float h) {
+	if ( R_2DQueued() ) {
+		R_2D_COMMAND( box2DCommand_t, RC_2D_DRAW_BOX );
+		cmd->x = x; cmd->y = y; cmd->w = w; cmd->h = h;
+		return;
+	}
+	RB_DrawBox( x, y, w, h );
+}
+
+void DrawBoxes(const float (*boxes)[4], int count, const float *color) {
+	if ( R_2DQueued() ) {
+		boxes2DCommand_t *cmd;
+
+		if ( count <= 0 ) {
+			return;
+		}
+		cmd = R_GetCommandBuffer( sizeof( *cmd ) + PAD( sizeof( float ) * 4 * count, sizeof( void * ) ) );
+		if ( !cmd ) {
+			return;
+		}
+		cmd->commandId = RC_2D_DRAW_BOXES;
+		cmd->count = count;
+		Vector4Copy( color, cmd->color );
+		Com_Memcpy( cmd + 1, boxes, sizeof( float ) * 4 * count );
+		return;
+	}
+	RB_DrawBoxes( boxes, count, color );
+}
+
+void DrawLineLoop(const vec2_t* points, int count, int stipple_factor, int stipple_mask) {
+	if ( R_2DQueued() ) {
+		lineLoop2DCommand_t *cmd;
+
+		if ( count <= 0 ) {
+			return;
+		}
+		cmd = R_GetCommandBuffer( sizeof( *cmd ) + PAD( sizeof( vec2_t ) * count, sizeof( void * ) ) );
+		if ( !cmd ) {
+			return;
+		}
+		cmd->commandId = RC_2D_LINE_LOOP;
+		cmd->count = count;
+		cmd->stippleFactor = stipple_factor;
+		cmd->stippleMask = stipple_mask;
+		Com_Memcpy( cmd + 1, points, sizeof( vec2_t ) * count );
+		return;
+	}
+	RB_DrawLineLoop( points, count, stipple_factor, stipple_mask );
+}
+
+void Set2DWindow(int x, int y, int w, int h, float left, float right, float bottom, float top, float n, float f) {
+	if ( R_2DQueued() ) {
+		R_2D_COMMAND( window2DCommand_t, RC_2D_WINDOW );
+		cmd->x = x; cmd->y = y; cmd->w = w; cmd->h = h;
+		cmd->left = left; cmd->right = right; cmd->bottom = bottom; cmd->top = top;
+		cmd->n = n; cmd->f = f;
+		return;
+	}
+	RB_Set2DWindow( x, y, w, h, left, right, bottom, top, n, f );
+}
+
+void RE_Scissor(int x, int y, int width, int height) {
+	if ( R_2DQueued() ) {
+		R_2D_COMMAND( scissor2DCommand_t, RC_2D_SCISSOR );
+		cmd->x = x; cmd->y = y; cmd->width = width; cmd->height = height;
+		return;
+	}
+	RB_Scissor2D( x, y, width, height );
+}
+
+void Set2DInitialShaderTime(float startTime) {
+	if ( R_2DQueued() ) {
+		R_2D_COMMAND( shaderTime2DCommand_t, RC_2D_SHADER_TIME );
+		cmd->startTime = startTime;
+		return;
+	}
+	RB_Set2DInitialShaderTime( startTime );
+}
+
+/*
+===============
+RB_2DCommand
+
+The render thread: a recorded 2D export, run as its body; returns the next
+command
+===============
+*/
+#define R_2D_NEXT( type ) ( (const void *)( (const type *)data + 1 ) )
+#define R_2D_NEXT_VAR( type, bytes ) ( (const void *)( (const byte *)( (const type *)data + 1 ) + PAD( ( bytes ), sizeof( void * ) ) ) )
+
+const void *RB_2DCommand( const void *data ) {
+	switch ( *(const int *)data ) {
+	case RC_END_2D_BATCH:
+		R_End2DBatch();
+		return R_2D_NEXT( end2DBatchCommand_t );
+	case RC_2D_SET_COLOR: {
+		const set2DColorCommand_t *c = data;
+		RB_Draw_SetColor( c->isNull ? NULL : c->rgba );
+		return R_2D_NEXT( set2DColorCommand_t );
+	}
+	case RC_2D_STRETCH_PIC: {
+		const pic2DCommand_t *c = data;
+		RB_Draw_StretchPic( c->x, c->y, c->w, c->h, c->s1, c->t1, c->s2, c->t2, c->hShader );
+		return R_2D_NEXT( pic2DCommand_t );
+	}
+	case RC_2D_STRETCH_PIC2: {
+		const pic2DCommand_t *c = data;
+		RB_Draw_StretchPic2( c->x, c->y, c->w, c->h, c->s1, c->t1, c->s2, c->t2, c->sx, c->sy, c->hShader );
+		return R_2D_NEXT( pic2DCommand_t );
+	}
+	case RC_2D_TILE_PIC: {
+		const pic2DCommand_t *c = data;
+		RB_Draw_TilePic( c->x, c->y, c->w, c->h, c->hShader );
+		return R_2D_NEXT( pic2DCommand_t );
+	}
+	case RC_2D_TILE_PIC_OFFSET: {
+		const pic2DCommand_t *c = data;
+		RB_Draw_TilePicOffset( c->x, c->y, c->w, c->h, c->hShader, c->offsetX, c->offsetY );
+		return R_2D_NEXT( pic2DCommand_t );
+	}
+	case RC_2D_TRIANGLE_PIC: {
+		const trianglePic2DCommand_t *c = data;
+		RB_Draw_TrianglePic( c->points, c->texCoords, c->hShader );
+		return R_2D_NEXT( trianglePic2DCommand_t );
+	}
+	case RC_2D_STRING: {
+		const string2DCommand_t *c = data;
+		RB_Draw_String( (fontheader_t *)c->font, (const char *)( c + 1 ), c->x, c->y, c->maxlen, c->hasVirtual ? c->virtualScreen : NULL );
+		return R_2D_NEXT_VAR( string2DCommand_t, c->length + 1 );
+	}
+	case RC_2D_ADD_BOX: {
+		const box2DCommand_t *c = data;
+		RB_AddBox( c->x, c->y, c->w, c->h );
+		return R_2D_NEXT( box2DCommand_t );
+	}
+	case RC_2D_DRAW_BOX: {
+		const box2DCommand_t *c = data;
+		RB_DrawBox( c->x, c->y, c->w, c->h );
+		return R_2D_NEXT( box2DCommand_t );
+	}
+	case RC_2D_DRAW_BOXES: {
+		const boxes2DCommand_t *c = data;
+		RB_DrawBoxes( (const float (*)[4])( c + 1 ), c->count, c->color );
+		return R_2D_NEXT_VAR( boxes2DCommand_t, sizeof( float ) * 4 * c->count );
+	}
+	case RC_2D_LINE_LOOP: {
+		const lineLoop2DCommand_t *c = data;
+		RB_DrawLineLoop( (const vec2_t *)( c + 1 ), c->count, c->stippleFactor, c->stippleMask );
+		return R_2D_NEXT_VAR( lineLoop2DCommand_t, sizeof( vec2_t ) * c->count );
+	}
+	case RC_2D_WINDOW: {
+		const window2DCommand_t *c = data;
+		RB_Set2DWindow( c->x, c->y, c->w, c->h, c->left, c->right, c->bottom, c->top, c->n, c->f );
+		return R_2D_NEXT( window2DCommand_t );
+	}
+	case RC_2D_SCISSOR: {
+		const scissor2DCommand_t *c = data;
+		RB_Scissor2D( c->x, c->y, c->width, c->height );
+		return R_2D_NEXT( scissor2DCommand_t );
+	}
+	case RC_2D_SHADER_TIME: {
+		const shaderTime2DCommand_t *c = data;
+		RB_Set2DInitialShaderTime( c->startTime );
+		return R_2D_NEXT( shaderTime2DCommand_t );
+	}
+	case RC_SET_RENDER_TIME: {
+		const renderTimeCommand_t *c = data;
+		RB_SetRenderTime( c->t, c->refdefTime );
+		return R_2D_NEXT( renderTimeCommand_t );
+	}
+	default:
+		ri.Error( ERR_FATAL, "RB_2DCommand: bad command %d", *(const int *)data );
+		return NULL;
+	}
+}
+

@@ -1557,6 +1557,67 @@ void R_MarkTerrainPatch(cTerraPatchUnpacked_t *pPatch)
 R_AddTerrainSurfaces
 ================
 */
+/*
+================
+R_TerrainSnapshotChanges
+
+r_smp: the slots the tessellation changed since the last snapshot, for the
+render thread (RB_TerrainPool reads its copy of them, not g_pVert, which
+the next frame's tessellation changes meanwhile); too many for the
+frame's room, and the thread's shadow of the pool is refreshed in full
+with the thread idle
+================
+*/
+void R_TerrainSnapshotChanges(void)
+{
+    int w, count = 0;
+
+    if (!glConfig.smpActive || !g_pVert || !g_bVertChanged || !g_pVertChanged) {
+        return;
+    }
+    for (w = 0; w < (g_nVerts + 63) >> 6; w++) {
+        uint64_t bits = g_pVertChanged[w];
+
+        while (bits) {
+            bits &= bits - 1;
+            count++;
+        }
+    }
+    if (backEndData->numTerrainChanges + count > MAX_TERRAIN_CHANGES) {
+        R_FrontEndSync();
+        vk_terrain_shadow_all(g_pVert[0].xyz, g_pVert[0].texCoords[0], sizeof(terrainVert_t), g_nVerts);
+        backEndData->terrainChangesAll = qtrue;
+    } else {
+        terrainSlotChange_t *out = backEndData->terrainChanges + backEndData->numTerrainChanges;
+
+        for (w = 0; w < (g_nVerts + 63) >> 6; w++) {
+            uint64_t bits = g_pVertChanged[w];
+
+            while (bits) {
+                int b, slot;
+
+                for (b = 0; !(bits & ((uint64_t)1 << b)); b++) {
+                }
+                bits &= ~((uint64_t)1 << b);
+                slot = (w << 6) + b;
+                if (slot >= g_nVerts) {
+                    continue;
+                }
+                out->slot = slot;
+                VectorCopy(g_pVert[slot].xyz, out->xyz);
+                out->st[0][0] = g_pVert[slot].texCoords[0][0];
+                out->st[0][1] = g_pVert[slot].texCoords[0][1];
+                out->st[1][0] = g_pVert[slot].texCoords[1][0];
+                out->st[1][1] = g_pVert[slot].texCoords[1][1];
+                out++;
+                backEndData->numTerrainChanges++;
+            }
+        }
+    }
+    Com_Memset(g_pVertChanged, 0, ((g_nVerts + 63) >> 6) * sizeof(uint64_t));
+    g_bVertChanged = qfalse;
+}
+
 void R_AddTerrainSurfaces()
 {
     int                    i;
@@ -1570,6 +1631,7 @@ void R_AddTerrainSurfaces()
     if (!ter_lock->integer) {
         R_TessellateTerrain();
     }
+    R_TerrainSnapshotChanges();
 
     if (ter_count->integer || ter_lock->integer == 2) {
         for (i = 0; i < tr.world->numTerraPatches; i++) {
@@ -1982,6 +2044,13 @@ qboolean RB_TerrainPool(void)
 
     if (!g_pVert || !r_staticTerrain->integer) {
         return qfalse;
+    }
+    // r_smp: from the scene's snapshot of the changed slots (R_TerrainSnapshotChanges)
+    if (glConfig.smpActive) {
+        ok = vk_sync_terrain_pool_smp(backEnd.terrainChanges, backEnd.numTerrainChanges, backEnd.terrainChangesAll);
+        backEnd.numTerrainChanges = 0;
+        backEnd.terrainChangesAll = qfalse;
+        return ok;
     }
 
     ok = vk_sync_terrain_pool(

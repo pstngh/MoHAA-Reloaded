@@ -445,7 +445,7 @@ void RB_SurfaceFace( srfSurfaceFace_t *surf ) {
 	numPoints = surf->numPoints;
 
 	needsNormal = qfalse;
-	if (tess.shader->needsNormal || tess.shader->needsLSpherical || tr.refdef.num_dlights || backEnd.temporalScene) {
+	if (tess.shader->needsNormal || tess.shader->needsLSpherical || backEnd.refdef.num_dlights || backEnd.temporalScene) {
 		needsNormal = qtrue;
 	}
 
@@ -567,7 +567,7 @@ static void RB_GridRows( srfGridMesh_t *cv, const int *widthTable, const int *he
 	normal = tess.normal[numVertexes];
 	texCoords = tess.texCoords[numVertexes][0];
 	color = ( unsigned char * ) &tess.vertexColors[numVertexes];
-	needsNormal = tess.shader->needsNormal || tess.shader->needsLSpherical || tr.refdef.num_dlights || backEnd.temporalScene;
+	needsNormal = tess.shader->needsNormal || tess.shader->needsLSpherical || backEnd.refdef.num_dlights || backEnd.temporalScene;
 
 	for ( i = 0 ; i < rows ; i++ ) {
 		for ( j = 0 ; j < lodWidth ; j++ ) {

@@ -22,6 +22,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "tr_local.h"
 
 backEndData_t	*backEndData;
+backEndData_t	*backEndDataArray[2];	// r_smp: the render thread reads one, the front end fills the other
 backEndState_t	backEnd;
 
 
@@ -907,7 +908,7 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 			}
 			else if (shader->needsLSpherical)
 			{
-				if (tr.refdef.rdflags & RDF_HUD)
+				if (backEnd.refdef.rdflags & RDF_HUD)
 				{
 					backEnd.currentSphere = &backEnd.hudSphere;
 					backEnd.hudSphere.TessFunction = 0;
@@ -1141,6 +1142,7 @@ void RE_StretchRaw (int x, int y, int w, int h, int cols, int rows, int componen
 
 void RE_UploadCinematic (int w, int h, int cols, int rows, const byte *data, int client, qboolean dirty) {
 	// the open 2D batch is drawn with the contents it was made with
+	R_FrontEndSync();
 	R_End2DBatch();
 
 	R_Bind( &tr.scratchImage[client] );
@@ -1285,8 +1287,14 @@ const void	*RB_DrawSurfs( const void *data ) {
 
 	cmd = (const drawSurfsCommand_t *)data;
 
+	// a scene: not 2D (RE_RenderScene sets it without the render thread)
+	backEnd.in2D = qfalse;
 	backEnd.refdef = cmd->refdef;
 	backEnd.viewParms = cmd->viewParms;
+	// r_smp: the terrain slots this scene changed (RB_TerrainPool)
+	backEnd.terrainChanges = cmd->terrainChanges;
+	backEnd.numTerrainChanges = cmd->numTerrainChanges;
+	backEnd.terrainChangesAll = cmd->terrainChangesAll;
 
 	// the temporal path's scene (tr_temporal.c)
 	RB_TemporalBeginView();
@@ -1304,6 +1312,7 @@ RB_DrawSurfs
 =============
 */
 const void* RB_SpriteSurfs(const void* data) {
+	backEnd.in2D = qfalse;
     const drawSurfsCommand_t* cmd;
 
     // finish any 2D drawing if needed
@@ -1334,6 +1343,9 @@ const void	*RB_DrawBuffer( const void *data ) {
 	const drawBufferCommand_t	*cmd;
 
 	cmd = (const drawBufferCommand_t *)data;
+
+	// a new frame (RE_BeginFrame did this before the render thread)
+	glState.finishCalled = qfalse;
 
 	// only the back buffer can be drawn to
 	vk_begin_frame();
@@ -1521,9 +1533,19 @@ void RB_ExecuteRenderCommands( const void *data ) {
 	t1 = ri.Milliseconds ();
 
 	while ( 1 ) {
-		data = PADP(data, sizeof(void *));
+		int id;
 
-		switch ( *(const int *)data ) {
+		data = PADP(data, sizeof(void *));
+		id = *(const int *)data;
+
+		// r_smp: the 2D draws recorded as commands can leave a batch open
+		// between the commands of the list; the commands below always ran
+		// with it drawn (R_IssueRenderCommands ended it before the list)
+		if ( id != RC_END_OF_LIST && id < RC_END_2D_BATCH ) {
+			R_End2DBatch();
+		}
+
+		switch ( id ) {
 		case RC_SET_COLOR:
 			data = RB_SetColor( data );
 			break;
@@ -1553,6 +1575,24 @@ void RB_ExecuteRenderCommands( const void *data ) {
 			break;
 		case RC_CLEARDEPTH:
 			data = RB_ClearDepth(data);
+			break;
+		case RC_END_2D_BATCH:
+		case RC_2D_SET_COLOR:
+		case RC_2D_STRETCH_PIC:
+		case RC_2D_STRETCH_PIC2:
+		case RC_2D_TILE_PIC:
+		case RC_2D_TILE_PIC_OFFSET:
+		case RC_2D_TRIANGLE_PIC:
+		case RC_2D_STRING:
+		case RC_2D_ADD_BOX:
+		case RC_2D_DRAW_BOX:
+		case RC_2D_DRAW_BOXES:
+		case RC_2D_LINE_LOOP:
+		case RC_2D_WINDOW:
+		case RC_2D_SCISSOR:
+		case RC_2D_SHADER_TIME:
+		case RC_SET_RENDER_TIME:
+			data = RB_2DCommand( data );
 			break;
 		case RC_END_OF_LIST:
 		default:

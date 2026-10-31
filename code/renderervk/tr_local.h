@@ -1392,6 +1392,11 @@ typedef struct {
 	// keeps the entities' motion for the next frame
 	qboolean	temporalScene;
 	qboolean	temporalPrimary;
+
+	// r_smp: the terrain slots the scene being drawn changed (RB_TerrainPool)
+	const struct terrainSlotChange_s	*terrainChanges;
+	int				numTerrainChanges;
+	qboolean		terrainChangesAll;
 } backEndState_t;
 
 /*
@@ -2445,7 +2450,7 @@ GHOST
 =============================================================
 */
 
-void R_UpdateGhostTextures();
+void R_UpdateGhostTextures(int refdefTime);
 void R_SetGhostImage(const char* name, image_t* image);
 void LoadGHOST(const char* name, byte** pic, int* width, int* height);
 
@@ -2736,7 +2741,94 @@ typedef struct {
 	viewParms_t	viewParms;
 	drawSurf_t *drawSurfs;
 	int		numDrawSurfs;
+	// r_smp: the terrain slots this scene's tessellation changed (tr_terrain.c)
+	const struct terrainSlotChange_s *terrainChanges;
+	int		numTerrainChanges;
+	qboolean	terrainChangesAll;
 } drawSurfsCommand_t;
+
+// r_smp: the 2D exports as commands (tr_draw.c, tr_font.cpp, tr_init.c)
+typedef struct {
+	int		commandId;
+	float	rgba[4];
+	int		isNull;
+} set2DColorCommand_t;
+
+typedef struct {
+	int		commandId;
+	float	x, y, w, h, s1, t1, s2, t2, sx, sy;
+	qhandle_t	hShader;
+	int		offsetX, offsetY;
+} pic2DCommand_t;
+
+typedef struct {
+	int		commandId;
+	vec2_t	points[3];
+	vec2_t	texCoords[3];
+	qhandle_t	hShader;
+} trianglePic2DCommand_t;
+
+typedef struct {
+	int		commandId;
+	void	*font;
+	float	x, y;
+	int		maxlen;
+	int		hasVirtual;
+	float	virtualScreen[2];
+	int		length;			// the text follows, NUL-terminated, padded to a pointer
+} string2DCommand_t;
+
+typedef struct {
+	int		commandId;
+	float	x, y, w, h;
+} box2DCommand_t;
+
+typedef struct {
+	int		commandId;
+	int		count;			// float boxes[count][4] follow
+	float	color[4];
+} boxes2DCommand_t;
+
+typedef struct {
+	int		commandId;
+	int		count;			// vec2_t points[count] follow
+	int		stippleFactor, stippleMask;
+} lineLoop2DCommand_t;
+
+typedef struct {
+	int		commandId;
+	int		x, y, w, h;
+	float	left, right, bottom, top, n, f;
+} window2DCommand_t;
+
+typedef struct {
+	int		commandId;
+	int		x, y, width, height;
+} scissor2DCommand_t;
+
+typedef struct {
+	int		commandId;
+	float	startTime;
+} shaderTime2DCommand_t;
+
+typedef struct {
+	int		commandId;
+	int		t;
+	int		refdefTime;
+} renderTimeCommand_t;
+
+typedef struct {
+	int		commandId;
+} end2DBatchCommand_t;
+
+// r_smp: a terrain pool slot the front end's tessellation changed, for the
+// render thread's copy of the pool (tr_terrain.c, vk_sync_terrain_pool_smp)
+typedef struct terrainSlotChange_s {
+	int		slot;
+	float	xyz[3];
+	float	st[2][2];
+} terrainSlotChange_t;
+#define MAX_TERRAIN_CHANGES	4096
 
 typedef struct {
 	int commandId;
@@ -2782,7 +2874,25 @@ typedef enum {
 	RC_SCREENSHOT,
 	RC_VIDEOFRAME,
 	RC_COLORMASK,
-	RC_CLEARDEPTH
+	RC_CLEARDEPTH,
+	// r_smp: the 2D exports and what else the front end did directly, replayed
+	// by the render thread (tr_draw.c, RB_2DCommand)
+	RC_END_2D_BATCH,
+	RC_2D_SET_COLOR,
+	RC_2D_STRETCH_PIC,
+	RC_2D_STRETCH_PIC2,
+	RC_2D_TILE_PIC,
+	RC_2D_TILE_PIC_OFFSET,
+	RC_2D_TRIANGLE_PIC,
+	RC_2D_STRING,
+	RC_2D_ADD_BOX,
+	RC_2D_DRAW_BOX,
+	RC_2D_DRAW_BOXES,
+	RC_2D_LINE_LOOP,
+	RC_2D_WINDOW,
+	RC_2D_SCISSOR,
+	RC_2D_SHADER_TIME,
+	RC_SET_RENDER_TIME
 } renderCommand_t;
 
 
@@ -2808,7 +2918,17 @@ typedef struct {
 	refSprite_t sprites[2048];
 	cStaticModelUnpacked_t* staticModels;
 	byte* staticModelData;
+	// after pointers only: the commands are read at pointer alignment
+	// (RB_ExecuteRenderCommands pads to it), so cmds has to start there
 	renderCommandList_t	commands;
+	// r_smp: the terrain slots changed in this frame, by scene (drawSurfsCommand_t)
+	terrainSlotChange_t	*terrainChanges;
+	int		numTerrainChanges;
+	int		firstTerrainChange;	// of the scene being built
+	qboolean	terrainChangesAll;	// every slot: the shadow was refreshed in full
+	// r_smp: the front end waits for this list (a screenshot, a video frame,
+	// the overdraw readback: the engine's temporary memory and files)
+	qboolean	syncAfterIssue;
 } backEndData_t;
 
 extern	int		max_polys;
@@ -2832,6 +2952,25 @@ void R_InitCommandBuffers( void );
 void R_ShutdownCommandBuffers( void );
 
 void R_SyncRenderThread( void );
+
+void *R_GetCommandBufferReserved( int bytes, int reservedBytes );
+
+// tr_smp.c: the render thread (r_smp)
+extern cvar_t	*r_smp;
+extern backEndData_t	*backEndDataArray[2];
+qboolean	R_OnRenderThread( void );
+void		R_FrontEndSync( void );
+void		R_IssueRenderCommandsThreaded( const void *cmds );
+int			R_RenderThreadBackEndMsec( void );
+qboolean	vk_present_waits( void );					// vk.c: the present waits for the display (vsync)
+void		R_StartRenderThread( void );
+void		R_StopRenderThread( void );
+const void	*RB_2DCommand( const void *data );
+void		RB_SetRenderTime( int t, int refdefTime );
+void		RB_Draw_String( fontheader_t *font, const char *text, float x, float y, int maxlen, const float *pvVirtualScreen );
+void		R_TerrainSnapshotChanges( void );
+void		vk_terrain_shadow_all( const float *xyz, const float *st, int stride, int numSlots );
+qboolean	vk_sync_terrain_pool_smp( const terrainSlotChange_t *changes, int count, qboolean all );
 
 void R_AddDrawSurfCmd( drawSurf_t *drawSurfs, int numDrawSurfs );
 

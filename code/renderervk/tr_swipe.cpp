@@ -43,8 +43,11 @@ typedef struct {
 } rendswipe_t;
 
 static int         lastswipeframe;
-static int         numswipes;
-static rendswipe_t swipes[MAX_SWIPES];
+// r_smp: the render thread draws the frame before's (tr.smpFrame)
+static int         numswipesBuf[2];
+static rendswipe_t swipesBuf[2][MAX_SWIPES];
+#define numswipesOf numswipesBuf[tr.smpFrame]
+#define swipesOf    swipesBuf[tr.smpFrame]
 
 /*
 ======================
@@ -56,15 +59,15 @@ void RE_SwipeBegin(float thistime, float life, qhandle_t shader)
     rendswipe_t *swipe;
 
     if (tr.frameCount != lastswipeframe) {
-        swipe     = &swipes[0];
-        numswipes = 0;
+        swipe     = &swipesOf[0];
+        numswipesOf = 0;
     }
 
-    if (numswipes >= MAX_SWIPES) {
+    if (numswipesOf >= MAX_SWIPES) {
         return;
     }
 
-    swipe = &swipes[numswipes++];
+    swipe = &swipesOf[numswipesOf++];
 
     swipe->life         = life;
     swipe->time         = thistime;
@@ -87,7 +90,7 @@ RE_SwipePoint
 */
 void RE_SwipePoint(vec3_t point1, vec3_t point2, float time)
 {
-    rendswipe_t *swipe = &swipes[numswipes - 1];
+    rendswipe_t *swipe = &swipesOf[numswipesOf - 1];
 
     if (swipe->numswipes >= MAX_SWIPE_POINTS) {
         return;
@@ -114,15 +117,15 @@ void R_AddSwipeSurfaces()
     shader_t *shader;
     int       at;
 
-    if (!numswipes) {
+    if (!numswipesOf) {
         return;
     }
 
     tr.currentEntityNum = ENTITYNUM_WORLD;
     tr.shiftedEntityNum = tr.currentEntityNum << QSORT_ENTITYNUM_SHIFT;
 
-    for (at = 0; at < numswipes; at++) {
-        rendswipe_t *swipe     = &swipes[at];
+    for (at = 0; at < numswipesOf; at++) {
+        rendswipe_t *swipe     = &swipesOf[at];
         int          timedelta = 0;
 
         if (!swipe->numswipes) {

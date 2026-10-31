@@ -1569,13 +1569,13 @@ R_UpdateGhostTextures
 Updates all ghost textures
 ====================
 */
-void R_UpdateGhostTextures()
+void R_UpdateGhostTextures(int refdefTime)
 {
     int i;
     int numTextures;
 
-    frameTime = tr.refdef.time - lastTime;
-    lastTime  = tr.refdef.time;
+    frameTime = refdefTime - lastTime;
+    lastTime  = refdefTime;
 
     numTextures = ghostManager.m_textureList.NumObjects();
     for (i = 1; i <= numTextures; i++) {

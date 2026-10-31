@@ -139,6 +139,7 @@ static struct {
 	uint64_t		*pending[VK_MAX_FRAMES];	// a bit per slot
 	qboolean		anyPending[VK_MAX_FRAMES];
 	uint64_t		drawnSerial;				// the last frame that drew from its copy
+	float			*shadow;					// r_smp: xyz and the two st of every slot, as the render thread knows them (7 floats a slot)
 	// vkinfo's counters (here, not in vkStats_t: vk keeps its size, and the
 	// renderer's large globals their places in memory, see README,
 	// Performance): draws from the pool, slots written into the copies
@@ -354,12 +355,12 @@ static void VK_DeferDestroyEntry( vkDestroyType_t type, uint64_t handle, uint64_
 		vkDeferredDestroy_t *list;
 
 		frame->maxDestroy = frame->maxDestroy ? frame->maxDestroy * 2 : 1024;
-		list = ri.Malloc( sizeof( *list ) * frame->maxDestroy );
+		list = VK_Alloc( sizeof( *list ) * frame->maxDestroy );
 		if ( frame->numDestroy ) {
 			Com_Memcpy( list, frame->destroyList, sizeof( *list ) * frame->numDestroy );
 		}
 		if ( frame->destroyList ) {
-			ri.Free( frame->destroyList );
+			VK_Free( frame->destroyList );
 		}
 		frame->destroyList = list;
 	}
@@ -1224,7 +1225,7 @@ static void VK_CreateFrames( void ) {
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_MEMORY_PROPERTY_HOST_CACHED_BIT );
 		VK_CreateBuffer( &frame->dlightBuffer, VK_MAX_FRAME_DLIGHTS * sizeof( vkDlightGPU_t ), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT );
-		frame->dlightCopy = ri.Malloc( VK_MAX_FRAME_DLIGHTS * sizeof( vkDlightGPU_t ) );
+		frame->dlightCopy = VK_Alloc( VK_MAX_FRAME_DLIGHTS * sizeof( vkDlightGPU_t ) );
 		VK_CreateBuffer( &frame->skinBuffer, VK_SKIN_FRAME_WORDS * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT );
 	}
@@ -1299,14 +1300,14 @@ static void VK_DestroyFrames( void ) {
 
 		VK_ProcessDestroyList( frame );
 		if ( frame->destroyList ) {
-			ri.Free( frame->destroyList );
+			VK_Free( frame->destroyList );
 		}
 		VK_DestroyBuffer( &frame->vertexBuffer );
 		VK_DestroyBuffer( &frame->stagingBuffer );
 		VK_DestroyBuffer( &frame->depthReadBuffer );
 		VK_DestroyBuffer( &frame->dlightBuffer );
 		if ( frame->dlightCopy ) {
-			ri.Free( frame->dlightCopy );
+			VK_Free( frame->dlightCopy );
 			frame->dlightCopy = NULL;
 		}
 		VK_DestroyBuffer( &frame->skinBuffer );
@@ -2383,7 +2384,20 @@ void vk_end_frame( void ) {
 	}
 }
 
+/*
+===============
+vk_present_waits
+
+Whether the present waits for the display (vsync): the render thread's
+hand-over then waits for it too (RE_BeginFrame)
+===============
+*/
+qboolean vk_present_waits( void ) {
+	return vk.presentMode == VK_PRESENT_MODE_FIFO_KHR || vk.presentMode == VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+}
+
 void vk_finish( void ) {
+	R_FrontEndSync();
 	// like glFinish for what has been submitted; the commands of the frame
 	// being recorded are submitted at vk_end_frame
 	VK_DrainSubmitThread();
@@ -3602,6 +3616,7 @@ No stipple, stencil test or color mask: what the shader stages never set
 ===============
 */
 qboolean vk_prebuild_pipeline( const vkDrawState_t *state ) {
+	R_FrontEndSync();
 	vkTexture_t *textures[NUM_TEXTURE_BUNDLES];
 	drawGeometry_t geometry;
 	vkPipelineKey_t key;
@@ -3682,6 +3697,7 @@ draws from them
 ===============
 */
 void vk_set_static_geometry( const staticGeometry_t *geometry ) {
+	R_FrontEndSync();
 	VkDeviceSize xyzSize, stSize, colorSize, size;
 	VkBufferMemoryBarrier barrier;
 	VkBufferCopy region;
@@ -3761,6 +3777,10 @@ VK_FreeTerrainPool
 ===============
 */
 static void VK_FreeTerrainPool( qboolean deferred ) {
+	if ( vk_terrain.shadow ) {
+		VK_Free( vk_terrain.shadow );
+		vk_terrain.shadow = NULL;
+	}
 	int i;
 
 	for ( i = 0; i < VK_MAX_FRAMES; i++ ) {
@@ -3772,7 +3792,7 @@ static void VK_FreeTerrainPool( qboolean deferred ) {
 			VK_DestroyBuffer( &vk_terrain.copies[i] );
 		}
 		if ( vk_terrain.pending[i] ) {
-			ri.Free( vk_terrain.pending[i] );
+			VK_Free( vk_terrain.pending[i] );
 		}
 		Com_Memset( &vk_terrain.copies[i], 0, sizeof( vk_terrain.copies[i] ) );
 		vk_terrain.pending[i] = NULL;
@@ -3791,6 +3811,7 @@ the colors are written once
 ===============
 */
 void vk_set_terrain_pool( int numSlots ) {
+	R_FrontEndSync();
 	VkDeviceSize xyzSize, stSize, colorSize, size;
 	int i;
 
@@ -3815,12 +3836,15 @@ void vk_set_terrain_pool( int numSlots ) {
 
 	vk_terrain.numSlots = numSlots;
 	vk_terrain.words = ( numSlots + 63 ) >> 6;
+	// r_smp: the render thread's shadow of every slot (vk_sync_terrain_pool_smp)
+	vk_terrain.shadow = VK_Alloc( 7 * sizeof( float ) * numSlots );
+	Com_Memset( vk_terrain.shadow, 0, 7 * sizeof( float ) * numSlots );
 	for ( i = 0; i < VK_MAX_FRAMES; i++ ) {
 		VK_CreateBuffer( &vk_terrain.copies[i], size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT );
 		Com_Memset( (byte *)vk_terrain.copies[i].mapped + vk_terrain.colorOffset, 255, colorSize );
 		// every slot (those past numSlots are never drawn)
-		vk_terrain.pending[i] = ri.Malloc( sizeof( uint64_t ) * vk_terrain.words );
+		vk_terrain.pending[i] = VK_Alloc( sizeof( uint64_t ) * vk_terrain.words );
 		Com_Memset( vk_terrain.pending[i], 255, sizeof( uint64_t ) * vk_terrain.words );
 		vk_terrain.anyPending[i] = qtrue;
 	}
@@ -3882,6 +3906,100 @@ static void VK_WriteTerrainSlots( byte *data, const float *xyz, const float *st,
 		outSt1[0] = ( (const float *)t )[2];
 		outSt1[1] = ( (const float *)t )[3];
 	}
+}
+
+/*
+===============
+vk_terrain_shadow_all
+
+r_smp, the front end with the thread idle: the shadow from the pool's
+source (too many slots changed for a frame's snapshot)
+===============
+*/
+void vk_terrain_shadow_all( const float *xyz, const float *st, int stride, int numSlots ) {
+	int s;
+
+	if ( !vk_terrain.shadow || numSlots != vk_terrain.numSlots ) {
+		return;
+	}
+	for ( s = 0; s < numSlots; s++ ) {
+		const float *v = (const float *)( (const byte *)xyz + (size_t)s * stride );
+		const float *t = (const float *)( (const byte *)st + (size_t)s * stride );
+		float *out = vk_terrain.shadow + s * 7;
+
+		out[0] = v[0]; out[1] = v[1]; out[2] = v[2];
+		out[3] = t[0]; out[4] = t[1]; out[5] = t[2]; out[6] = t[3];
+	}
+}
+
+/*
+===============
+vk_sync_terrain_pool_smp
+
+r_smp, the render thread: vk_sync_terrain_pool from the scene's snapshot
+of the changed slots (the shadow keeps every slot for the other copies'
+pending slots)
+===============
+*/
+qboolean vk_sync_terrain_pool_smp( const terrainSlotChange_t *changes, int count, qboolean all ) {
+	uint64_t *pending;
+	byte *data;
+	int f, w, i, written = 0;
+
+	if ( !vk.device || !vk_terrain.numSlots || !vk_terrain.shadow ) {
+		return qfalse;
+	}
+	VK_BeginFrameIfNeeded();
+	if ( all ) {
+		for ( f = 0; f < VK_MAX_FRAMES; f++ ) {
+			Com_Memset( vk_terrain.pending[f], 0xFF, sizeof( uint64_t ) * vk_terrain.words );
+			vk_terrain.anyPending[f] = qtrue;
+		}
+	}
+	for ( i = 0; i < count; i++ ) {
+		const terrainSlotChange_t *c = &changes[i];
+		float *out;
+
+		if ( c->slot < 0 || c->slot >= vk_terrain.numSlots ) {
+			continue;
+		}
+		out = vk_terrain.shadow + c->slot * 7;
+		out[0] = c->xyz[0]; out[1] = c->xyz[1]; out[2] = c->xyz[2];
+		out[3] = c->st[0][0]; out[4] = c->st[0][1]; out[5] = c->st[1][0]; out[6] = c->st[1][1];
+		for ( f = 0; f < VK_MAX_FRAMES; f++ ) {
+			vk_terrain.pending[f][c->slot >> 6] |= (uint64_t)1 << ( c->slot & 63 );
+			vk_terrain.anyPending[f] = qtrue;
+		}
+	}
+	f = vk.frameIndex;
+	if ( !vk_terrain.anyPending[f] ) {
+		return qtrue;
+	}
+	if ( vk_terrain.drawnSerial == vk.frameSerial ) {
+		// a draw of this frame reads the copy as it is
+		return qfalse;
+	}
+	pending = vk_terrain.pending[f];
+	data = vk_terrain.copies[f].mapped;
+	for ( w = 0; w < vk_terrain.words; w++ ) {
+		uint64_t bits = pending[w];
+		while ( bits ) {
+			int first = VK_LowestBit( bits );
+			uint64_t rest = ~( bits >> first );
+			int n = rest ? VK_LowestBit( rest ) : 64;
+			int s = ( w << 6 ) + first;
+			bits &= ~( ( n == 64 ? ~(uint64_t)0 : ( (uint64_t)1 << n ) - 1 ) << first );
+			n = Q_min( n, vk_terrain.numSlots - s );
+			if ( n > 0 ) {
+				VK_WriteTerrainSlots( data, vk_terrain.shadow, vk_terrain.shadow + 3, 7 * sizeof( float ), s, n );
+				written += n;
+			}
+		}
+		pending[w] = 0;
+	}
+	vk_terrain.anyPending[f] = qfalse;
+	vk_terrain.slots += written;
+	return qtrue;
 }
 
 /*
@@ -3980,6 +4098,7 @@ words written
 ===============
 */
 int vk_add_skin_data( const uint32_t *words, int numWords ) {
+	R_FrontEndSync();
 	VkBufferMemoryBarrier barrier;
 	VkBufferCopy region;
 	VkCommandBuffer cmd;
@@ -4030,6 +4149,7 @@ int vk_add_skin_data( const uint32_t *words, int numWords ) {
 }
 
 void vk_clear_skin_data( void ) {
+	R_FrontEndSync();
 	if ( !vk_skin.words ) {
 		return;
 	}
@@ -4065,6 +4185,7 @@ qboolean vk_skin_frame_room( int numWords ) {
 }
 
 unsigned int vk_frame_serial( void ) {
+	R_FrontEndSync();
 	if ( !vk.device ) {
 		return 0;
 	}
@@ -4258,6 +4379,7 @@ static VkAccessFlags VK_DepthImageWriteAccess( void ) {
 }
 
 void vk_read_pixels( int x, int y, int width, int height, readFormat_t format, void *buffer ) {
+	R_FrontEndSync();
 	VkBufferImageCopy region;
 	VkImageAspectFlags aspect, barrierAspect;
 	VkImageLayout layout;
@@ -4540,6 +4662,7 @@ frame about to start when called between frames (see VK_UpdateDepthTarget)
 ===============
 */
 void vk_want_depth_reads( void ) {
+	R_FrontEndSync();
 	vk.depthReadSerial = vk.frame ? vk.frameSerial : vk.frameSerial + 1;
 }
 

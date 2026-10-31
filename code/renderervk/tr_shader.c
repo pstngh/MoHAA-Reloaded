@@ -3649,7 +3649,8 @@ qhandle_t RE_RefreshShaderNoMip(const char* name) {
 		return 0;
 	}
 
-	// the open 2D batch keeps the image it was made with
+	// the open 2D batch keeps the image it was made with (r_smp: the thread's)
+	R_FrontEndSync();
 	R_End2DBatch();
 
     COM_StripExtension(name, strippedName, sizeof(strippedName));

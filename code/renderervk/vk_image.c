@@ -103,12 +103,12 @@ static void VK_ListAdd( vkTextureList_t *list, vkTexture_t *texture ) {
 		vkTexture_t **textures;
 
 		list->max = list->max ? list->max * 2 : 256;
-		textures = ri.Malloc( sizeof( *textures ) * list->max );
+		textures = VK_Alloc( sizeof( *textures ) * list->max );
 		if ( list->num ) {
 			Com_Memcpy( textures, list->textures, sizeof( *textures ) * list->num );
 		}
 		if ( list->textures ) {
-			ri.Free( list->textures );
+			VK_Free( list->textures );
 		}
 		list->textures = textures;
 	}
@@ -128,7 +128,7 @@ static void VK_ListRemove( vkTextureList_t *list, vkTexture_t *texture ) {
 
 static void VK_ListFree( vkTextureList_t *list ) {
 	if ( list->textures ) {
-		ri.Free( list->textures );
+		VK_Free( list->textures );
 	}
 	Com_Memset( list, 0, sizeof( *list ) );
 }
@@ -199,12 +199,12 @@ static void VK_InsertFreeRange( vkMemoryBlock_t *block, int index, VkDeviceSize 
 		vkMemoryRange_t *ranges;
 
 		block->maxFree = block->maxFree ? block->maxFree * 2 : 64;
-		ranges = ri.Malloc( sizeof( *ranges ) * block->maxFree );
+		ranges = VK_Alloc( sizeof( *ranges ) * block->maxFree );
 		if ( block->numFree ) {
 			Com_Memcpy( ranges, block->free, sizeof( *ranges ) * block->numFree );
 		}
 		if ( block->free ) {
-			ri.Free( block->free );
+			VK_Free( block->free );
 		}
 		block->free = ranges;
 	}
@@ -380,7 +380,7 @@ static void VK_ShutdownMemory( void ) {
 			VK_FreeMemory( block->memory );
 		}
 		if ( block->free ) {
-			ri.Free( block->free );
+			VK_Free( block->free );
 		}
 	}
 	Com_Memset( vk_memoryBlocks, 0, sizeof( vk_memoryBlocks ) );
@@ -549,7 +549,7 @@ static vkTexture_t *VK_CreateTextureStorage( int width, int height, int mipLevel
 
 	start = VK_Microseconds();
 
-	texture = ri.Malloc( sizeof( *texture ) );
+	texture = VK_Alloc( sizeof( *texture ) );
 	Com_Memset( texture, 0, sizeof( *texture ) );
 
 	width = Com_Clamp( 1, vk.deviceProperties.limits.maxImageDimension2D, width );
@@ -636,7 +636,7 @@ static void VK_DestroyTextureStorage( vkTexture_t *texture ) {
 		VK_DeferDestroy( VK_DESTROY_MEMORY, (uint64_t)texture->memory, 0 );
 	}
 
-	ri.Free( texture );
+	VK_Free( texture );
 }
 
 /*
@@ -861,6 +861,9 @@ INTERFACE
 */
 
 void vk_create_texture( image_t *image, int width, int height, int mipLevels, texFormat_t format ) {
+	// r_smp: the front end's, with the render thread idle (the thread's own,
+	// the ghost textures, go straight through)
+	R_FrontEndSync();
 	int slot;
 
 	if ( !vk.device ) {
@@ -885,6 +888,7 @@ void vk_create_texture( image_t *image, int width, int height, int mipLevels, te
 }
 
 void vk_upload_texture( image_t *image, int mipLevel, int x, int y, int width, int height, const byte *rgba ) {
+	R_FrontEndSync();
 	vkTexture_t *texture;
 	VkBuffer buffer;
 	VkDeviceSize offset, size;
@@ -924,6 +928,7 @@ void vk_upload_texture( image_t *image, int mipLevel, int x, int y, int width, i
 }
 
 void vk_upload_compressed_texture( image_t *image, int mipLevel, int width, int height, const byte *data, int size ) {
+	R_FrontEndSync();
 	vkTexture_t *texture;
 	VkBuffer buffer;
 	VkDeviceSize offset, expected;
@@ -964,6 +969,7 @@ void vk_upload_compressed_texture( image_t *image, int mipLevel, int width, int 
 }
 
 void vk_destroy_texture( image_t *image ) {
+	R_FrontEndSync();
 	int slot;
 
 	slot = VK_SlotForHandle( image->texnum );
@@ -980,6 +986,7 @@ void vk_destroy_texture( image_t *image ) {
 }
 
 void vk_set_texture_filter( texFilter_t filter ) {
+	R_FrontEndSync();
 	int i;
 
 	if ( filter < TEXFILTER_NEAREST || filter > TEXFILTER_LINEAR_MIPMAP_LINEAR || filter == vk_textureFilter ) {

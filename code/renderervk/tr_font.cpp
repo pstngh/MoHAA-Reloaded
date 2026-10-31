@@ -695,7 +695,7 @@ void R_DrawString_sgl(fontheader_sgl_t* font, const char* text, float x, float y
     R_End2D();
 }
 
-void R_DrawString(fontheader_t* font, const char* text, float x, float y, int maxlen, const float *pvVirtualScreen) {
+void RB_Draw_String(fontheader_t* font, const char* text, float x, float y, int maxlen, const float *pvVirtualScreen) {
     int i;
     int code;
     unsigned short uch;
@@ -888,8 +888,77 @@ void R_DrawFloatingString_sgl(fontheader_sgl_t* font, const char* text, const ve
 }
 
 void R_DrawFloatingString(fontheader_t* font, const char* text, const vec3_t org, const vec4_t color, float scale, int maxlen) {
+    // polys of the scene (RE_AddPolyToScene): the front end's, also with
+    // the render thread
     return R_DrawFloatingString_sgl(font->sgl[0], text, org, color, scale, maxlen);
 }
+
+/*
+====================================================================
+
+THE EXPORT: with the render thread (r_smp) the strings are recorded as
+commands the thread replays with the body above, the text copied; the
+fonts' shaders are loaded here first (files, the hunk: the front end's,
+with the thread idle), as the body would have. The floating strings add
+polys to the scene, the front end's work (above)
+
+====================================================================
+*/
+
+static void R_LoadFontShaders(fontheader_t* font) {
+    int i, pages;
+
+    pages = font->numPages ? font->numPages : 1;
+    for (i = 0; i < pages && i < (int)(sizeof(font->sgl) / sizeof(font->sgl[0])); i++) {
+        fontheader_sgl_t* sgl = font->sgl[i];
+
+        if (!sgl) {
+            continue;
+        }
+        if (sgl->trhandle != r_sequencenumber) {
+            sgl->shader = NULL;
+        }
+        if (!sgl->shader) {
+            // it sets the colors of the shader's stage: the open 2D batch
+            // keeps the ones it was made with (R_DrawString_sgl)
+            R_FrontEndSync();
+            R_End2DBatch();
+            R_LoadFontShader(sgl);
+        }
+    }
+}
+
+void R_DrawString(fontheader_t* font, const char* text, float x, float y, int maxlen, const float *pvVirtualScreen) {
+    if (glConfig.smpActive && !R_OnRenderThread()) {
+        string2DCommand_t *cmd;
+        size_t len = strlen(text);
+
+        R_LoadFontShaders(font);
+        if (len > 8191) {
+            len = 8191;
+        }
+        cmd = (string2DCommand_t *)R_GetCommandBuffer((int)(sizeof(*cmd) + PAD(len + 1, sizeof(void *))));
+        if (!cmd) {
+            return;
+        }
+        cmd->commandId = RC_2D_STRING;
+        cmd->font = font;
+        cmd->x = x;
+        cmd->y = y;
+        cmd->maxlen = maxlen;
+        cmd->hasVirtual = pvVirtualScreen != NULL;
+        if (pvVirtualScreen) {
+            cmd->virtualScreen[0] = pvVirtualScreen[0];
+            cmd->virtualScreen[1] = pvVirtualScreen[1];
+        }
+        cmd->length = (int)len;
+        Com_Memcpy(cmd + 1, text, len);
+        ((char *)(cmd + 1))[len] = 0;
+        return;
+    }
+    RB_Draw_String(font, text, x, y, maxlen, pvVirtualScreen);
+}
+
 
 float R_GetFontHeight(const fontheader_t* font)
 {

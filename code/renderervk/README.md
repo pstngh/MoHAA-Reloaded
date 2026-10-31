@@ -845,6 +845,20 @@ below are done.
 - `renderer_vulkan.so` imports no GL symbol and no Vulkan symbol; it needs
   only SDL 3, libm, libstdc++, libgcc_s and libc. Vulkan is loaded at
   runtime through SDL
+- render thread (2026-10-31, Plan 50, `r_smp 1`, on by default where the
+  machine has more than one core; the user's request: close the gap to
+  Linux on the same machine, 12,500 against 6,000 frames a second, with
+  multithreading if that is what it takes): the back end (the draws'
+  recording into Vulkan command buffers, the submission and the present)
+  runs on a thread while the game and the front end build the next frame,
+  Quake 3's SMP mode with the 2D exports recorded as commands too. At most
+  one frame is in the thread, so a frame's input reaches its present as
+  before and the frame rate is the slower half's: at the `dm/mohdm6` spot
+  of the gap (2560x1440 fullscreen immediate, RTX 4070 Ti, 9800X3D,
+  Windows 11) 5,977 to 10,664 frames a second, 99th percentile 4,444 to
+  5,618; the same frames to the bit; with the temporal effects and HDR
+  output (GPU-bound) 984 either way, with vsync 280 either way (see
+  Performance, Render thread)
 - GL1 was the visual reference until 2026-10-19; since then the look may
   change where that buys performance, and comparisons with the build before
   (until 2026-10-23 also with GL1) check for bugs and show what changed
@@ -864,6 +878,7 @@ below are done.
 | `vk_submit.c` | the submit thread (`r_vkSubmitThread 1`): submits and presents the frames, acquires the swapchain image of the next frame after each present, copies a frame drawn offscreen (see Implementation notes, Submit thread) |
 | `vk_output.c` | HDR output (`r_hdrOutput`): the window's HDR state (Vulkan surface formats, SDL), the swapchain's mode, paper white and peak, the 3D view's expansion parameters, the output pass (see Implementation notes, HDR output) |
 | `vk_temporal.c` | the temporal path (`r_temporal 1`): the scene's images, render passes and pipeline layout, the depth pyramid, the composite into the frame (see Implementation notes, Temporal path) |
+| `tr_smp.c` | the render thread (`r_smp 1`): runs the back end's command lists handed over at `EndFrame`, the front end's waits for it (`R_FrontEndSync`), its start and stop with the renderer (see Implementation notes, Render thread) |
 | `tr_temporal.c` | the temporal path's views and history: the scene begins and ends, the camera's and the entities' last frame, the skinned entities' last bones (see Implementation notes, Temporal path) |
 | `tr_staticgeom.c` | the static geometry: world surfaces and static models uploaded at map load, and the back end batches drawn from it (see Implementation notes) |
 | `tr_skin.c` | skeletal models skinned and lit on the GPU: the skin data of their surfaces (added when a model is registered), the frame data of each entity, the skinned batches (see Implementation notes) |
@@ -1009,6 +1024,7 @@ Cvars of the backend:
 | `r_batch2D` (default 3) | bits: 1 draws consecutive 2D pics, strings and triangles of one shader as one surface, 2 leaves out the boxes of `DrawBox` with alpha 0 (they change no pixel); 0 draws every 2D call as it comes (see Implementation notes, 2D batches) |
 | `r_vkFrameLog` (latched, default 0) | the frame log: 1 records the last 131072 frames (larger values: that many), see `vkframelog` below and Performance, Frame spikes; 0 costs nothing |
 | `r_vkSubmitThread` (latched, archived, default 0) | 1: a thread submits and presents the frames and acquires the swapchain images, so the main thread never waits in `vkQueueSubmit`, `vkAcquireNextImageKHR` or `vkQueuePresentKHR` (see Implementation notes, Submit thread, and Performance, Submit thread); the swapchain then has 5 images without vsync, 3 with FIFO. The startup line `Vulkan present mode: ..., N swapchain images, N frames in flight, submit thread` says what is used |
+| `r_smp` (latched, archived, default 1) | 1: the back end (the draws' recording, the submission and the present) runs on a render thread while the game and the front end build the next frame; the frame rate is the slower half's, a frame's input reaches its present as before, and with vsync the input is read after the display is waited for, as without the thread; no thread on one core; 0: one thread (see Implementation notes, Render thread, and Performance, Render thread). The startup line `r_smp: the back end runs on a render thread` says it runs |
 | `r_temporal` (latched, archived, default 0) | 1: the temporal path: the 3D views are drawn into an RGBA16F scene with motion vectors and normals, for temporal anti-aliasing (`r_taa`), ambient occlusion (`r_ao`), motion blur (`r_motionBlur`) and the HDR look; their own images (the depth pyramid, histories) are made only while they are on; off with multisampling (see Implementation notes, Temporal path) |
 | `r_ao` (archived, default 0) | with `r_temporal 1`: ground truth ambient occlusion (GTAO) of the opaque surfaces, before what is blended over them (see Implementation notes, Ambient occlusion) |
 | `r_aoQuality` (archived, default 2, 0 to 3) | with `r_ao 1`: directions and samples a pixel: 1 x 2, 2 x 2, 3 x 3, 9 x 3 a side (XeGTAO's low, medium, high and ultra; ultra blurs twice). GPU time over the temporal path at full resolution, before Plan 49, at 2560x1440 0.43, 0.51, 0.69, 1.62 ms, at 1920x1080 0.23, 0.28, 0.38, 0.80; at half resolution since, quality 2 0.31 ms at 2560x1440 |
@@ -2563,6 +2579,26 @@ Other things learned:
   HTILE, TC-compatible HTILE), which is how the depth buffer's compression
   mode was found (see Performance).
 
+The render thread (2026-10-31, see Performance, Render thread), on
+Windows 11 (RTX 4070 Ti, 2560x1440 fullscreen immediate, pixel counts
+with a Python script over the TGA screenshots): three runs of one script
+with `fixedtime 16` set at startup (every frame advances the clock 16 ms
+and `wait` counts those, so the screenshot falls on the same frame) and a
+`screenshot` at the `dm/mohdm6` spot, with the build before (origin), this
+build with `r_smp 0` and with `r_smp 1`: 167 and 248 of 3,686,400 pixels
+differ, all of them digits of the `fps` counter. Before the rule that the
+list's own commands end the open 2D batch (see Implementation notes,
+Render thread), `r_smp 1` differed in 8,039 pixels: the HUD's windows
+(`Set2DWindow`) applied to the batch of the widget before, texts over each
+other, the compass turned. Stress, every run with a clean exit and no
+error in the log: `r_smp` switched on and off with `vid_restart` (the
+thread started three times), windowed and fullscreen, a map change in the
+thread's mode, `r_measureOverdraw`, the console and a menu, `give all`
+(models and textures registered in a match), `r_showImages`, `r_speeds`,
+a cinematic (`EAlogo.RoQ`) with screenshots before and after it, TGA and
+JPEG screenshots. The Khronos validation layer is not installed on that
+machine, so these runs were without it.
+
 ### Performance
 
 `tools/perf.py` measures views with several builds of the renderer (see its
@@ -3287,6 +3323,13 @@ frame, in microseconds:
 | `pipelines pipeline_us textures texture_us allocations allocation_us flushes vertex_growth depth_targets swapchains` | what was created in the frame and the time it took: pipelines, texture storages, device memory, mid-frame flushes, a frame vertex buffer replaced by a larger one (its size), the depth image replaced, a swapchain created |
 | `skin_uploads skin_bytes` | skin data of skeletal models added in the frame (`vk_add_skin_data` calls and bytes; GPU skinning, see Implementation notes, Skeletal models) |
 | `thread_wait thread_start thread_submit thread_acquire thread_present` | `r_vkSubmitThread 1`: the main thread's waits for the submit thread in the frame, and the thread's times for the frame (from its hand-off to the thread starting it, in `vkQueueSubmit`, `vkAcquireNextImageKHR`, the acquire of the next frame's image included, and `vkQueuePresentKHR`; `present_at` is then the thread's present). The columns `submit`, `acquire`, `acquire_ahead` and `present` are the main thread's |
+
+With `r_smp 1` the back end runs on the render thread: `2d` and `end` are
+then the main thread's hand-offs to it and waits for it, and the back
+end's counters and times (`fence`, `flush`, `submit`, `acquire`,
+`acquire_ahead`, `present`, the draws, passes and bytes) are the thread's,
+counted in the frame whose `EndFrame` saw them, usually the frame after;
+`gpu` is matched by the frame's serial as before.
 
 `tools/framelog.py file` prints the distributions and the causes of the
 slow frames (below). The log changes nothing of what the frames do or
@@ -6631,6 +6674,47 @@ build; the content ones, which leave most of that out, are 1.734 to
 1.761): the 1.5 to 2 µs a frame of the parts are too small to show in
 frame times on this machine.
 
+Render thread (2026-10-31, Plan 50; see Implementation notes, Render
+thread). The user's Windows 11 and Fedora (Niri) on one machine (9800X3D,
+RTX 4070 Ti, 2560x1440 fullscreen immediate) ran the `dm/mohdm6` spot
+`tele 667.30 -305.26 -27.29; face 4.60 -140.29 0` at 6,000 against 12,500
+frames a second. Measured on Windows with the frame log and a sampling
+profiler, a frame took 155 to 160 µs on the one thread: cgame 47, the
+front end 9, the engine 8, the back end's recording 41 (19 of them in the
+driver's `vkCmd*`), `vkQueueSubmit` 12 and `vkQueuePresentKHR` 31. The
+driver and the kernel take about 60 µs a frame where Linux takes 25, and
+every API (Vulkan, Direct3D 11 and OpenGL test programs alike) saturates
+one core with the flip interrupts at 7,000 to 9,000 presents a second.
+Nothing on the application's side lowers the present's cost; measured and
+dropped: present fences off, fence-paced and `present_wait`-paced
+presents, mailbox and `FIFO_LATEST_READY`, a second present queue, a
+deeper swapchain, exclusive fullscreen, DXGI's flip model through Vulkan
+interop (3,130 frames a second: the cross-API fence), clang-cl, process
+and thread priorities and affinities, and three frames in flight (a frame
+more queued, see the submit thread above). The lever left is the split:
+the front end (65 µs) and the back end (85) on two threads, the frame as
+long as the longer plus the hand-off.
+
+Measured at the spot (`bench.sh`: 10 s of the frame log, one run each
+with the final build; three earlier pairs during the work were within 3 %
+of these), frames a second; frame time 99th and 99.9th percentiles, ms:
+
+| | `r_smp 0` | `r_smp 1` |
+| --- | --- | --- |
+| plain (the user's 2560x1440, no temporal effects) | 5,977; 0.225, 0.310 | 10,664; 0.178, 0.231 |
+| temporal (`r_taa`, `r_ao`, `r_motionBlur`) and HDR10 output (`r_hdrPeak 328`) | 984; 1.111, 1.151 | 984; 1.143, 1.197 |
+| vsync (`r_swapInterval 1`, 280 Hz) | 280; 4.198, 6.536 | 280; 6.107, 6.649 |
+
+The plain frame is 94 µs: the back end's 85 and about 9 of the hand-off
+(the front end waits for the thread to finish the frame before, then
+wakes it; no spinning, the waits are condition variables). The temporal
+frame is the GPU's (1 ms, with the HDR10 present's stall), so the thread
+changes nothing there; with vsync the input is read after the thread's
+present (see Implementation notes), the frames pace the same (median
+3.566 ms both) and one run of two had more frames of two refreshes (the
+99th percentile). What remains of the gap is the GPU's share of the frame
+and cgame's 47 µs (see Plan 50).
+
 ### Coordinate conventions
 
 - Projection matrices are OpenGL ones (column-major, clip z in [-w, w], y up).
@@ -7269,6 +7353,66 @@ selects the sample count (see Implementation notes).
   - With `r_vkSubmitThread 0` the frames go the way they went before (the
     same code: acquire after the present on the main thread, 2 frames in
     flight, the surface's minimum + 1 images).
+- **Render thread** (`tr_smp.c`, `r_smp 1`, latched, archived; on by
+  default with more than one core, see Performance, Render thread). Quake
+  3's SMP mode: `backEndData` is doubled, the front end fills one (draw
+  surfaces, entities, lights, polys, the command list) while the thread
+  runs the other's list (`RB_ExecuteRenderCommands`: the draws' recording,
+  the submission, the present). `EndFrame` hands the list over once the
+  thread is done with the frame before (`R_IssueRenderCommandsThreaded`),
+  so at most one frame is in the thread: a frame's input reaches its
+  present as before, the frames come as fast as the longer half. With
+  vsync `BeginFrame` first waits for the thread (`vk_present_waits`: the
+  thread waits for the display in the frame before's present), so the
+  input is read after the display, as without the thread. What the front
+  end did to the back end's state directly:
+  - The 2D exports (`Draw_StretchPic`, `DrawString`, `Set2DWindow`,
+    `RE_Scissor`, `DrawBox`, ... in `tr_draw.c` and `tr_font.cpp`) are
+    recorded as commands (`RC_2D_*`, `RB_2DCommand`) the thread replays
+    with the same bodies (`RB_Draw_*`), in order with the old commands, so
+    the 2D batches (`r_batch2D`) are the same. Without the thread the old
+    commands (`RE_SetColor`, `RE_StretchPic`, the scenes, the swap) only
+    ever ran with the open batch drawn first (`R_IssueRenderCommands`
+    ended it before the list), so the list's loop ends it before each of
+    them, and the bodies' `R_IssuePendingRenderCommands` does the same on
+    the thread. The floating strings add polys to the scene
+    (`RE_AddPolyToScene`): the front end's, not recorded. A font's shader
+    is loaded by the front end before its string is recorded (files, the
+    hunk), with the thread idle.
+  - `RE_SetRenderTime` is a command too (`RB_SetRenderTime`: the 2D shader
+    time, and the ghost textures' update and upload, on the thread).
+  - Anything else that touches the back end's or Vulkan's state from the
+    front end first waits for the thread to be idle (`R_FrontEndSync`:
+    `vk_finish`, the readbacks, `vk_want_depth_reads`, the terrain pool,
+    the static geometry, the skin data, texture creation, upload, deletion
+    and the filter, `RE_UploadCinematic` and `RE_StretchRaw`, the font
+    shaders, `RE_RefreshShaderNoMip`, the debug drawing through
+    `R_IssuePendingRenderCommands`), after which the front end owns the
+    back end until the next hand-over; `R_IssuePendingRenderCommands`
+    itself hands the queued list over, waits for it and draws the open
+    batch.
+  - The LOD terrain's pool (`RB_TerrainPool`) is written by the thread
+    from the scene's snapshot of the slots the tessellation changed
+    (`R_TerrainSnapshotChanges`, `terrainSlotChange_t`, 4096 a frame; more
+    changes refresh the thread's shadow of every slot with the thread
+    idle), not from `g_pVert`, which the next frame's tessellation changes
+    meanwhile; the swipes are double-buffered by `tr.smpFrame`.
+  - A list with a screenshot, a video frame or the overdraw readback is
+    waited for right after the hand-over (`syncAfterIssue`): they use the
+    engine's temporary hunk and files, which are the main thread's.
+  - The Vulkan layer's own objects (textures, destroy lists, the pipeline
+    table) are allocated with `calloc` (`VK_Alloc`): the thread makes some
+    of them, and `ri.Malloc` (`Z_TagMalloc`, a global list) is not thread
+    safe. `ri.Printf` from the thread is left as Quake 3 had it.
+  - `backEndData_t.commands` has to stay at pointer alignment
+    (`RB_ExecuteRenderCommands` pads each command to it): three ints
+    before it made the back end read a 0 (end of list) and draw nothing.
+  - The back end reads `backEnd.refdef` where it read `tr.refdef` (sky
+    alpha, `RDF_NOWORLDMODEL`, the view origin and axis, the dynamic
+    lights' count, `RDF_HUD`), `R_InitNextFrame` flips the buffers, and
+    the leftover `glConfig.smpActive` early return of `SurfIsOffscreen`
+    (Quake 3 tessellated there; this one reads the surface's points) is
+    gone, so both modes cull the same.
 - **Mid-frame flush.** `vk_read_pixels`, and uploads that don't fit in the
   staging buffer, submit what the frame recorded so far, wait for it and
   continue in the same command buffers (a new main-buffer "segment").
@@ -10804,3 +10948,21 @@ Windows: the same code applies; the CI build fetches Khronos' Vulkan-Headers
 (see Build and run), so no Vulkan SDK is needed. The Vulkan-specific files
 had never been compiled with MSVC before that CI build (they have no
 variable-length array, checked with clang's `-Wvla`).
+
+50. Render thread (2026-10-31, the user's request: find why Windows runs
+    the `dm/mohdm6` spot at 6,000 frames a second where Linux on the
+    same machine runs 12,500, and close it with multithreading, lock-free
+    patterns or a new architecture if needed, without settings for the
+    user and without "bench maxing": no spinning, no frame more in
+    flight, no present left out). What was measured and dropped is in
+    Performance, Render thread: the submit and present cost of WDDM and
+    the flip interrupts on one core take 60 µs a frame that Linux takes
+    25 for, and no present mode, fence, queue or interop changes it.
+    Done: Quake 3's SMP mode (`r_smp`, `tr_smp.c`, see Implementation
+    notes, Render thread), 5,977 to 10,664 frames a second at the spot,
+    the same frames to the bit, nothing changed for the GPU-bound temporal
+    path or for vsync. Left, in order of measured gain: cgame's shadow
+    traces (16 to 21 µs of its 47 a frame, the same traces every frame of
+    a still view: a cache), and the back end's recording (41 µs:
+    bindless textures and indirect draws would take most of it), after
+    which the Windows frame would be the GPU's.

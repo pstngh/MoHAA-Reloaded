@@ -43,6 +43,12 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "tr_local.h"
 
 #define VK_MAX_FRAMES				2		// frames in flight, with or without the submit thread
+
+// the layer's own objects: the render thread (r_smp) makes some of them too
+// (the ghost textures' textures, a grown destroy list or pipeline table),
+// and the engine's allocator (ri.Malloc, Z_TagMalloc) is the main thread's
+#define VK_Alloc( size )			calloc( 1, ( size ) )
+#define VK_Free( ptr )				free( ptr )
 #define VK_ACQUIRE_SEMAPHORES		( VK_MAX_FRAMES + 1 )	// see VK_AcquireNextImage in vk.c
 #define VK_MAX_SWAPCHAIN_IMAGES		16
 #define VK_PRESENT_FENCES			16		// presents whose fence may be pending (swapchain_maintenance1)

@@ -52,7 +52,16 @@ R_ToggleSmpFrame
 ====================
 */
 void R_InitNextFrame( void ) {
+	// r_smp: the render thread reads the other backEndData
+	if ( glConfig.smpActive ) {
+		tr.smpFrame ^= 1;
+		backEndData = backEndDataArray[tr.smpFrame];
+	}
 	backEndData->commands.used = 0;
+	backEndData->numTerrainChanges = 0;
+	backEndData->firstTerrainChange = 0;
+	backEndData->terrainChangesAll = qfalse;
+	backEndData->syncAfterIssue = qfalse;
 
 	r_firstSceneDrawSurf = 0;
 	r_firstSceneSpriteSurf = 0;
@@ -511,7 +520,9 @@ void RE_RenderScene( const refdef_t *fd ) {
 	R_VisDebug();
 	TIKI_Reset_Caches();
 
-	backEnd.in2D = qfalse;
+	if ( !glConfig.smpActive ) {
+		backEnd.in2D = qfalse;	// RB_DrawSurfs does it on the render thread
+	}
 	tr.refdef.x = fd->x;
 	tr.refdef.y = fd->y;
 	tr.refdef.width = fd->width;
