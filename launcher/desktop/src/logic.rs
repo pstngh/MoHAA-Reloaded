@@ -364,7 +364,31 @@ pub struct Resolution {
     pub height: i32,
 }
 
-/// The sizes to offer: the display's, the common ones that fit it, largest first, without duplicates
+/// The game's numbered modes, r_mode 0 to 11 (the renderers' r_vidModes): a config can hold one
+pub const R_MODES: [(i32, i32); 12] = [
+    (320, 240), (400, 300), (512, 384), (640, 480), (800, 600), (960, 720), (1024, 768), (1152, 864), (1280, 1024),
+    (1600, 1200), (2048, 1536), (856, 480),
+];
+
+/// A size's aspect ratio, by the common name it's within 3% of (1366 x 768 is 16:9), else as a reduced fraction
+pub fn aspect_ratio(width: i32, height: i32) -> String {
+    const NAMED: [(i32, i32); 7] = [(4, 3), (5, 4), (3, 2), (16, 10), (16, 9), (21, 9), (32, 9)];
+    if width <= 0 || height <= 0 {
+        return String::new();
+    }
+    let ratio = width as f64 / height as f64;
+    if let Some((w, h)) = NAMED.iter().find(|&&(w, h)| (ratio / (w as f64 / h as f64) - 1.0).abs() < 0.03) {
+        return format!("{w}:{h}");
+    }
+    let (mut a, mut b) = (width, height);
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    format!("{}:{}", width / a, height / a)
+}
+
+/// The sizes to offer: the display's, the common ones that fit it and every numbered mode (r_mode 0 to 11), largest
+/// first, without duplicates
 pub fn resolution_list(display_modes: &[Resolution], desktop: Option<Resolution>) -> Vec<Resolution> {
     const COMMON: [(i32, i32); 18] = [
         (3840, 2160), (3440, 1440), (2560, 1600), (2560, 1440), (2560, 1080), (1920, 1200), (1920, 1080),
@@ -388,12 +412,19 @@ pub fn resolution_list(display_modes: &[Resolution], desktop: Option<Resolution>
             add(Resolution { width: w, height: h });
         }
     }
+    // every numbered mode, as small or as large as it is: a config's r_mode is then always in the list
+    for (w, h) in R_MODES {
+        let r = Resolution { width: w, height: h };
+        if !list.contains(&r) {
+            list.push(r);
+        }
+    }
     list.sort_by(|a, b| b.width.cmp(&a.width).then(b.height.cmp(&a.height)));
     list
 }
 
-/// An entry of the resolution menu: the desktop's (r_mode -2), a size (r_mode -1 with r_customwidth and
-/// r_customheight), or a numbered mode a config holds
+/// An entry of the resolution menu: the desktop's (r_mode -2) or a size (r_mode -1 with r_customwidth and
+/// r_customheight)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResolutionEntry {
     pub mode: i64,
@@ -404,15 +435,15 @@ pub struct ResolutionEntry {
 impl ResolutionEntry {
     pub fn label(&self) -> String {
         match self.mode {
-            -2 => "Desktop resolution".into(),
-            -1 => format!("{} \u{00D7} {}", self.width, self.height),
-            m => format!("r_mode {m}"),
+            -1 => format!("{} \u{00D7} {} ({})", self.width, self.height, aspect_ratio(self.width, self.height)),
+            _ => "Desktop resolution".into(),
         }
     }
 }
 
 /// The menu's entries for the sizes offered and the config's own (r_mode, r_customwidth, r_customheight), and the
-/// index of the config's
+/// index of the config's. A numbered mode (r_mode 0 to 11) is its size, which the list always has; nothing is passed
+/// to the game unless the player picks another entry. A number the game doesn't have is the desktop's resolution.
 pub fn resolution_entries(sizes: &[Resolution], edits: &CvarEdits) -> (Vec<ResolutionEntry>, usize) {
     let mut entries = vec![ResolutionEntry { mode: -2, width: 0, height: 0 }];
     entries.extend(sizes.iter().map(|r| ResolutionEntry { mode: -1, width: r.width, height: r.height }));
@@ -423,22 +454,20 @@ pub fn resolution_entries(sizes: &[Resolution], edits: &CvarEdits) -> (Vec<Resol
             width: int(edits.get("r_customwidth")) as i32,
             height: int(edits.get("r_customheight")) as i32,
         }
+    } else if let Some(&(width, height)) = usize::try_from(mode).ok().and_then(|m| R_MODES.get(m)) {
+        ResolutionEntry { mode: -1, width, height }
     } else {
-        ResolutionEntry { mode: if mode < -1 { -2 } else { mode }, width: 0, height: 0 }
+        ResolutionEntry { mode: -2, width: 0, height: 0 }
     };
     if let Some(k) = entries.iter().position(|e| *e == current) {
         return (entries, k);
     }
-    // the config's own size where it belongs in the list, or its numbered mode at the end
-    let k = if current.mode == -1 {
-        entries
-            .iter()
-            .skip(1)
-            .position(|e| e.width < current.width || (e.width == current.width && e.height < current.height))
-            .map_or(entries.len(), |k| k + 1)
-    } else {
-        entries.len()
-    };
+    // the config's own size, where it belongs in the list
+    let k = entries
+        .iter()
+        .skip(1)
+        .position(|e| e.width < current.width || (e.width == current.width && e.height < current.height))
+        .map_or(entries.len(), |k| k + 1);
     entries.insert(k, current);
     (entries, k)
 }
@@ -691,9 +720,13 @@ mod tests {
 
         let r = |width, height| Resolution { width, height };
         let list = resolution_list(&[r(1920, 1080), r(1280, 720), r(320, 200)], Some(r(1920, 1080)));
-        assert_eq!(list[0], r(1920, 1080));
+        assert_eq!(list[0], r(2048, 1536)); // r_mode 10, larger than the desktop
         assert_eq!(list.iter().filter(|&&x| x == r(1920, 1080)).count(), 1);
         assert!(!list.contains(&r(2560, 1440)) && !list.contains(&r(320, 200)));
+        // every numbered mode, below 640 x 480 and above the desktop too
+        assert!(R_MODES.iter().all(|&(w, h)| list.contains(&r(w, h))));
+        assert_eq!(list.iter().filter(|&&x| x == r(640, 480)).count(), 1);
+        assert_eq!(list.last(), Some(&r(320, 240)));
 
         let mut e = CvarEdits::new(&[("r_mode", "-2"), ("r_customwidth", "1600"), ("r_customheight", "1024")]);
         let sizes = [r(1920, 1080), r(1280, 720)];
@@ -701,9 +734,26 @@ mod tests {
         e.set("r_mode", "-1");
         let (entries, k) = resolution_entries(&sizes, &e);
         assert_eq!((entries.len(), k, entries[k].width), (4, 2, 1600));
-        e.set("r_mode", "4");
+        // a numbered mode is its size, the list's own entry
+        let sizes = resolution_list(&[], Some(r(1920, 1080)));
+        e.set("r_mode", "6");
         let (entries, k) = resolution_entries(&sizes, &e);
-        assert_eq!((k, entries[k].label()), (3, "r_mode 4".to_string()));
+        assert_eq!((entries.len(), entries[k].label()), (sizes.len() + 1, "1024 \u{00D7} 768 (4:3)".to_string()));
+        e.set("r_mode", "11");
+        let (entries, k) = resolution_entries(&sizes, &e);
+        assert_eq!(entries[k].label(), "856 \u{00D7} 480 (16:9)");
+        e.set("r_mode", "12");
+        assert_eq!(resolution_entries(&sizes, &e).1, 0);
+        assert!(resolution_entries(&sizes, &e).0.iter().all(|e| !e.label().contains("r_mode")));
+
+        assert_eq!(aspect_ratio(1920, 1080), "16:9");
+        assert_eq!(aspect_ratio(1366, 768), "16:9");
+        assert_eq!(aspect_ratio(1920, 1200), "16:10");
+        assert_eq!(aspect_ratio(1280, 1024), "5:4");
+        assert_eq!(aspect_ratio(3440, 1440), "21:9");
+        assert_eq!(aspect_ratio(2560, 1080), "21:9");
+        assert_eq!(aspect_ratio(5120, 1440), "32:9");
+        assert_eq!(aspect_ratio(1000, 1000), "1:1");
     }
 
     #[test]
