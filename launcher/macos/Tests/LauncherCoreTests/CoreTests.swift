@@ -134,14 +134,19 @@ final class CoreTests: XCTestCase {
 
         let list = resolutionList(displayModes: [Resolution(1920, 1080), Resolution(1280, 720), Resolution(320, 200)],
                                   desktop: Resolution(1920, 1080))
-        XCTAssertEqual(list.first, Resolution(2048, 1536)) // r_mode 10, larger than the desktop
+        XCTAssertEqual(list.first, Resolution(1920, 1080))
         XCTAssertEqual(list.filter { $0 == Resolution(1920, 1080) }.count, 1)
         XCTAssertFalse(list.contains(Resolution(2560, 1440)))
         XCTAssertFalse(list.contains(Resolution(320, 200)))
-        // every numbered mode, below 640 x 480 and above the desktop too
-        XCTAssertTrue(rModeSizes.allSatisfy { list.contains($0) })
-        XCTAssertEqual(list.filter { $0 == Resolution(640, 480) }.count, 1)
-        XCTAssertEqual(list.last, Resolution(320, 240))
+        // the numbered modes that fit, from 640 x 480 up: not 2048 x 1536 or 1600 x 1200 on a 1080p desktop, nor
+        // 320 x 240, 400 x 300 and 512 x 384
+        for (w, h) in [(1152, 864), (1024, 768), (960, 720), (856, 480), (800, 600)] {
+            XCTAssertTrue(list.contains(Resolution(w, h)))
+        }
+        for (w, h) in [(2048, 1536), (1600, 1200), (512, 384), (400, 300), (320, 240)] {
+            XCTAssertFalse(list.contains(Resolution(w, h)))
+        }
+        XCTAssertEqual(list.last, Resolution(640, 480))
 
         XCTAssertEqual(aspectRatio(1920, 1080), "16:9")
         XCTAssertEqual(aspectRatio(1366, 768), "16:9")

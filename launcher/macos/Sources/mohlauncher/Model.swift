@@ -357,8 +357,8 @@ final class LauncherModel: ObservableObject {
         return entries
     }
 
-    /// The config's: a numbered mode (r_mode 0 to 11) is its size, which the list always has (nothing is passed to the
-    /// game unless the player picks another entry); a number the game doesn't have is the desktop's resolution
+    /// The config's: a numbered mode (r_mode 0 to 11) is its size (nothing is passed to the game unless the player
+    /// picks another entry); a number the game doesn't have is the desktop's resolution
     private var currentResolution: ResolutionEntry {
         let mode = Int(edits.get("r_mode")) ?? -2
         if mode == -1 {

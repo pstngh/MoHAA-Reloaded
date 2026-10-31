@@ -316,8 +316,9 @@ public func aspectRatio(_ width: Int, _ height: Int) -> String {
     return "\(width / a):\(height / a)"
 }
 
-/// The sizes to offer: the display's, the common ones that fit it and every numbered mode (r_mode 0 to 11), largest
-/// first, without duplicates
+/// The sizes to offer: the display's, and the common ones and numbered modes (r_mode 0 to 11) that fit it, from
+/// 640 x 480 up, largest first, without duplicates (a config's own size, if it isn't one of them, is added to the
+/// menu by the app)
 public func resolutionList(displayModes: [Resolution], desktop: Resolution) -> [Resolution] {
     let common = [
         (3840, 2160), (3440, 1440), (2560, 1600), (2560, 1440), (2560, 1080), (1920, 1200), (1920, 1080),
@@ -330,12 +331,8 @@ public func resolutionList(displayModes: [Resolution], desktop: Resolution) -> [
     }
     add(desktop)
     displayModes.forEach(add)
-    for r in common where desktop.width <= 0 || (r.width <= desktop.width && r.height <= desktop.height) {
+    for r in common + rModeSizes where desktop.width <= 0 || (r.width <= desktop.width && r.height <= desktop.height) {
         add(r)
-    }
-    // every numbered mode, as small or as large as it is: a config's r_mode is then always in the list
-    for r in rModeSizes where !list.contains(r) {
-        list.append(r)
     }
     return list.sorted { $0.width != $1.width ? $0.width > $1.width : $0.height > $1.height }
 }
