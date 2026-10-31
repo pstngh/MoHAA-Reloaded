@@ -443,7 +443,9 @@ struct CrosshairSection: View {
                                 }
                                 Text("Custom").tag(Int64(-1))
                             }
+                            .fixedSize() // the names whole: the swatch gives way
                             ColorPicker("Any color", selection: model.color, supportsOpacity: false)
+                                .frame(width: 36)
                         }
                         .frame(height: Metrics.control)
                     }
