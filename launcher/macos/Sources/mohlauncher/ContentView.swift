@@ -197,15 +197,12 @@ struct GameTab: View {
             model.select(game)
         } label: {
             HStack(spacing: 0) {
-                // the game's icon in a box of its own, lifted off the tab
+                // the game's icon, straight on the tab: only the tab shows the selection
                 Image(nsImage: model.icon(for: game))
                     .resizable()
                     .interpolation(.high)
-                    .frame(width: 24, height: 24)
+                    .frame(width: 28, height: 28)
                     .frame(width: 36, height: 36)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(selected ? 0.12 : 0.07)))
-                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.white.opacity(0.1)))
-                    .shadow(color: .black.opacity(0.5), radius: 3, y: 1)
                 // the name, centered in the rest, and the selection bar as wide as it
                 Text(game.title)
                     .font(.system(size: 13, weight: selected ? .semibold : .regular))
