@@ -158,7 +158,8 @@ jobs:
             sub(r"(\| `" + re.escape(name) + r"` \| `)[0-9a-f]{64}(` \|)", r"\g<1>" + digest + r"\g<2>")
         sub(r"(Built by this repository's CI from commit )\[`[0-9a-f]{8}`\]\(https://github\.com/[^/]+/[^/]+/commit/[0-9a-f]{40}\)( of the `vulkan` branch)",
             r"\g<1>[`" + commit[:8] + "`](https://github.com/" + repo + "/commit/" + commit + r")\g<2>")
-        open(notes, "w", encoding="utf-8").write(text)
+        # gh adds a newline to the body it reads: without this, each update would add one
+        open(notes, "w", encoding="utf-8").write(text.rstrip("\n") + "\n")
         EOF
         gh release upload v1.0.0 $files --clobber
         gh release edit v1.0.0 --notes-file notes.md
