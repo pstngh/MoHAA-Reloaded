@@ -15,8 +15,10 @@ use std::time::{Duration, SystemTime};
 
 slint::include_modules!();
 
-const CVAR_DEFAULTS: [(&str, &str); 10] = [
+const CVAR_DEFAULTS: [(&str, &str); 11] = [
     ("name", ""),
+    // off unless the player turns it on (the game's own default is on): always passed, so the game agrees
+    ("cl_discordPresence", "0"),
     ("cg_crosshair_length", "4"),
     ("cg_crosshair_gap", "3"),
     ("cg_crosshair_thickness", "1"),
@@ -350,6 +352,7 @@ fn show_cvars(ui: &LauncherWindow, st: &mut State) {
     if ui.get_name().as_str() != st.edits.get("name") {
         ui.set_name(st.edits.get("name").into());
     }
+    ui.set_discord_presence(int(st.edits.get("cl_discordPresence")) != 0);
     show_crosshair(ui, st);
     show_display(ui, st);
 }
@@ -462,7 +465,11 @@ fn start(ui: &LauncherWindow, state: &Shared, connect: bool) {
     if exe.parent().and_then(|p| p.canonicalize().ok()) != folder.canonicalize().ok() {
         launch.basepath = folder.display().to_string();
     }
-    for (name, value) in st.edits.changes() {
+    let changes = st.edits.changes();
+    if !changes.iter().any(|(name, _)| name == "cl_discordPresence") {
+        launch.cvars.push(("cl_discordPresence".into(), st.edits.get("cl_discordPresence").into()));
+    }
+    for (name, value) in changes {
         if name == "name" {
             let name_value = value.trim();
             if !name_value.is_empty() {
@@ -575,6 +582,11 @@ fn main() -> Result<(), slint::PlatformError> {
 
     on!(on_select_game, |ui, st, game| { select_game(&ui, &mut st, game as usize) });
     on!(on_name_edited, |_ui, st, text| { st.edits.set("name", &text) });
+    on!(on_discord_presence_toggled, |ui, st| {
+        let on = int(st.edits.get("cl_discordPresence")) != 0;
+        st.edits.set("cl_discordPresence", if on { "0" } else { "1" });
+        ui.set_discord_presence(!on);
+    });
     on!(on_address_edited, |ui, st, text| {
         st.slot_mut().address = text.to_string();
         show_servers(&ui, &st);

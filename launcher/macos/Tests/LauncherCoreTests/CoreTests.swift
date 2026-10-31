@@ -90,6 +90,11 @@ final class CoreTests: XCTestCase {
             "+set", "password", "\"pw;1\"", "+set", "rconPassword", "r", "+connect", "1.2.3.4:12203",
         ])
         XCTAssertEqual(buildArgs(Launch()), ["+set", "com_target_game", "0"])
+        var elsewhere = Launch()
+        elsewhere.homepath = "/games/MOH AA"
+        elsewhere.basepath = "/games/MOH AA"
+        XCTAssertEqual(buildArgs(elsewhere), ["+set", "fs_homepath", "/games/MOH AA", "+set", "fs_basepath",
+                                              "/games/MOH AA", "+set", "com_target_game", "0"])
     }
 
     func testMisc() {
@@ -133,6 +138,46 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(list.filter { $0 == Resolution(1920, 1080) }.count, 1)
         XCTAssertFalse(list.contains(Resolution(2560, 1440)))
         XCTAssertFalse(list.contains(Resolution(320, 200)))
+    }
+
+    func testSettingsAndServers() throws {
+        // the Windows and Linux launcher's mohlauncher.json reads the same
+        let json = #"{"game": 1, "slots": [{"address": "a:1", "servers": [{"label": "", "address": "a:1"}, {"address": " "}]}]}"#
+        var s = LauncherSettings.from(json: json.data(using: .utf8))
+        XCTAssertEqual(s.game, .spearhead)
+        XCTAssertEqual(s.slots.count, 3)
+        XCTAssertEqual(s.slots[0].servers.map { $0.label }, ["a:1"])
+        XCTAssertEqual(LauncherSettings.from(json: Data("not json".utf8)).slots.count, 3)
+
+        s.remember(.alliedAssault, address: "host", password: "pw", rcon: "")
+        s.remember(.alliedAssault, address: "HOST:12203", password: "pw2", rcon: "r")
+        XCTAssertEqual(s.slots[0].servers.count, 2)
+        XCTAssertEqual(s.slots[0].servers[1].password, "pw2")
+        let encoded = String(decoding: try JSONEncoder().encode(s), as: UTF8.self)
+        XCTAssertTrue(encoded.contains("\"label\""))
+        XCTAssertFalse(encoded.contains("\"name\"")) // a server has a label; the player's name is the game's
+
+        var list = listedServers(s, .alliedAssault)
+        XCTAssertTrue(list[0].builtin)
+        XCTAssertEqual(list[0].server.label, "Forte FFA")
+        XCTAssertEqual(list.count, 3)
+        s.remember(.alliedAssault, address: "151.80.234.90:12203", password: "x", rcon: "")
+        list = listedServers(s, .alliedAssault)
+        XCTAssertEqual(list.count, 3)
+        XCTAssertEqual(list[0].server.password, "x")
+        XCTAssertTrue(listedServers(s, .spearhead).isEmpty)
+    }
+
+    func testGameData() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("mohl-data-test-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: root) }
+        try fm.createDirectory(at: root.appendingPathComponent("MAIN"), withIntermediateDirectories: true)
+        XCTAssertFalse(hasGameData(root))
+        try Data().write(to: root.appendingPathComponent("MAIN/pak0.PK3"))
+        XCTAssertTrue(hasGameData(root))
+        XCTAssertNotNil(dataFolder(root, "main"))
+        XCTAssertNil(dataFolder(root, "mainta"))
     }
 
     func testFindConfig() throws {

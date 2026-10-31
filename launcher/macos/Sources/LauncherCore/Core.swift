@@ -181,6 +181,10 @@ public func engineArg(_ value: String) -> String {
 }
 
 public struct Launch {
+    /// fs_homepath: where the game writes everything (the game folder), if not empty
+    public var homepath = ""
+    /// fs_basepath: the game folder when the game isn't in it, else empty
+    public var basepath = ""
     public var game: Game = .alliedAssault
     public var cvars: [(String, String)] = []
     public var address = ""
@@ -189,10 +193,14 @@ public struct Launch {
     public init() {}
 }
 
-/// The game's arguments: +set com_target_game N, the cvars, the passwords, +connect
+/// The game's arguments: +set fs_homepath, +set fs_basepath, +set com_target_game N, the cvars, the passwords,
+/// +connect
 public func buildArgs(_ launch: Launch) -> [String] {
-    var args = ["+set", "com_target_game", String(launch.game.rawValue)]
+    var args: [String] = []
     func set(_ name: String, _ value: String) { args += ["+set", name, engineArg(value)] }
+    if !launch.homepath.isEmpty { set("fs_homepath", launch.homepath) }
+    if !launch.basepath.isEmpty { set("fs_basepath", launch.basepath) }
+    set("com_target_game", String(launch.game.rawValue))
     for (name, value) in launch.cvars { set(name, value) }
     if !launch.password.isEmpty { set("password", launch.password) }
     if !launch.rcon.isEmpty { set("rconPassword", launch.rcon) }
@@ -303,4 +311,133 @@ public func resolutionList(displayModes: [Resolution], desktop: Resolution) -> [
         add(r)
     }
     return list.sorted { $0.width != $1.width ? $0.width > $1.width : $0.height > $1.height }
+}
+
+/// A data folder (main, mainta, maintt), in any case: retail folders sometimes come as MAIN or MainTA
+public func dataFolder(_ folder: URL, _ name: String) -> URL? {
+    let fm = FileManager.default
+    var isDir: ObjCBool = false
+    let exact = folder.appendingPathComponent(name)
+    if fm.fileExists(atPath: exact.path, isDirectory: &isDir) && isDir.boolValue { return exact }
+    let names = (try? fm.contentsOfDirectory(atPath: folder.path)) ?? []
+    guard let match = names.first(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) else { return nil }
+    let url = folder.appendingPathComponent(match)
+    return fm.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue ? url : nil
+}
+
+/// The retail game's data: main/Pak0.pk3, in any case
+public func hasGameData(_ folder: URL) -> Bool {
+    guard let main = dataFolder(folder, "main") else { return false }
+    let names = (try? FileManager.default.contentsOfDirectory(atPath: main.path)) ?? []
+    return names.contains { $0.caseInsensitiveCompare("Pak0.pk3") == .orderedSame }
+}
+
+/// A server in the list: what it's called there (its address until it's renamed), its address and the passwords
+/// used on it. The player's own name isn't part of it: that's the game's.
+public struct Server: Codable, Identifiable, Hashable {
+    public var id = UUID()
+    public var label: String
+    public var address: String
+    public var password = ""
+    public var rcon = ""
+
+    enum CodingKeys: String, CodingKey { case label, address, password, rcon }
+
+    public init(label: String, address: String, password: String = "", rcon: String = "") {
+        self.label = label
+        self.address = address
+        self.password = password
+        self.rcon = rcon
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        address = try c.decodeIfPresent(String.self, forKey: .address) ?? ""
+        label = try c.decodeIfPresent(String.self, forKey: .label) ?? ""
+        if trimmed(label).isEmpty { label = address }
+        password = try c.decodeIfPresent(String.self, forKey: .password) ?? ""
+        rcon = try c.decodeIfPresent(String.self, forKey: .rcon) ?? ""
+    }
+}
+
+/// Per game: the server fields and the servers played on
+public struct GameSlot: Codable {
+    public var address = ""
+    public var password = ""
+    public var rcon = ""
+    public var servers: [Server] = []
+
+    public init() {}
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        address = try c.decodeIfPresent(String.self, forKey: .address) ?? ""
+        password = try c.decodeIfPresent(String.self, forKey: .password) ?? ""
+        rcon = try c.decodeIfPresent(String.self, forKey: .rcon) ?? ""
+        servers = (try c.decodeIfPresent([Server].self, forKey: .servers) ?? []).filter { !trimmed($0.address).isEmpty }
+    }
+}
+
+/// The launcher's own settings, as the game folder's mohlauncher.json holds them (the Windows and Linux launcher's
+/// are the same)
+public struct LauncherSettings: Codable {
+    public var game = Game.alliedAssault
+    public var slots = [GameSlot](repeating: GameSlot(), count: Game.allCases.count)
+
+    public init() {}
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        game = (try? c.decodeIfPresent(Game.self, forKey: .game)) ?? .alliedAssault
+        slots = (try? c.decodeIfPresent([GameSlot].self, forKey: .slots)) ?? []
+        while slots.count < Game.allCases.count { slots.append(GameSlot()) }
+    }
+
+    public static func from(json data: Data?) -> LauncherSettings {
+        data.flatMap { try? JSONDecoder().decode(LauncherSettings.self, from: $0) } ?? LauncherSettings()
+    }
+
+    /// Keeps the server in the game's list (added at the end), with the passwords used
+    public mutating func remember(_ game: Game, address: String, password: String, rcon: String) {
+        if let k = slots[game.rawValue].servers.firstIndex(where: { sameAddress($0.address, address) }) {
+            slots[game.rawValue].servers[k].address = address
+            slots[game.rawValue].servers[k].password = password
+            slots[game.rawValue].servers[k].rcon = rcon
+        } else {
+            slots[game.rawValue].servers.append(Server(label: address, address: address, password: password, rcon: rcon))
+        }
+    }
+}
+
+/// The servers the launcher comes with, first in their game's list: they can't be renamed or removed
+public let builtinServers: [(game: Game, label: String, address: String)] = [
+    (.alliedAssault, "Forte FFA", "151.80.234.90:12203"),
+]
+
+/// A server as the list shows it
+public struct Listed: Identifiable {
+    /// with the passwords last used on it
+    public var server: Server
+    /// its place in the game's saved servers, if it's there
+    public var saved: Int?
+    public var builtin: Bool
+    public var id: String { builtin ? "builtin:" + server.address : server.id.uuidString }
+}
+
+/// The game's list: its built-in servers, then the ones the player joined (a built-in one's entry, which keeps the
+/// passwords used, isn't listed twice)
+public func listedServers(_ settings: LauncherSettings, _ game: Game) -> [Listed] {
+    let saved = settings.slots[game.rawValue].servers
+    var list: [Listed] = []
+    for b in builtinServers where b.game == game {
+        let k = saved.firstIndex { sameAddress($0.address, b.address) }
+        let server = Server(label: b.label, address: b.address, password: k.map { saved[$0].password } ?? "",
+                            rcon: k.map { saved[$0].rcon } ?? "")
+        list.append(Listed(server: server, saved: k, builtin: true))
+    }
+    for (k, s) in saved.enumerated()
+    where !builtinServers.contains(where: { $0.game == game && sameAddress($0.address, s.address) }) {
+        list.append(Listed(server: s, saved: k, builtin: false))
+    }
+    return list
 }

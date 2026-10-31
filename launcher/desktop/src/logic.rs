@@ -132,6 +132,9 @@ pub struct CvarEdits {
 
 #[derive(Clone, Debug)]
 struct Entry {
+    /// lowercase, to find it (cvar names don't depend on case)
+    key: String,
+    /// as written, to pass it
     name: String,
     def: String,
     value: String,
@@ -143,7 +146,8 @@ impl CvarEdits {
         let entries = defaults
             .iter()
             .map(|(name, def)| Entry {
-                name: name.to_lowercase(),
+                key: name.to_lowercase(),
+                name: name.to_string(),
                 def: def.to_string(),
                 value: def.to_string(),
                 loaded: def.to_string(),
@@ -154,7 +158,7 @@ impl CvarEdits {
 
     fn find(&self, name: &str) -> Option<&Entry> {
         let key = name.to_lowercase();
-        self.entries.iter().find(|e| e.name == key)
+        self.entries.iter().find(|e| e.key == key)
     }
 
     pub fn get(&self, name: &str) -> &str {
@@ -163,7 +167,7 @@ impl CvarEdits {
 
     pub fn set(&mut self, name: &str, value: &str) {
         let key = name.to_lowercase();
-        if let Some(e) = self.entries.iter_mut().find(|e| e.name == key) {
+        if let Some(e) = self.entries.iter_mut().find(|e| e.key == key) {
             e.value = value.to_string();
         }
     }
@@ -177,14 +181,14 @@ impl CvarEdits {
     pub fn load(&mut self, config: &Cvars) {
         for e in &mut self.entries {
             let changed = e.value != e.loaded;
-            e.loaded = config.get(&e.name).cloned().unwrap_or_else(|| e.def.clone());
+            e.loaded = config.get(&e.key).cloned().unwrap_or_else(|| e.def.clone());
             if !changed {
                 e.value = e.loaded.clone();
             }
         }
     }
 
-    /// The changed values, in the order of the defaults
+    /// The changed values, in the order of the defaults, by their names as written
     pub fn changes(&self) -> Vec<(String, String)> {
         self.entries.iter().filter(|e| e.value != e.loaded).map(|e| (e.name.clone(), e.value.clone())).collect()
     }

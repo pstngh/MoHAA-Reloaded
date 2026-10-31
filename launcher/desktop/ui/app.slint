@@ -139,13 +139,14 @@ component LabelAction inherits Rectangle {
     in property <image> icon;
     in property <string> text;
     in property <bool> enabled: true;
+    in property <bool> active: true; // in the accent color, or (a toggle that's off) in the labels' color
     in property <styled-text> tip;
     callback clicked;
 
     width: row.preferred-width;
     height: Theme.label-height;
     property <brush> tint: !root.enabled ? Theme.tertiary : touch.has-hover ? Palette.foreground
-        : Palette.accent-background;
+        : root.active ? Palette.accent-background : Theme.secondary;
 
     row := HorizontalLayout {
         spacing: 4px;
@@ -359,6 +360,7 @@ export component LauncherWindow inherits Window {
 
     // the player and the servers
     in-out property <string> name;
+    in property <bool> discord-presence;
     in-out property <string> address;
     in-out property <string> password;
     in-out property <string> rcon;
@@ -393,6 +395,7 @@ export component LauncherWindow inherits Window {
 
     callback select-game(int);
     callback name-edited(string);
+    callback discord-presence-toggled();
     callback address-edited(string);
     callback password-edited(string);
     callback rcon-edited(string);
@@ -450,8 +453,22 @@ export component LauncherWindow inherits Window {
             GridLayout {
                 spacing: Theme.gap;
                 Row {
-                    Field {
-                        label: "Player name";
+                    VerticalLayout {
+                        spacing: Theme.label-gap;
+                        HorizontalLayout {
+                            FieldLabel {
+                                text: "Player name";
+                                horizontal-stretch: 1;
+                            }
+                            LabelAction {
+                                icon: root.discord-presence ? @image-url("icons/checkbox-checked.svg")
+                                    : @image-url("icons/checkbox.svg");
+                                text: "Discord presence";
+                                active: root.discord-presence;
+                                tip: @markdown("Show what you play on your Discord profile while Discord runs (cl_discordPresence)");
+                                clicked => { root.discord-presence-toggled(); }
+                            }
+                        }
                         LineEdit {
                             text <=> root.name;
                             placeholder-text: "UnnamedSoldier";
@@ -645,7 +662,7 @@ export component LauncherWindow inherits Window {
             VerticalLayout {
                 alignment: center;
                 LinkIcon {
-                    icon: @image-url("icons/github.svg");
+                    icon: @image-url("../../assets/github.svg");
                     tip: @markdown("MoHAA Reloaded on GitHub");
                     clicked => { root.open-url("https://github.com/pstngh/MoHAA-Reloaded"); }
                 }
@@ -653,7 +670,7 @@ export component LauncherWindow inherits Window {
             VerticalLayout {
                 alignment: center;
                 LinkIcon {
-                    icon: @image-url("icons/discord.svg");
+                    icon: @image-url("../../assets/discord.svg");
                     hover-color: #5865f2; // Discord's blurple
                     tip: @markdown("Forte's Discord");
                     clicked => { root.open-url("https://dsc.gg/ForteFFA"); }
