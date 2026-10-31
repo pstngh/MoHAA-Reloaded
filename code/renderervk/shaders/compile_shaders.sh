@@ -9,7 +9,8 @@
 # source: with an argument only that file is written, main, temporal or
 # hdr, and the others' arrays stay as they are.
 #
-# Usage: code/renderervk/shaders/compile_shaders.sh [main|temporal|hdr]   (GLSLC=/path/to/glslc to override)
+# Usage: code/renderervk/shaders/compile_shaders.sh [main|temporal|hdr]   (GLSLC=/path/to/glslc to override;
+#        GLSLC=code/renderervk/shaders/glslang_as_glslc.sh compiles with glslang instead, see there)
 
 set -eu
 
@@ -20,6 +21,7 @@ GLSLC=${GLSLC:-glslc}
 SHADERS="generic_vert:generic.vert:
 generic_clip_vert:generic.vert:-DCLIP_DISTANCE
 generic_frag:generic.frag:
+generic_bindless_frag:generic.frag:-DBINDLESS
 skinned_vert:skinned.vert:
 skinned_clip_vert:skinned.vert:-DCLIP_DISTANCE
 effects_vert:effects.vert:
@@ -27,6 +29,7 @@ effects_clip_vert:effects.vert:-DCLIP_DISTANCE"
 TEMPORAL_SHADERS="generic_temporal_vert:generic.vert:-DTEMPORAL
 generic_temporal_clip_vert:generic.vert:-DTEMPORAL,-DCLIP_DISTANCE
 generic_temporal_frag:generic.frag:-DTEMPORAL
+generic_temporal_bindless_frag:generic.frag:-DTEMPORAL,-DBINDLESS
 skinned_temporal_vert:skinned.vert:-DTEMPORAL
 skinned_temporal_clip_vert:skinned.vert:-DTEMPORAL,-DCLIP_DISTANCE
 effects_temporal_vert:effects.vert:-DTEMPORAL

@@ -452,6 +452,8 @@ CLASS_DECLARATION(Listener, MenuManager, NULL) {
 MenuManager::MenuManager()
 {
     m_lock = false;
+    memset(m_found, 0, sizeof(m_found));
+    m_generation = 1;
 }
 
 void MenuManager::RealignMenus(void)
@@ -468,11 +470,13 @@ void MenuManager::RealignMenus(void)
 void MenuManager::AddMenu(Menu *m)
 {
     m_menulist.AddObject(m);
+    m_generation++;
 }
 
 void MenuManager::DeleteMenu(Menu *m)
 {
     m_menulist.RemoveObject(m);
+    m_generation++;
 }
 
 void MenuManager::DeleteAllMenus(void)
@@ -486,6 +490,7 @@ void MenuManager::DeleteAllMenus(void)
     // Added in OPM
     //  Make sure to clear the menu list and stack
     m_menulist.FreeObjectList();
+    m_generation++;
 
     m_menustack.Clear();
     m_showmenustack.Clear();
@@ -493,8 +498,22 @@ void MenuManager::DeleteAllMenus(void)
 
 Menu *MenuManager::FindMenu(str name)
 {
-    int i;
-    int count;
+    int         i;
+    int         count;
+    unsigned    hash;
+    const char *s;
+
+    // the cache: the HUD looks menus up by name every frame (UI_Update),
+    // and the names are compared without case, as the lookup does
+    hash = 0;
+    for (s = name.c_str(); *s; s++) {
+        hash = hash * 31 + (unsigned)tolower((unsigned char)*s);
+    }
+    hash &= ARRAY_LEN(m_found) - 1;
+    if (m_found[hash].generation == m_generation && m_found[hash].menu
+        && !str::icmp(m_found[hash].menu->m_name, name)) {
+        return m_found[hash].menu;
+    }
 
     count = m_menulist.NumObjects();
 
@@ -502,6 +521,8 @@ Menu *MenuManager::FindMenu(str name)
         Menu *m = m_menulist.ObjectAt(i);
 
         if (!str::icmp(m->m_name, name)) {
+            m_found[hash].menu       = m;
+            m_found[hash].generation = m_generation;
             return m;
         }
     }

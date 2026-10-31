@@ -73,6 +73,12 @@ class MenuManager : public Listener
     Stack<Menu *>     m_showmenustack;
     Stack<Menu *>     m_menustack;
     bool              m_lock;
+    // FindMenu's cache: the menus found by name, dropped when the list changes
+    struct {
+        Menu *menu;
+        int   generation;
+    } m_found[64];
+    int m_generation;
 
 public:
     CLASS_PROTOTYPE(MenuManager);

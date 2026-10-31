@@ -73,6 +73,9 @@ layout(location = 1) out vec2 v_st0;
 layout(location = 2) out vec2 v_st1;
 layout(location = 3) out vec2 v_fogClip;
 layout(location = 4) out vec3 v_position;
+// bindless textures: unit 0's slot, above renderCount in the draw record
+// (vk_draw); unused without them
+layout(location = 11) flat out uvec2 v_tex;
 #ifdef TEMPORAL
 // generic.vert's
 layout(location = 5) out vec4 v_currClip;
@@ -276,7 +279,9 @@ vec4 lightColor( uint list, vec3 xyz, vec3 normal ) {
 
 void main() {
 	uint draw = uint( gl_InstanceIndex ) * 8u;
-	uint renderCount = frame[draw + 6u];
+	uint word6 = frame[draw + 6u];
+	uint renderCount = word6 & 0xFFFFu;	// VK_SKIN_NONE collapses nothing either way: no surface has that many vertexes
+	v_tex = uvec2( word6 >> 16, 0u );
 	uint firstVertex = frame[draw + 7u] & ( ( 1u << ENV_SHIFT ) - 1u );
 	uint env = frame[draw + 7u] >> ENV_SHIFT;
 	uint v = uint( gl_VertexIndex ) - firstVertex;

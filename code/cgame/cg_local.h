@@ -199,6 +199,28 @@ extern "C" {
         trace_t  trace;
     } shadowTrace_t;
 
+    // the precise shadows of a player (CG_EntityShadow, cg_shadows 2): the
+    // lights gathered at its origin, and each foot's trace to each light,
+    // the same while the foot stays within a unit of where it was, for the
+    // server frame
+#define FOOT_SHADOW_LIGHTS 8
+    typedef struct {
+        qboolean valid;
+        vec3_t   pos; // the foot
+        vec3_t   lightPos;
+        trace_t  trace;
+    } footShadowTrace_t;
+
+    typedef struct {
+        int               serverTime; // the snapshot these are from
+        int               maxLights;  // cg_shadowscount then
+        int               numLights;  // -1: not gathered yet
+        vec3_t            origin;     // where the lights were gathered
+        vec3_t            lightPos[FOOT_SHADOW_LIGHTS];
+        vec3_t            lightIntensity[FOOT_SHADOW_LIGHTS];
+        footShadowTrace_t feet[FOOT_SHADOW_LIGHTS][2]; // per light: the left and the right foot
+    } footShadow_t;
+
     //======================================================================
 
     // all cg.stepTime, cg.duckTime, cg.landTime, etc are set to cg.time when the action
@@ -355,6 +377,8 @@ extern "C" {
 
         // the last shadow trace of each entity
         shadowTrace_t shadowTraces[MAX_GENTITIES];
+        // the precise shadows' lights and traces of each player
+        footShadow_t footShadows[MAX_CLIENTS];
 
         // misc
         crain_t      rain;

@@ -1937,6 +1937,7 @@ float-float, color.
 
 #define FX_WORDS			128
 #define FX_COLOR			120
+#define FX_TEX_SLOTS		124		// bindless textures: the slots of the two units (vk_bound_texture_slots)
 #define FX_CONSTANT_COLOR	( 1 << 11 )
 #define FX_OVERBRIGHT		( 1 << 17 )
 
@@ -2466,6 +2467,9 @@ int RB_StaticFxRecord( const shaderStage_t *pStage, int colorFx, const staticFxU
 	Com_Memset( w, 0, FX_WORDS * sizeof( *w ) );
 	lightWords = 0;
 
+	// the textures bound for the draw (the record is compared whole below,
+	// so draws with other textures get records of their own)
+	w[FX_TEX_SLOTS] = vk_bound_texture_slots();
 	w[0] = colorFx;
 	w[1] = fxTables;
 	VectorCopy( backEnd.ori.viewOrigin, &f[4] );

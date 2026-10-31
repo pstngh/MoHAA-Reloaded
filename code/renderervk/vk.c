@@ -66,6 +66,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 vkInstance_t	vk;
 cvar_t			*r_vkValidation;
+cvar_t			*r_vkBindless;
 cvar_t			*r_vkFallbacks;
 cvar_t			*r_fastSync;
 
@@ -552,6 +553,11 @@ void VK_BeginFrameIfNeeded( void ) {
 	VK_CHECK( qvkWaitForFences( vk.device, 1, &frame->fence, VK_TRUE, UINT64_MAX ) );
 	vk.stats.waitUs += VK_Microseconds() - start;
 	VK_ProcessDestroyList( frame );
+	// bindless textures: this frame's set gets the slots that changed since
+	// it was last written (the frame is done, so the set is free)
+	if ( vk.bindless ) {
+		VK_TextureArrayUpdate( frame );
+	}
 	VK_CollectDepthReads( frame );
 	VK_CollectTimestamps( frame );
 
@@ -2088,9 +2094,9 @@ static void VK_ReportCapabilities( void ) {
 		VK_SwapchainPresentModeName(), vk.width, vk.height, vk.swapchainImageCount, VK_MAX_FRAMES,
 		vk.submitThread ? ", submit thread (r_vkSubmitThread)" : "" );
 	// what the fallbacks replace (see README, Known risks); r_vkFallbacks forces them
-	ri.Printf( PRINT_ALL, "Vulkan present fences %s, view swizzle %s, stride 0 bindings %s, Bresenham lines %s, line stipple %s%s\n",
+	ri.Printf( PRINT_ALL, "Vulkan present fences %s, view swizzle %s, stride 0 bindings %s, Bresenham lines %s, line stipple %s, bindless textures %s%s\n",
 		vk.presentFences ? "yes" : "no", vk.viewSwizzle ? "yes" : "no", vk.strideZero ? "yes" : "no",
-		vk.bresenhamLines ? "yes" : "no", vk.lineStipple ? "yes" : "no",
+		vk.bresenhamLines ? "yes" : "no", vk.lineStipple ? "yes" : "no", vk.bindless ? "yes" : "no",
 		vk.fallbacks ? va( " (r_vkFallbacks %d)", vk.fallbacks ) : "" );
 }
 
@@ -2118,7 +2124,8 @@ static void VK_Info_f( void ) {
 		" waitUs=%llu flushUs=%llu submitUs=%llu acquireUs=%llu acquireAheadUs=%llu frameToPresentUs=%llu presentUs=%llu pipelineUs=%llu prebuiltUs=%llu allocationUs=%llu textureUs=%llu"
 		" gpuFrames=%llu gpuMainUs=%llu gpuPresentUs=%llu gpuFrameUs=%llu"
 		" threadWaitUs=%llu threadFrames=%llu threadStartUs=%llu threadSubmits=%llu threadSubmitUs=%llu threadAcquireUs=%llu"
-		" threadPresents=%llu threadPresentUs=%llu threadCopies=%llu\n",
+		" threadPresents=%llu threadPresentUs=%llu threadCopies=%llu"
+		" vertexBinds=%llu indexBinds=%llu pushConstants=%llu dynamicStates=%llu\n",
 		VK_DELTA( frames ), VK_DELTA( renderPasses ), VK_DELTA( submits ), VK_DELTA( flushes ), VK_DELTA( draws ),
 		VK_DELTA( staticDraws ), VK_DELTA( effectsDraws ), (unsigned long long)( vk_terrain.draws - vk_terrain.reportedDraws ),
 		(unsigned long long)( vk_terrain.slots - vk_terrain.reportedSlots ), VK_DELTA( skinDraws ), VK_DELTA( pipelineBinds ), VK_DELTA( descriptorBinds ), VK_DELTA( vertexBytes ), VK_DELTA( stagingBytes ), VK_DELTA( mainUploads ),
@@ -2128,7 +2135,8 @@ static void VK_Info_f( void ) {
 		VK_DELTA( acquireUs ), VK_DELTA( acquireAheadUs ), VK_DELTA( frameToPresentUs ), VK_DELTA( presentUs ), VK_DELTA( pipelineUs ), VK_DELTA( prebuiltUs ), VK_DELTA( allocationUs ), VK_DELTA( textureUs ),
 		VK_DELTA( gpuFrames ), VK_DELTA( gpuMainUs ), VK_DELTA( gpuPresentUs ), VK_DELTA( gpuFrameUs ),
 		VK_DELTA( threadWaitUs ), VK_DELTA( threadFrames ), VK_DELTA( threadStartUs ), VK_DELTA( threadSubmits ),
-		VK_DELTA( threadSubmitUs ), VK_DELTA( threadAcquireUs ), VK_DELTA( threadPresents ), VK_DELTA( threadPresentUs ), VK_DELTA( threadCopies ) );
+		VK_DELTA( threadSubmitUs ), VK_DELTA( threadAcquireUs ), VK_DELTA( threadPresents ), VK_DELTA( threadPresentUs ), VK_DELTA( threadCopies ),
+		VK_DELTA( vertexBinds ), VK_DELTA( indexBinds ), VK_DELTA( pushConstants ), VK_DELTA( dynamicStates ) );
 #undef VK_DELTA
 	VK_MemoryBlockInfo( &numBlocks, &blockSize, &blockUsed );
 	VK_PipelineCounts( &numPipelines, &prebuilt, &prebuiltUsed );
@@ -2172,6 +2180,8 @@ static void VK_ResetState( void ) {
 
 void vk_initialize( void ) {
 	r_vkValidation = ri.Cvar_Get( "r_vkValidation", "0", CVAR_LATCH );
+	r_vkBindless = ri.Cvar_Get( "r_vkBindless", "1", CVAR_ARCHIVE | CVAR_LATCH );
+	ri.Cvar_SetDescription( r_vkBindless, "1: every texture is in one descriptor set bound once a frame and a draw names its textures by index, instead of a descriptor set bind per texture change (where the device allows it: see the startup line Vulkan ... bindless textures); 0: a set per texture" );
 	r_vkFallbacks = ri.Cvar_Get( "r_vkFallbacks", "0", CVAR_LATCH );
 	r_vkSubmitThread = ri.Cvar_Get( "r_vkSubmitThread", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	ri.Cvar_SetDescription( r_vkSubmitThread, "1: a thread submits and presents the frames and acquires the swapchain images (2: and copies every frame, for tests; see the renderer's README)" );
@@ -2200,6 +2210,9 @@ void vk_initialize( void ) {
 	VK_CreateRenderTargets();
 	VK_InitPipelines();
 	VK_CreateDlightSets();
+	if ( vk.bindless ) {
+		VK_TextureArrayInit();
+	}
 	VK_TemporalInitPipelines();
 	// the frame VK_CreateRenderTargets started
 	if ( vk.frame ) {
@@ -2423,6 +2436,25 @@ void vk_set_state( unsigned long stateBits ) {
 	vks.stateBits = stateBits;
 }
 
+/*
+===============
+vk_bound_texture_slots
+
+Bindless textures: the slots of the textures bound to the units, unit 0 |
+unit 1 << 16 (the default texture's for an unbound unit), for the effects
+records (RB_StaticFxRecord); 0 without bindless textures
+===============
+*/
+uint32_t vk_bound_texture_slots( void ) {
+	uint32_t slots;
+
+	if ( !vk.bindless ) {
+		return 0;
+	}
+	slots = VK_TextureArraySlots( VK_GetTexture( vks.texture[0] ), VK_GetTexture( vks.texture[1] ) );
+	return ( slots & 0xFFFu ) | ( ( slots >> 12 ) << 16 );
+}
+
 void vk_bind_texture( int tmu, image_t *image ) {
 	if ( tmu < 0 || tmu >= NUM_TEXTURE_BUNDLES ) {
 		return;
@@ -2488,9 +2520,15 @@ void vk_set_depth_clamp( qboolean enable ) {
 
 void vk_set_polygon_offset( qboolean enable, float factor, float units ) {
 	vks.polygonOffset = enable;
-	vks.offsetFactor = factor;
-	vks.offsetUnits = units;
-	vk_dirty |= VK_DIRTY_DEPTHBIAS;
+	// the values matter to the pipelines with the bias enabled only
+	// (VK_PIPE_DEPTHBIAS), so they are kept when it is disabled and set
+	// again when they change: one vkCmdSetDepthBias a frame, not one per
+	// shader with polygon offset (two, on and off, before)
+	if ( enable && ( vks.offsetFactor != factor || vks.offsetUnits != units ) ) {
+		vks.offsetFactor = factor;
+		vks.offsetUnits = units;
+		vk_dirty |= VK_DIRTY_DEPTHBIAS;
+	}
 }
 
 void vk_set_color_mask( qboolean red, qboolean green, qboolean blue, qboolean alpha ) {
@@ -2898,6 +2936,7 @@ static void VK_ApplyDynamicState( VkCommandBuffer cmd, qboolean stippled ) {
 			viewport.minDepth = vk_depth_floor();
 		}
 		qvkCmdSetViewport( cmd, 0, 1, &viewport );
+		vk.stats.dynamicStates++;
 	}
 
 	if ( vk_dirty & VK_DIRTY_SCISSOR ) {
@@ -2905,11 +2944,13 @@ static void VK_ApplyDynamicState( VkCommandBuffer cmd, qboolean stippled ) {
 
 		VK_ScissorRect( &scissor );
 		qvkCmdSetScissor( cmd, 0, 1, &scissor );
+		vk.stats.dynamicStates++;
 	}
 
 	if ( vk_dirty & VK_DIRTY_DEPTHBIAS ) {
 		// only used by pipelines with VK_PIPE_DEPTHBIAS
 		qvkCmdSetDepthBias( cmd, vks.offsetUnits, 0.0f, vks.offsetFactor );
+		vk.stats.dynamicStates++;
 	}
 
 	if ( vk_dirty & VK_DIRTY_LINEWIDTH ) {
@@ -2919,12 +2960,14 @@ static void VK_ApplyDynamicState( VkCommandBuffer cmd, qboolean stippled ) {
 			width = Com_Clamp( vk.deviceProperties.limits.lineWidthRange[0], vk.deviceProperties.limits.lineWidthRange[1], vks.lineWidth );
 		}
 		qvkCmdSetLineWidth( cmd, width );
+		vk.stats.dynamicStates++;
 	}
 
 	if ( vk_dirty & VK_DIRTY_STENCIL ) {
 		qvkCmdSetStencilCompareMask( cmd, VK_STENCIL_FACE_FRONT_AND_BACK, vks.stencilMask & 0xFF );
 		qvkCmdSetStencilWriteMask( cmd, VK_STENCIL_FACE_FRONT_AND_BACK, vks.stencilWriteMask & 0xFF );
 		qvkCmdSetStencilReference( cmd, VK_STENCIL_FACE_FRONT_AND_BACK, vks.stencilRef & 0xFF );
+		vk.stats.dynamicStates += 3;
 	}
 
 	if ( vk_dirty & VK_DIRTY_MVP ) {
@@ -2951,8 +2994,10 @@ static void VK_ApplyDynamicState( VkCommandBuffer cmd, qboolean stippled ) {
 			qvkCmdPushConstants( cmd, vkt.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, VK_PUSH_VERTEX_SIZE, &pc );
 			VK_TemporalPushConstants( &tp );
 			qvkCmdPushConstants( cmd, vkt.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, VK_TEMPORAL_PUSH_OFFSET, sizeof( tp ), &tp );
+			vk.stats.pushConstants += 2;
 		} else {
 			qvkCmdPushConstants( cmd, vk.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, VK_PUSH_VERTEX_SIZE, &pc );
+			vk.stats.pushConstants++;
 		}
 	}
 
@@ -2974,6 +3019,7 @@ static void VK_ApplyDynamicState( VkCommandBuffer cmd, qboolean stippled ) {
 		qvkCmdPushConstants( cmd, vkt.active ? vkt.pipelineLayout : vk.pipelineLayout,
 			vkt.active ? VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT : VK_SHADER_STAGE_FRAGMENT_BIT, VK_PUSH_VERTEX_SIZE,
 			offsetof( vkPushConstants_t, dlightBase ) - VK_PUSH_VERTEX_SIZE, (const byte *)&pc + VK_PUSH_VERTEX_SIZE );
+		vk.stats.pushConstants++;
 	}
 
 	if ( vk_dirty & VK_DIRTY_DLIGHT ) {
@@ -2984,11 +3030,13 @@ static void VK_ApplyDynamicState( VkCommandBuffer cmd, qboolean stippled ) {
 		qvkCmdPushConstants( cmd, vkt.active ? vkt.pipelineLayout : vk.pipelineLayout,
 			vkt.active ? VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT : VK_SHADER_STAGE_FRAGMENT_BIT, offsetof( vkPushConstants_t, dlightBase ),
 			sizeof( pc.dlightBase ) + sizeof( pc.dlightMask ), &pc.dlightBase );
+		vk.stats.pushConstants++;
 	}
 
 	if ( stippled ) {
 		if ( vk_dirty & VK_DIRTY_STIPPLE ) {
 			qvkCmdSetLineStippleEXT( cmd, vks.lineStippleFactor, vks.lineStipplePattern );
+			vk.stats.dynamicStates++;
 		}
 		vk_dirty = 0;
 	} else {
@@ -3212,6 +3260,7 @@ static void VK_BindVertexBuffers( VkCommandBuffer cmd, const VkBuffer *buffers, 
 		qvkCmdBindVertexBuffers( cmd, 0, 4, buffers, offsets );
 		Com_Memcpy( vkb.vertexBuffers, buffers, sizeof( vkb.vertexBuffers ) );
 		Com_Memcpy( vkb.vertexOffsets, offsets, sizeof( vkb.vertexOffsets ) );
+		vk.stats.vertexBinds++;
 	}
 }
 
@@ -3220,6 +3269,7 @@ static void VK_BindIndexBuffer( VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSi
 		qvkCmdBindIndexBuffer( cmd, buffer, offset, VK_INDEX_TYPE_UINT32 );
 		vkb.indexBuffer = buffer;
 		vkb.indexOffset = offset;
+		vk.stats.indexBinds++;
 	}
 }
 
@@ -3228,7 +3278,22 @@ static void VK_BindNormals( VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize o
 		qvkCmdBindVertexBuffers( cmd, 4, 1, &buffer, &offset );
 		vkb.normalBuffer = buffer;
 		vkb.normalOffset = offset;
+		vk.stats.vertexBinds++;
 	}
+}
+
+/*
+===============
+VK_FrameIndexes
+
+Indexes copied into the frame's vertex buffer: bound once, at the buffer's
+start, and drawn from with firstIndex (VK_VertexAlloc keeps them 4-byte
+aligned); no bind per draw
+===============
+*/
+static uint32_t VK_FrameIndexes( VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset ) {
+	VK_BindIndexBuffer( cmd, buffer, 0 );
+	return (uint32_t)( offset / sizeof( glIndex_t ) );
 }
 
 /*
@@ -3240,7 +3305,7 @@ frame and binds them: positions, colors (or the constant color), texture
 coordinates of units 0 and 1, each in its own binding
 ===============
 */
-static void VK_UploadGeometry( VkCommandBuffer cmd, const drawGeometry_t *geometry, int numIndexes, const glIndex_t *indexes, qboolean normals ) {
+static uint32_t VK_UploadGeometry( VkCommandBuffer cmd, const drawGeometry_t *geometry, int numIndexes, const glIndex_t *indexes, qboolean normals ) {
 	VkBuffer buffer, buffers[4], indexBuffer;
 	VkDeviceSize offset, offsets[4], indexOffset;
 	VkDeviceSize xyzSize, colorSize, stSize[NUM_TEXTURE_BUNDLES], indexSize, normalSize, total, pos;
@@ -3338,7 +3403,7 @@ static void VK_UploadGeometry( VkCommandBuffer cmd, const drawGeometry_t *geomet
 	}
 
 	VK_BindVertexBuffers( cmd, buffers, offsets );
-	VK_BindIndexBuffer( cmd, indexBuffer, indexOffset );
+	return VK_FrameIndexes( cmd, indexBuffer, indexOffset );
 }
 
 /*
@@ -3371,7 +3436,7 @@ not a range of the static index stream: copied into the vertex buffer of
 the frame, once for the passes of a shader (drawGeometry_t::version)
 ===============
 */
-static void VK_BindCopiedIndexes( VkCommandBuffer cmd, const drawGeometry_t *geometry, int numIndexes, const glIndex_t *indexes ) {
+static uint32_t VK_BindCopiedIndexes( VkCommandBuffer cmd, const drawGeometry_t *geometry, int numIndexes, const glIndex_t *indexes ) {
 	if ( !geometry->version || vk_lastStaticIndexes.epoch != vk_vertexEpoch || vk_lastStaticIndexes.version != geometry->version
 		|| vk_lastStaticIndexes.indexes != indexes || vk_lastStaticIndexes.numIndexes != numIndexes ) {
 		VkDeviceSize size = sizeof( glIndex_t ) * numIndexes;
@@ -3384,7 +3449,7 @@ static void VK_BindCopiedIndexes( VkCommandBuffer cmd, const drawGeometry_t *geo
 		vk_lastStaticIndexes.indexes = indexes;
 		vk_lastStaticIndexes.numIndexes = numIndexes;
 	}
-	VK_BindIndexBuffer( cmd, vk_lastStaticIndexes.buffer, vk_lastStaticIndexes.offset );
+	return VK_FrameIndexes( cmd, vk_lastStaticIndexes.buffer, vk_lastStaticIndexes.offset );
 }
 
 /*
@@ -3395,7 +3460,7 @@ The streams of a draw from the terrain pool (the frame's copy, slot 0
 first) and its indexes, the slots
 ===============
 */
-static void VK_BindTerrainPool( VkCommandBuffer cmd, const drawGeometry_t *geometry, int numIndexes, const glIndex_t *indexes ) {
+static uint32_t VK_BindTerrainPool( VkCommandBuffer cmd, const drawGeometry_t *geometry, int numIndexes, const glIndex_t *indexes ) {
 	VkBuffer buffers[4];
 	VkDeviceSize offsets[4];
 	VkBuffer buffer = vk_terrain.copies[vk.frameIndex].buffer;
@@ -3422,9 +3487,9 @@ static void VK_BindTerrainPool( VkCommandBuffer cmd, const drawGeometry_t *geome
 	}
 
 	VK_BindVertexBuffers( cmd, buffers, offsets );
-	VK_BindCopiedIndexes( cmd, geometry, numIndexes, indexes );
 	// no slot may change from now on in this frame (vk_sync_terrain_pool)
 	vk_terrain.drawnSerial = vk.frameSerial;
+	return VK_BindCopiedIndexes( cmd, geometry, numIndexes, indexes );
 }
 
 /*
@@ -3489,8 +3554,7 @@ static uint32_t VK_BindStaticGeometry( VkCommandBuffer cmd, const drawGeometry_t
 		return geometry->staticFirstIndex;
 	}
 
-	VK_BindCopiedIndexes( cmd, geometry, numIndexes, indexes );
-	return 0;
+	return VK_BindCopiedIndexes( cmd, geometry, numIndexes, indexes );
 }
 
 void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, const glIndex_t *indexes ) {
@@ -3498,6 +3562,7 @@ void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, c
 	vkPipelineKey_t key;
 	VkCommandBuffer cmd;
 	VkPipeline pipeline;
+	uint32_t slots = 0;		// bindless textures: the units' slots, the draw's firstInstance
 	int i;
 
 	if ( !vk.device || numIndexes <= 0 || geometry->numVertexes <= 0 || ( geometry->isSkinned ? !vk_skin.buffer.buffer
@@ -3536,14 +3601,38 @@ void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, c
 		vk.stats.pipelineBinds++;
 	}
 
-	// every set the shaders declare must be bound, used or not
-	for ( i = 0; i < NUM_TEXTURE_BUNDLES; i++ ) {
-		VkDescriptorSet set = ( textures[i] ? textures[i] : VK_DefaultTexture() )->descriptorSet;
-
-		if ( set != vkb.sets[i] ) {
-			qvkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkt.active ? vkt.pipelineLayout : vk.pipelineLayout, i, 1, &set, 0, NULL );
-			vkb.sets[i] = set;
+	if ( vk.bindless ) {
+		// the set of every texture, once per command buffer; the draw names
+		// its units' slots (generic draws in firstInstance, the effects and
+		// skinned draws in their records, below)
+		if ( vkb.sets[0] != vk.frame->textureArraySet ) {
+			qvkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkt.active ? vkt.pipelineLayout : vk.pipelineLayout, 0, 1,
+				&vk.frame->textureArraySet, 0, NULL );
+			vkb.sets[0] = vk.frame->textureArraySet;
 			vk.stats.descriptorBinds++;
+		}
+		slots = VK_TextureArraySlots( textures[0], textures[1] );
+	} else {
+		// every set the shaders declare must be bound, used or not: a unit
+		// the draw doesn't use keeps the set bound before (any texture's set
+		// does, the shader reads nothing from it), the first draw binds the
+		// default
+		for ( i = 0; i < NUM_TEXTURE_BUNDLES; i++ ) {
+			VkDescriptorSet set;
+
+			if ( !textures[i] ) {
+				if ( vkb.sets[i] ) {
+					continue;
+				}
+				set = VK_DefaultTexture()->descriptorSet;
+			} else {
+				set = textures[i]->descriptorSet;
+			}
+			if ( set != vkb.sets[i] ) {
+				qvkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkt.active ? vkt.pipelineLayout : vk.pipelineLayout, i, 1, &set, 0, NULL );
+				vkb.sets[i] = set;
+				vk.stats.descriptorBinds++;
+			}
 		}
 	}
 
@@ -3577,27 +3666,31 @@ void vk_draw( primType_t prim, const drawGeometry_t *geometry, int numIndexes, c
 
 			Com_Memcpy( data, indexes, sizeof( glIndex_t ) * numIndexes );
 			vk.stats.vertexBytes += sizeof( glIndex_t ) * numIndexes;
-			VK_BindIndexBuffer( cmd, buffer, offset );
-			firstIndex = 0;
+			firstIndex = VK_FrameIndexes( cmd, buffer, offset );
+		}
+		if ( vk.bindless ) {
+			// the draw record (vkSkinDraw_t, a record per draw) carries unit
+			// 0's slot above renderCount, which is below 1 << 16
+			uint32_t *record = (uint32_t *)( vkt.enabled ? vkt.skinRing[vkt.skinSlot]->mapped : vk.frame->skinBuffer.mapped ) + geometry->skinDraw * 8;
+
+			record[6] = ( record[6] & 0xFFFFu ) | ( ( slots & 0xFFFu ) << 16 );
 		}
 		qvkCmdDrawIndexed( cmd, numIndexes, 1, firstIndex, geometry->skinVertex, geometry->skinDraw );
 		vk.stats.skinDraws++;
 	} else if ( geometry->staticTerrain ) {
-		VK_BindTerrainPool( cmd, geometry, numIndexes, indexes );
-		qvkCmdDrawIndexed( cmd, numIndexes, 1, 0, 0, 0 );
+		qvkCmdDrawIndexed( cmd, numIndexes, 1, VK_BindTerrainPool( cmd, geometry, numIndexes, indexes ), 0, slots );
 		vk.stats.staticDraws++;
 		vk_terrain.draws++;
 	} else if ( geometry->isStatic ) {
 		// effects draws: firstInstance is the record
 		qvkCmdDrawIndexed( cmd, numIndexes, 1, VK_BindStaticGeometry( cmd, geometry, numIndexes, indexes, ( key.bits & VK_PIPE_NORMALS ) != 0 ), 0,
-			geometry->staticFx >= 0 ? geometry->staticFx : 0 );
+			geometry->staticFx >= 0 ? geometry->staticFx : slots );
 		vk.stats.staticDraws++;
 		if ( geometry->staticFx >= 0 ) {
 			vk.stats.effectsDraws++;
 		}
 	} else {
-		VK_UploadGeometry( cmd, geometry, numIndexes, indexes, ( key.bits & VK_PIPE_NORMALS ) != 0 );
-		qvkCmdDrawIndexed( cmd, numIndexes, 1, 0, 0, 0 );
+		qvkCmdDrawIndexed( cmd, numIndexes, 1, VK_UploadGeometry( cmd, geometry, numIndexes, indexes, ( key.bits & VK_PIPE_NORMALS ) != 0 ), 0, slots );
 	}
 	vk.stats.draws++;
 }

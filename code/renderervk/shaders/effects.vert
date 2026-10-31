@@ -76,6 +76,9 @@ layout(location = 1) out vec2 v_st0;
 layout(location = 2) out vec2 v_st1;
 layout(location = 3) out vec2 v_fogClip;
 layout(location = 4) out vec3 v_position;
+// bindless textures: the units' slots from the record (FX_TEX); unused
+// without them
+layout(location = 11) flat out uvec2 v_tex;
 #ifdef TEMPORAL
 // generic.vert's
 layout(location = 5) out vec4 v_currClip;
@@ -113,6 +116,7 @@ const uint FX_DEFORMS = 16u;
 const uint FX_UNITS = 40u;
 const uint FX_UNIT_SIZE = 40u;
 const uint FX_COLOR = 120u;
+const uint FX_TEX = 124u;		// bindless textures: unit 0's slot | unit 1's << 16
 
 // flags
 const uint FLAG_OVERBRIGHT = 1u << 17;
@@ -495,6 +499,7 @@ float distFade( uint mode, vec3 xyz ) {
 void main() {
 	rec = uint( gl_InstanceIndex ) * 8u;
 	uint flags = frame[rec + FX_FLAGS];
+	v_tex = uvec2( frame[rec + FX_TEX] & 0xFFFFu, frame[rec + FX_TEX] >> 16 );
 	precise vec3 xyz = in_position;
 	vec3 normal = in_normal;
 

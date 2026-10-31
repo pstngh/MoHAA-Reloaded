@@ -941,6 +941,27 @@ void VK_InitPipelines( void ) {
 	setLayoutInfo.pBindings = &binding;
 	VK_CHECK( qvkCreateDescriptorSetLayout( vk.device, &setLayoutInfo, NULL, &vk.textureSetLayout ) );
 
+	// bindless textures: one set of every texture slot, bound once a frame,
+	// the draws naming their slots (vk_image.c, vk_draw). Needs the slots'
+	// count of combined image samplers in a stage and a set, dynamic
+	// indexing of sampler arrays, and stride 0 bindings: firstInstance
+	// carries the slots, which the per-instance bindings of the fallback
+	// would read
+	vk.bindless = r_vkBindless->integer && vk.strideZero && vk.enabledFeatures.shaderSampledImageArrayDynamicIndexing
+		&& vk.deviceProperties.limits.maxPerStageDescriptorSampledImages >= VK_MAX_TEXTURES
+		&& vk.deviceProperties.limits.maxPerStageDescriptorSamplers >= VK_MAX_TEXTURES
+		&& vk.deviceProperties.limits.maxDescriptorSetSampledImages >= VK_MAX_TEXTURES
+		&& vk.deviceProperties.limits.maxDescriptorSetSamplers >= VK_MAX_TEXTURES
+		&& vk.deviceProperties.limits.maxPerStageResources >= VK_MAX_TEXTURES + 8;
+	if ( vk.bindless ) {
+		binding.descriptorCount = VK_MAX_TEXTURES;
+		VK_CHECK( qvkCreateDescriptorSetLayout( vk.device, &setLayoutInfo, NULL, &vk.textureArrayLayout ) );
+		binding.descriptorCount = 1;
+		setLayoutInfo.bindingCount = 0;
+		setLayoutInfo.pBindings = NULL;
+		VK_CHECK( qvkCreateDescriptorSetLayout( vk.device, &setLayoutInfo, NULL, &vk.emptySetLayout ) );
+	}
+
 	// set 2, one per frame slot: the dynamic lights of the frame
 	// (vk_add_dlights), the skin data and the frame's skin data
 	// (vk_add_skin_data, vk_alloc_skin_frame)
@@ -971,7 +992,8 @@ void VK_InitPipelines( void ) {
 	pushRanges[1].offset = VK_PUSH_VERTEX_SIZE;
 	pushRanges[1].size = VK_PUSH_FRAGMENT_SIZE;
 
-	setLayouts[0] = setLayouts[1] = vk.textureSetLayout;
+	setLayouts[0] = vk.bindless ? vk.textureArrayLayout : vk.textureSetLayout;
+	setLayouts[1] = vk.bindless ? vk.emptySetLayout : vk.textureSetLayout;
 	setLayouts[2] = vk.dlightSetLayout;
 	Com_Memset( &layoutInfo, 0, sizeof( layoutInfo ) );
 	layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -985,7 +1007,8 @@ void VK_InitPipelines( void ) {
 	if ( vk.enabledFeatures.shaderClipDistance ) {
 		vk.vertexShaderClip = VK_CreateShaderModule( vk_spirv_generic_clip_vert, vk_spirv_generic_clip_vert_size );
 	}
-	vk.fragmentShader = VK_CreateShaderModule( vk_spirv_generic_frag, vk_spirv_generic_frag_size );
+	vk.fragmentShader = vk.bindless ? VK_CreateShaderModule( vk_spirv_generic_bindless_frag, vk_spirv_generic_bindless_frag_size )
+		: VK_CreateShaderModule( vk_spirv_generic_frag, vk_spirv_generic_frag_size );
 	vk.skinVertexShader = VK_CreateShaderModule( vk_spirv_skinned_vert, vk_spirv_skinned_vert_size );
 	if ( vk.enabledFeatures.shaderClipDistance ) {
 		vk.skinVertexShaderClip = VK_CreateShaderModule( vk_spirv_skinned_clip_vert, vk_spirv_skinned_clip_vert_size );
@@ -1067,6 +1090,15 @@ void VK_ShutdownPipelines( void ) {
 	if ( vk.textureSetLayout ) {
 		qvkDestroyDescriptorSetLayout( vk.device, vk.textureSetLayout, NULL );
 	}
+	VK_TextureArrayShutdown();
+	if ( vk.textureArrayLayout ) {
+		qvkDestroyDescriptorSetLayout( vk.device, vk.textureArrayLayout, NULL );
+	}
+	if ( vk.emptySetLayout ) {
+		qvkDestroyDescriptorSetLayout( vk.device, vk.emptySetLayout, NULL );
+	}
+	vk.textureArrayLayout = vk.emptySetLayout = VK_NULL_HANDLE;
+	vk.bindless = qfalse;
 	if ( vk.dlightSetLayout ) {
 		qvkDestroyDescriptorSetLayout( vk.device, vk.dlightSetLayout, NULL );
 	}

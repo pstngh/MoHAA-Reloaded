@@ -89,8 +89,20 @@ const int TEXENV_DECAL = 3;
 const int TEXENV_ADD = 4;
 const int TEXENV_COMBINE_INTERPOLATE = 5;
 
+#ifdef BINDLESS
+// bindless textures (vk.bindless): every texture slot in one set, the
+// draw's units' slots from the vertex stage (firstInstance or the draw's
+// record), the same for every vertex of the draw
+layout(set = 0, binding = 0) uniform sampler2D u_textures[4096];
+layout(location = 11) flat in uvec2 v_tex;
+#define TEX0 u_textures[v_tex.x]
+#define TEX1 u_textures[v_tex.y]
+#else
 layout(set = 0, binding = 0) uniform sampler2D u_texture0;
 layout(set = 1, binding = 0) uniform sampler2D u_texture1;
+#define TEX0 u_texture0
+#define TEX1 u_texture1
+#endif
 
 layout(location = 0) in vec4 v_color;
 layout(location = 1) in vec2 v_st0;
@@ -259,7 +271,7 @@ void main() {
 	}
 
 	if ( TEX_ENV0 != 0 ) {
-		vec4 texel = SAMPLE( u_texture0, v_st0 );
+		vec4 texel = SAMPLE( TEX0, v_st0 );
 
 		if ( TEX0_RGB ) {
 			texel.a = 1.0;
@@ -270,7 +282,7 @@ void main() {
 		color = TexEnv( TEX_ENV0, TEX0_RGB, color, texel );
 	}
 	if ( TEX_ENV1 != 0 ) {
-		vec4 texel = SAMPLE( u_texture1, v_st1 );
+		vec4 texel = SAMPLE( TEX1, v_st1 );
 
 		if ( TEX1_RGB ) {
 			texel.a = 1.0;

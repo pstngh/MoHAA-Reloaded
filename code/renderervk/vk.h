@@ -206,6 +206,9 @@ void		vk_set_state( unsigned long stateBits );
 // result of unit 0. A unit only contributes when the geometry passed to
 // vk_draw() has texture coordinates for it.
 void		vk_bind_texture( int tmu, image_t *image );
+// bindless textures: the slots of the units bound, unit 0 | unit 1 << 16 (the
+// effects records, FX_TEX_SLOTS); 0 without them (vk.bindless)
+uint32_t	vk_bound_texture_slots( void );
 void		vk_set_texenv( int tmu, texEnv_t env );
 
 void		vk_set_cull( cullFace_t face );

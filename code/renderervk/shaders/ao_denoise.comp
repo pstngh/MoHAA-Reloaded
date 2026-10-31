@@ -28,6 +28,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // resolution grid, into o_blur2 for ao_upsample.comp.
 
 #version 450
+#extension GL_GOOGLE_include_directive : require
 #include "ao_common.glsl"
 
 layout( local_size_x = 8, local_size_y = 8 ) in;

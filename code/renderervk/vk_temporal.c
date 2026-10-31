@@ -1388,7 +1388,8 @@ void VK_TemporalInitPipelines( void ) {
 
 	// vkPushConstants_t, then vkTemporalPush_t for the vertex stage: its
 	// range covers the fragment stage's, whose pushes then name both stages
-	sets[0] = sets[1] = vk.textureSetLayout;
+	sets[0] = vk.bindless ? vk.textureArrayLayout : vk.textureSetLayout;
+	sets[1] = vk.bindless ? vk.emptySetLayout : vk.textureSetLayout;
 	sets[2] = vkt.graphicsSetLayout;
 	ranges[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 	ranges[0].offset = 0;
@@ -1406,7 +1407,8 @@ void VK_TemporalInitPipelines( void ) {
 		vkt.skinVertexShaderClip = VK_CreateShaderModule( vk_spirv_skinned_temporal_clip_vert, vk_spirv_skinned_temporal_clip_vert_size );
 		vkt.effectsVertexShaderClip = VK_CreateShaderModule( vk_spirv_effects_temporal_clip_vert, vk_spirv_effects_temporal_clip_vert_size );
 	}
-	vkt.fragmentShader = VK_CreateShaderModule( vk_spirv_generic_temporal_frag, vk_spirv_generic_temporal_frag_size );
+	vkt.fragmentShader = vk.bindless ? VK_CreateShaderModule( vk_spirv_generic_temporal_bindless_frag, vk_spirv_generic_temporal_bindless_frag_size )
+		: VK_CreateShaderModule( vk_spirv_generic_temporal_frag, vk_spirv_generic_temporal_frag_size );
 
 	// the passes after the scene
 	vkt.prepareSetLayout = VK_TemporalSetLayout( vk_prepareTypes, VK_TEMPORAL_PREPARE_BINDINGS, VK_SHADER_STAGE_COMPUTE_BIT );

@@ -536,6 +536,9 @@ static void VK_CreateLogicalDevice( void ) {
 	vk.enabledFeatures.textureCompressionBC = supported.textureCompressionBC;	// DDS textures
 	vk.enabledFeatures.shaderClipDistance = supported.shaderClipDistance;	// portal clip plane
 	vk.enabledFeatures.depthClamp = supported.depthClamp;					// solid surfaces nearer than r_znear (VK_PIPE_DEPTHCLAMP)
+	// bindless textures index the array of every texture slot by a value
+	// uniform within the draw (vk.bindless)
+	vk.enabledFeatures.shaderSampledImageArrayDynamicIndexing = supported.shaderSampledImageArrayDynamicIndexing;
 	// the temporal path's storage images (RG32F, RG16F, A2B10G10R10) and the
 	// blend states of its three color attachments (vk_temporal.c)
 	vk.enabledFeatures.shaderStorageImageExtendedFormats = supported.shaderStorageImageExtendedFormats;

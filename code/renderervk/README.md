@@ -859,6 +859,23 @@ below are done.
   5,618; the same frames to the bit; with the temporal effects and HDR
   output (GPU-bound) 984 either way, with vsync 280 either way (see
   Performance, Render thread)
+- each stage cheaper (2026-10-31, Plan 51, the user's request; cgame,
+  the UI and the renderer): the precise shadows (`cg_shadows 2`) keep the
+  lights gathered at a player's origin and each foot's trace to each
+  light for the server frame, reused while the foot stays within a unit
+  (cgame's time a frame at the `dm/mohdm6` spot 45.6 to 28.6 µs, the same
+  frames); `MenuManager::FindMenu` caches the menus it found by name (the
+  HUD looks two up every frame); the indexes copied into the frame's
+  vertex buffer are drawn with `firstIndex` from one binding (82 to 14
+  `vkCmdBindIndexBuffer` a frame), a texture unit a draw doesn't use keeps
+  the descriptor set bound before, and the depth bias is set when its
+  values change, not at every shader with polygon offset. Bindless
+  textures (`r_vkBindless 1`, on by default where the device allows it):
+  every texture slot in one descriptor set per frame slot, bound once, the
+  draws naming their slots in `firstInstance` or their records, so the 67
+  descriptor set binds a frame become 2 (10,729 to 10,948 frames a
+  second). `vkinfo` counts the vertex and index binds, push constants and
+  dynamic state calls (see Performance, Each stage cheaper)
 - GL1 was the visual reference until 2026-10-19; since then the look may
   change where that buys performance, and comparisons with the build before
   (until 2026-10-23 also with GL1) check for bugs and show what changed
@@ -889,6 +906,7 @@ below are done.
 | `shaders/hiz_build.comp`, `shaders/taa_resolve.comp`, `shaders/temporal_composite.*`, `shaders/temporal_common.glsl` | the temporal path's passes after the scene (`hiz_build.comp` built three times: `PREPARE`, the default, `TAIL`; `taa_resolve.comp` the anti-aliasing) and what they and the passes to come that read its buffers share (included); `generic.*`, `skinned.vert` and `effects.vert` are also built with `TEMPORAL` defined for its scene |
 | `shaders/output.frag` | HDR output's pass: the frame into the swapchain image, SDR, HDR10 (PQ) or scRGB, and the calibration screens' patterns; its vertex shader is `temporal_composite.vert` |
 | `shaders/compile_shaders.sh` | regenerates `vk_shaders.c`, `vk_shaders_temporal.c` and `vk_shaders_hdr.c` with `glslc` (an argument, `main`, `temporal` or `hdr`, writes only that one) |
+| `shaders/glslang_as_glslc.sh` | glslang standing in for `glslc` (`GLSLC=shaders/glslang_as_glslc.sh shaders/compile_shaders.sh`): maps the options and writes the words as `-mfmt=c` does; the arrays since 2026-10-31 come from glslang 16.6.0 this way |
 | `vk_shaders.c`, `vk_shaders_temporal.c`, `vk_shaders_hdr.c` | generated SPIR-V as C arrays (committed, so builds don't need `glslc`) |
 | `tools/` | build-against-build screenshot comparison and performance scripts, view lists, the OpenGL check (see Testing) |
 | `WINDOWS_TESTING.md` | a tester's checklist for Windows: commands, cvars, what to send back |
@@ -1024,6 +1042,7 @@ Cvars of the backend:
 | `r_batch2D` (default 3) | bits: 1 draws consecutive 2D pics, strings and triangles of one shader as one surface, 2 leaves out the boxes of `DrawBox` with alpha 0 (they change no pixel); 0 draws every 2D call as it comes (see Implementation notes, 2D batches) |
 | `r_vkFrameLog` (latched, default 0) | the frame log: 1 records the last 131072 frames (larger values: that many), see `vkframelog` below and Performance, Frame spikes; 0 costs nothing |
 | `r_vkSubmitThread` (latched, archived, default 0) | 1: a thread submits and presents the frames and acquires the swapchain images, so the main thread never waits in `vkQueueSubmit`, `vkAcquireNextImageKHR` or `vkQueuePresentKHR` (see Implementation notes, Submit thread, and Performance, Submit thread); the swapchain then has 5 images without vsync, 3 with FIFO. The startup line `Vulkan present mode: ..., N swapchain images, N frames in flight, submit thread` says what is used |
+| `r_vkBindless` (latched, archived, default 1) | 1: bindless textures: every texture slot is in one descriptor set bound once a frame, and a draw names its textures by slot (in `firstInstance`, or its record for the effects and skinned draws) instead of a descriptor set bind per texture change; on where the device has the limits for 4096 combined image samplers in a stage and a set and dynamic indexing of sampler arrays, which the startup line `Vulkan ... bindless textures yes` says; 0 (or without them): a set per texture, as before (see Implementation notes, Bindless textures) |
 | `r_smp` (latched, archived, default 1) | 1: the back end (the draws' recording, the submission and the present) runs on a render thread while the game and the front end build the next frame; the frame rate is the slower half's, a frame's input reaches its present as before, and with vsync the input is read after the display is waited for, as without the thread; no thread on one core; 0: one thread (see Implementation notes, Render thread, and Performance, Render thread). The startup line `r_smp: the back end runs on a render thread` says it runs |
 | `r_temporal` (latched, archived, default 0) | 1: the temporal path: the 3D views are drawn into an RGBA16F scene with motion vectors and normals, for temporal anti-aliasing (`r_taa`), ambient occlusion (`r_ao`), motion blur (`r_motionBlur`) and the HDR look; their own images (the depth pyramid, histories) are made only while they are on; off with multisampling (see Implementation notes, Temporal path) |
 | `r_ao` (archived, default 0) | with `r_temporal 1`: ground truth ambient occlusion (GTAO) of the opaque surfaces, before what is blended over them (see Implementation notes, Ambient occlusion) |
@@ -2598,6 +2617,15 @@ thread's mode, `r_measureOverdraw`, the console and a menu, `give all`
 a cinematic (`EAlogo.RoQ`) with screenshots before and after it, TGA and
 JPEG screenshots. The Khronos validation layer is not installed on that
 machine, so these runs were without it.
+
+Bindless textures (2026-10-31, see Performance, Each stage cheaper), the
+same way: the spot's fixed-time screenshot with `r_vkBindless` 0 and 1
+and with the build before (the arrays glslc made) differs in the `fps`
+digits only; in third person and with the temporal path on, 0 against 1
+differs as two runs of 1 do. Stress with a clean exit and no error in
+the log: `give all`, `r_textureMode` changed twice, a cinematic,
+windowed and fullscreen, a map change, `r_vkBindless` off and on with
+`vid_restart`.
 
 ### Performance
 
@@ -6715,6 +6743,68 @@ present (see Implementation notes), the frames pace the same (median
 99th percentile). What remains of the gap is the GPU's share of the frame
 and cgame's 47 µs (see Plan 50).
 
+Each stage cheaper (2026-10-31, Plan 51; after the render thread). With
+the thread the frame is the longer half's: at the spot the front end
+(cgame 45.6, the front end 9.5, the engine 6.6, the 2D exports 2.4 µs)
+waits 29 µs for the back end (the thread's 85: the driver's recording
+about 18, the present and the submission about 30, the renderer's own
+recording about 12, the hand-off and waits the rest). So:
+
+- cgame: the precise shadows (`cg_shadows 2`, the user's setting) traced
+  from each foot to each light every client frame and gathered the lights
+  every frame (`R_GatherLightSources`, a sun trace in it). Both are kept
+  per player for the server frame (`cg.footShadows`, `cg_modelanim.c`):
+  the lights while the origin is the same, a foot's trace while the foot
+  is within a unit of where it was and the light the same; the right
+  foot's shadow takes the intensity the left one's scaled, as before.
+  cgame's time a frame 45.6 to 28.6 µs; the fixed-time screenshot of the
+  spot the same but the `fps` digits. The frame rate didn't move (10,664
+  to 10,646): the front end now waits 44 µs for the thread instead of
+  29. The UI's `MenuManager::FindMenu` (two lookups a frame from
+  `UI_Update`, a case-insensitive compare against every menu's name) keeps
+  what it found in a 64-entry table dropped when a menu is added or
+  deleted; too small to measure apart.
+- the back end's commands a frame at the spot, from `vkinfo`'s new
+  counters: 89 draws (65 from the static geometry, 5 of them effects
+  draws), 31 pipeline binds, 67 descriptor set binds, 60 vertex buffer
+  binds, 82 index buffer binds, 60 push constant calls, 32 dynamic state
+  calls: about 420 `vkCmd*` calls. The index binds were one per draw
+  whose indexes are copied into the frame's vertex buffer (the world's
+  merged ranges, the 2D draws, the marks): they are bound once at the
+  buffer's start and drawn with `firstIndex` (`VK_FrameIndexes`): 82 to
+  14 a frame (the two buffers, the static index stream and the frame's,
+  still alternate). A texture unit the draw doesn't use keeps the set
+  bound before (any texture's set is valid there, the specialized shader
+  reads nothing from it): 69 to 67. The depth bias values are set when
+  they change, not on and off at every shader with polygon offset: 32 to
+  31 dynamic state calls; the rest are the viewport, scissor and stencil
+  changes of the views. Frame rate 10,648 to 10,910 in four runs, within
+  the runs' spread of the build before; the same frames to the bit.
+- bindless textures (`r_vkBindless`, see Implementation notes, Bindless
+  textures): the 67 descriptor set binds a frame become 2 (the texture
+  set and the dlight set, once per command buffer), and the draws carry
+  their slots in `firstInstance`, which costs no call. With the shaders
+  regenerated by glslang (`glslang_as_glslc.sh`; glslc isn't installed on
+  the Windows machine), bindless off against on: 10,729 against 10,948
+  frames a second, 99th percentile the same (0.178 ms); the fixed-time
+  screenshot of the spot the same but the `fps` digits with either, and
+  the same as the build before's with the old compiler's arrays. In third
+  person (the player's skinned draws) and with the temporal path on, on
+  against off differs as two runs of one setting do: the view model's idle
+  pose at the bottom rows (at most 4 levels), and the temporal history
+  (26 % of the pixels by 1 or 2 levels, the edges more). Stress with a
+  clean exit and no error: `give all`, `r_textureMode` changed, a
+  cinematic, windowed and fullscreen, a map change, bindless switched off
+  and on with `vid_restart`.
+- what is left of the back end needs more of the shaders: the 60 push
+  constant calls and 60 vertex binds of the static models with their
+  matrices in a buffer read by the draw's index, and the 65 static draws
+  with `vkCmdDrawIndexedIndirect` over a buffer of their ranges. About 280
+  of the remaining 350 calls, and with them most of the driver's share.
+  The present and the submission (30 µs) stay (see Render thread above),
+  so the back end's floor is about 50 µs: the frame rate about 17,000
+  where the front end keeps up.
+
 ### Coordinate conventions
 
 - Projection matrices are OpenGL ones (column-major, clip z in [-w, w], y up).
@@ -7484,6 +7574,34 @@ selects the sample count (see Implementation notes).
   (but the indexes of a lower level of detail of the rare surfaces whose
   collapse map the vertex shader can't follow); vertex and index buffers are
   only bound again when they or their offsets change.
+- **Bindless textures** (`vk_image.c`, `r_vkBindless`, latched, archived;
+  on by default where the device has the limits). Every frame slot has a
+  descriptor set of every texture slot (set 0 of the pipelines,
+  `VK_MAX_TEXTURES` combined image samplers, each texture's own sampler),
+  bound once per command buffer; set 1 is an empty layout. A draw names
+  its units' slots: the generic draws in `firstInstance` (unit 0 | unit 1
+  << 12, read as `gl_InstanceIndex` by the vertex shaders, which pass it
+  flat to the fragment shader at location 11), the effects draws in word
+  124 of their record (`FX_TEX_SLOTS`, `vk_bound_texture_slots`: part of
+  the record, so the record cache tells draws with other textures apart),
+  the skinned draws above `renderCount` in their draw record (patched by
+  `vk_draw`; a surface has far fewer than 65536 vertexes). The index is
+  uniform within the draw, so the shaders index the array plainly
+  (`shaderSampledImageArrayDynamicIndexing`); the fragment shader is built
+  twice (`generic_bindless_frag`, `-DBINDLESS`), the vertex shaders write
+  the slots either way. A set is written at its frame's begin, when that
+  frame is done, for the slots that changed since it was last written (a
+  pending frame's set can't be written); the frame being recorded has its
+  set written at once, so a texture made in a frame is drawn in it. A
+  free slot holds the default texture, the last slot (which the table
+  never hands out) is the default's, and a slot freed in the frame being
+  recorded isn't handed out again in it, since the frame's earlier draws
+  read it. Two edges: a texture respecified in a frame (the ghost textures)
+  shows its new contents to the frame's earlier draws too, and the
+  per-texture sets are still made (the fallback's path stays whole).
+  Without the limits, dynamic indexing or stride 0 bindings (the
+  per-instance fallback would read `firstInstance`), or with `r_vkBindless
+  0`, the sets per texture as before.
 - **Static geometry** (`tr_staticgeom.c`, `vk_set_static_geometry`). At the
   end of a map load, `R_BuildStaticGeometry` puts into one device-local
   buffer (through the staging buffer and the upload command buffer, with a
@@ -10966,3 +11084,18 @@ variable-length array, checked with clang's `-Wvla`).
     a still view: a cache), and the back end's recording (41 µs:
     bindless textures and indirect draws would take most of it), after
     which the Windows frame would be the GPU's.
+
+51. Each stage cheaper (2026-10-31, the user's request, after the render
+    thread: the collision traces of the precise shadows, the draw
+    recording, the UI's menu lookups). Done, each measured and kept (see
+    Performance, Each stage cheaper): the precise shadows' lights and
+    traces kept per player for the server frame (cgame 45.6 to 28.6 µs a
+    frame, the same frames), `FindMenu` cached, the copied indexes drawn
+    with `firstIndex` from one binding (82 to 14 index binds a frame),
+    unused texture units keeping their set, the depth bias set when it
+    changes, and bindless textures (`r_vkBindless`, the shaders built with
+    glslang through `glslang_as_glslc.sh`): 67 descriptor set binds a frame
+    to 2, 10,729 to 10,948 frames a second. The frame rate is the back
+    end's (about 85 µs); the front end is at 47. Left: the static models'
+    matrices in a buffer (60 push constants, 60 vertex binds a frame) and
+    indirect draws over the static geometry (65 draws); then GPU culling.

@@ -801,6 +801,173 @@ TEXTURE TABLE
 ====================================================================
 */
 
+/*
+====================================================================
+
+BINDLESS TEXTURES (vk.bindless)
+
+Every frame slot has a descriptor set of every texture slot (set 0 of the
+pipelines, VK_MAX_TEXTURES combined image samplers), bound once per command
+buffer; a draw names its units' slots instead of binding their sets. A set
+is written at its frame's begin, when the frame before it is done, for the
+slots that changed since it was last written; the frame being recorded has
+its set written at once (its command buffer isn't pending). A free slot
+holds the default texture, so every entry is valid.
+
+====================================================================
+*/
+
+static VkDescriptorPool	vk_textureArrayPool;
+static uint64_t			vk_textureArrayDirty[VK_MAX_FRAMES][VK_MAX_TEXTURES / 64];
+static qboolean			vk_textureArrayAll[VK_MAX_FRAMES];		// every slot dirty
+static unsigned int		vk_slotFreedSerial[VK_MAX_TEXTURES];	// the frame a slot was freed in: not reused in it (its draws read it)
+
+static int VK_TextureArrayLowestBit( uint64_t bits ) {
+	int n = 0;
+
+	while ( !( bits & 1 ) ) {
+		bits >>= 1;
+		n++;
+	}
+	return n;
+}
+
+static void VK_TextureArrayInfo( int slot, VkDescriptorImageInfo *info ) {
+	const vkTexture_t *texture = vk_slots[slot].texture ? vk_slots[slot].texture : vk_defaultTexture;
+
+	info->sampler = VK_GetSampler( texture->mipLevels > 1 ? vk_textureFilter : VK_SAMPLER_NOMIP, texture->wrapX, texture->wrapY );
+	info->imageView = texture->view;
+	info->imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+}
+
+// the set of frame: the dirty slots, written in runs
+void VK_TextureArrayUpdate( vkFrame_t *frame ) {
+	static VkDescriptorImageInfo infos[VK_MAX_TEXTURES];
+	static VkWriteDescriptorSet writes[256];
+	int f = (int)( frame - vk.frames );
+	int numWrites = 0, numInfos = 0, w, slot;
+
+	if ( !frame->textureArraySet || !vk_defaultTexture ) {
+		return;
+	}
+	if ( vk_textureArrayAll[f] ) {
+		Com_Memset( vk_textureArrayDirty[f], 0xFF, sizeof( vk_textureArrayDirty[f] ) );
+		vk_textureArrayAll[f] = qfalse;
+	}
+	for ( w = 0; w < VK_MAX_TEXTURES / 64; w++ ) {
+		uint64_t bits = vk_textureArrayDirty[f][w];
+
+		while ( bits ) {
+			int first = VK_TextureArrayLowestBit( bits ), n;
+			uint64_t rest = ~( bits >> first );
+
+			n = rest ? VK_TextureArrayLowestBit( rest ) : 64 - first;
+			if ( first + n > 64 ) {
+				n = 64 - first;
+			}
+			bits &= ~( ( n == 64 ? ~(uint64_t)0 : ( ( (uint64_t)1 << n ) - 1 ) ) << first );
+			for ( slot = ( w << 6 ) + first; slot < ( w << 6 ) + first + n; slot++ ) {
+				VK_TextureArrayInfo( slot, &infos[numInfos + slot - ( w << 6 ) - first] );
+			}
+			Com_Memset( &writes[numWrites], 0, sizeof( writes[numWrites] ) );
+			writes[numWrites].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			writes[numWrites].dstSet = frame->textureArraySet;
+			writes[numWrites].dstBinding = 0;
+			writes[numWrites].dstArrayElement = ( w << 6 ) + first;
+			writes[numWrites].descriptorCount = n;
+			writes[numWrites].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			writes[numWrites].pImageInfo = &infos[numInfos];
+			numInfos += n;
+			if ( ++numWrites == ARRAY_LEN( writes ) ) {
+				qvkUpdateDescriptorSets( vk.device, numWrites, writes, 0, NULL );
+				numWrites = numInfos = 0;
+			}
+		}
+		vk_textureArrayDirty[f][w] = 0;
+	}
+	if ( numWrites ) {
+		qvkUpdateDescriptorSets( vk.device, numWrites, writes, 0, NULL );
+	}
+}
+
+// a slot changed: every frame's set, the frame being recorded at once
+static void VK_TextureArrayMark( int slot ) {
+	int f;
+
+	if ( !vk.bindless ) {
+		return;
+	}
+	for ( f = 0; f < VK_MAX_FRAMES; f++ ) {
+		vk_textureArrayDirty[f][slot >> 6] |= (uint64_t)1 << ( slot & 63 );
+	}
+	if ( vk.frame ) {
+		VK_TextureArrayUpdate( vk.frame );
+	}
+}
+
+static void VK_TextureArrayMarkAll( void ) {
+	int f;
+
+	if ( !vk.bindless ) {
+		return;
+	}
+	for ( f = 0; f < VK_MAX_FRAMES; f++ ) {
+		vk_textureArrayAll[f] = qtrue;
+	}
+	if ( vk.frame ) {
+		VK_TextureArrayUpdate( vk.frame );
+	}
+}
+
+// the slots of a draw's units for firstInstance: unit 0 | unit 1 << 12 (the
+// default texture has the last slot, which the table never hands out)
+uint32_t VK_TextureArraySlots( const vkTexture_t *tex0, const vkTexture_t *tex1 ) {
+	uint32_t slot0 = ( tex0 ? tex0 : vk_defaultTexture )->slot;
+	uint32_t slot1 = ( tex1 ? tex1 : vk_defaultTexture )->slot;
+
+	return slot0 | ( slot1 << 12 );
+}
+
+void VK_TextureArrayInit( void ) {
+	VkDescriptorPoolCreateInfo poolInfo;
+	VkDescriptorPoolSize poolSize;
+	VkDescriptorSetAllocateInfo allocInfo;
+	int i;
+
+	poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	poolSize.descriptorCount = VK_MAX_TEXTURES * VK_MAX_FRAMES;
+	Com_Memset( &poolInfo, 0, sizeof( poolInfo ) );
+	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	poolInfo.maxSets = VK_MAX_FRAMES;
+	poolInfo.poolSizeCount = 1;
+	poolInfo.pPoolSizes = &poolSize;
+	VK_CHECK( qvkCreateDescriptorPool( vk.device, &poolInfo, NULL, &vk_textureArrayPool ) );
+	for ( i = 0; i < VK_MAX_FRAMES; i++ ) {
+		Com_Memset( &allocInfo, 0, sizeof( allocInfo ) );
+		allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+		allocInfo.descriptorPool = vk_textureArrayPool;
+		allocInfo.descriptorSetCount = 1;
+		allocInfo.pSetLayouts = &vk.textureArrayLayout;
+		VK_CHECK( qvkAllocateDescriptorSets( vk.device, &allocInfo, &vk.frames[i].textureArraySet ) );
+		vk_textureArrayAll[i] = qtrue;
+	}
+	Com_Memset( vk_slotFreedSerial, 0, sizeof( vk_slotFreedSerial ) );
+}
+
+void VK_TextureArrayShutdown( void ) {
+	int i;
+
+	if ( vk_textureArrayPool ) {
+		qvkDestroyDescriptorPool( vk.device, vk_textureArrayPool, NULL );
+		vk_textureArrayPool = VK_NULL_HANDLE;
+	}
+	for ( i = 0; i < VK_MAX_FRAMES; i++ ) {
+		vk.frames[i].textureArraySet = VK_NULL_HANDLE;
+		vk_textureArrayAll[i] = qfalse;
+	}
+	Com_Memset( vk_textureArrayDirty, 0, sizeof( vk_textureArrayDirty ) );
+}
+
 static int VK_SlotForHandle( unsigned int handle ) {
 	int slot;
 
@@ -817,9 +984,12 @@ static int VK_SlotForHandle( unsigned int handle ) {
 static int VK_AllocSlot( void ) {
 	int i, slot;
 
-	for ( i = 0; i < VK_MAX_TEXTURES; i++ ) {
-		slot = ( vk_nextSlot + i ) % VK_MAX_TEXTURES;
-		if ( !vk_slots[slot].handle ) {
+	// the last slot is the default texture's (bindless textures)
+	for ( i = 0; i < VK_MAX_TEXTURES - 1; i++ ) {
+		slot = ( vk_nextSlot + i ) % ( VK_MAX_TEXTURES - 1 );
+		// bindless textures: a slot freed in the frame being recorded keeps
+		// the default texture until the frame is done (its draws read it)
+		if ( !vk_slots[slot].handle && !( vk.bindless && vk.frame && vk_slotFreedSerial[slot] == vk.frameSerial ) ) {
 			// handles of a slot differ by its generation, so a handle is
 			// only reused after 2^20 images went through the same slot
 			vk_slots[slot].handle = vk_slotGeneration[slot] * VK_MAX_TEXTURES + slot + 1;
@@ -835,6 +1005,8 @@ static int VK_AllocSlot( void ) {
 static void VK_FreeSlot( int slot ) {
 	vk_slots[slot].handle = 0;
 	vk_slots[slot].texture = NULL;
+	vk_slotFreedSerial[slot] = vk.frameSerial;
+	VK_TextureArrayMark( slot );
 	vk_slotGeneration[slot] = ( vk_slotGeneration[slot] + 1 ) % ( 0xFFFFFFFFu / VK_MAX_TEXTURES );
 }
 
@@ -885,6 +1057,8 @@ void vk_create_texture( image_t *image, int width, int height, int mipLevels, te
 	}
 
 	vk_slots[slot].texture = VK_CreateTextureStorage( width, height, mipLevels, format, image->wrapClampModeX, image->wrapClampModeY );
+	vk_slots[slot].texture->slot = slot;
+	VK_TextureArrayMark( slot );
 }
 
 void vk_upload_texture( image_t *image, int mipLevel, int x, int y, int width, int height, const byte *rgba ) {
@@ -1009,6 +1183,8 @@ void vk_set_texture_filter( texFilter_t filter ) {
 		VK_DeferDestroy( VK_DESTROY_DESCRIPTOR_SET, (uint64_t)texture->descriptorSet, (uint64_t)texture->descriptorPool );
 		VK_AllocateDescriptorSet( texture );
 	}
+	// bindless textures: the samplers of every slot
+	VK_TextureArrayMarkAll();
 }
 
 /*
@@ -1028,6 +1204,7 @@ void VK_InitTextures( void ) {
 	// what a unit samples when its image has no storage, like an
 	// incomplete GL texture
 	vk_defaultTexture = VK_CreateTextureStorage( 1, 1, 1, TEXFMT_RGBA8, WRAP_REPEAT, WRAP_REPEAT );
+	vk_defaultTexture->slot = VK_MAX_TEXTURES - 1;	// bindless textures: the slot the table never hands out
 	data = VK_StagingAlloc( 4, 16, &buffer, &offset );
 	Com_Memcpy( data, black, 4 );
 	VK_RecordUpload( vk_defaultTexture, 0, 0, 0, 1, 1, buffer, offset );

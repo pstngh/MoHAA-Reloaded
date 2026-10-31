@@ -232,6 +232,7 @@ typedef struct {
 	VkImageView		view;
 	VkDescriptorSet	descriptorSet;	// combined image sampler, set 0 or 1
 	VkDescriptorPool descriptorPool;	// the pool descriptorSet came from
+	int				slot;			// of the texture table, its index in the bindless sets
 	VkFormat		format;
 	int				width, height;
 	int				mipLevels;
@@ -321,6 +322,7 @@ typedef struct {
 	VkDeviceSize	stagingOffset;
 	vkBuffer_t		dlightBuffer;	// lights of vk_add_dlights (vkDlightGPU_t), set 2 of the shaders
 	VkDescriptorSet	dlightSet;		// set 2: the dlight buffer, the skin data and this frame's skin data
+	VkDescriptorSet	textureArraySet;	// bindless textures: set 0, every texture slot as of this frame's begin
 	int				numDlights;
 	// the lists of more than 32 lights, at their place in the dlight buffer
 	// (which is write-combined memory): the draws whose lights span more
@@ -359,6 +361,10 @@ typedef struct {
 	uint64_t	skinDraws;			// skinned draws (drawGeometry_t::isSkinned)
 	uint64_t	pipelineBinds;
 	uint64_t	descriptorBinds;	// descriptor sets bound
+	uint64_t	vertexBinds;		// vkCmdBindVertexBuffers calls (the streams, the normals)
+	uint64_t	indexBinds;			// vkCmdBindIndexBuffer calls
+	uint64_t	pushConstants;		// vkCmdPushConstants calls
+	uint64_t	dynamicStates;		// vkCmdSet* calls (viewport, scissor, depth bias, line width, stencil, stipple)
 	uint64_t	vertexBytes;		// copied into the vertex buffers
 	uint64_t	stagingBytes;		// texture data copied into staging buffers
 	uint64_t	mainUploads;		// uploads recorded in order with the draws (they end the render pass)
@@ -542,6 +548,13 @@ typedef struct {
 	VkDescriptorSetLayout textureSetLayout;
 	VkDescriptorSetLayout dlightSetLayout;	// set 2: the frame's dlight buffer, the skin data and the frame's skin data
 	VkDescriptorPool	dlightPool;
+	// bindless textures (r_vkBindless): set 0 holds every texture slot, bound
+	// once a frame, and a draw names its units' slots in firstInstance (the
+	// effects and skinned draws in their records); set 1 is then empty. See
+	// vk_image.c and vk_draw
+	qboolean			bindless;
+	VkDescriptorSetLayout textureArrayLayout;	// set 0: VK_MAX_TEXTURES combined image samplers
+	VkDescriptorSetLayout emptySetLayout;		// set 1
 	VkPipelineLayout	pipelineLayout;
 	VkShaderModule		vertexShader;
 	VkShaderModule		vertexShaderClip;	// writes gl_ClipDistance (shaderClipDistance only)
@@ -728,6 +741,13 @@ void		VK_ShutdownTextures( void );
 void		VK_ShutdownTextureObjects( void );
 vkTexture_t	*VK_GetTexture( unsigned int handle );
 vkTexture_t	*VK_DefaultTexture( void );
+
+// bindless textures (vk.bindless, see vk_image.c): the frame slots' sets of
+// every texture slot, the slots of a draw's units packed for firstInstance
+void		VK_TextureArrayInit( void );
+void		VK_TextureArrayShutdown( void );
+void		VK_TextureArrayUpdate( vkFrame_t *frame );
+uint32_t	VK_TextureArraySlots( const vkTexture_t *tex0, const vkTexture_t *tex1 );
 void		VK_FinishUploads( VkCommandBuffer cmd, qboolean upload );
 void		VK_FreeMemoryRange( int block, VkDeviceSize offset, VkDeviceSize size );
 void		VK_MemoryBlockInfo( int *numBlocks, VkDeviceSize *size, VkDeviceSize *used );
@@ -840,6 +860,8 @@ extern const size_t		vk_spirv_generic_vert_size;
 extern const uint32_t	vk_spirv_generic_clip_vert[];
 extern const size_t		vk_spirv_generic_clip_vert_size;
 extern const uint32_t	vk_spirv_generic_frag[];
+extern const uint32_t	vk_spirv_generic_bindless_frag[];
+extern const size_t		vk_spirv_generic_bindless_frag_size;
 extern const size_t		vk_spirv_generic_frag_size;
 extern const uint32_t	vk_spirv_skinned_vert[];
 extern const size_t		vk_spirv_skinned_vert_size;
@@ -860,6 +882,8 @@ extern const size_t		vk_spirv_generic_temporal_vert_size;
 extern const uint32_t	vk_spirv_generic_temporal_clip_vert[];
 extern const size_t		vk_spirv_generic_temporal_clip_vert_size;
 extern const uint32_t	vk_spirv_generic_temporal_frag[];
+extern const uint32_t	vk_spirv_generic_temporal_bindless_frag[];
+extern const size_t		vk_spirv_generic_temporal_bindless_frag_size;
 extern const size_t		vk_spirv_generic_temporal_frag_size;
 extern const uint32_t	vk_spirv_skinned_temporal_vert[];
 extern const size_t		vk_spirv_skinned_temporal_vert_size;
@@ -1173,6 +1197,7 @@ qboolean	VK_TemporalWritesBuffers( uint64_t bits );
 
 // cvars
 extern cvar_t	*r_vkValidation;
+extern cvar_t	*r_vkBindless;
 extern cvar_t	*r_vkFallbacks;
 extern cvar_t	*r_vkSubmitThread;
 extern cvar_t	*r_fastSync;

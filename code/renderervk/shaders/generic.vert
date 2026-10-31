@@ -74,6 +74,9 @@ layout(location = 3) out vec2 v_fogClip;
 // object space position, for the dynamic lights (only pipelines with them
 // read it; the others link it away)
 layout(location = 4) out vec3 v_position;
+// bindless textures: the draw's units' slots, unit 0 | unit 1 << 12 in
+// firstInstance (vk_draw); unused without them
+layout(location = 11) flat out uvec2 v_tex;
 #ifdef TEMPORAL
 // the temporal path's outputs (generic.frag): clip positions of this frame
 // without the jitter and of the last frame, the view space normal and
@@ -104,6 +107,8 @@ layout(constant_id = 12) const bool TEMPORAL_MOTION = true;
 invariant gl_Position;
 
 void main() {
+	v_tex = uvec2( uint( gl_InstanceIndex ) & 0xFFFu, uint( gl_InstanceIndex ) >> 12 );
+
 	// the operations of Mesa's fixed-function vertex program (a multiply,
 	// then fused multiply-adds, column by column), so clip coordinates are
 	// bit-identical to GL1's on Mesa drivers
