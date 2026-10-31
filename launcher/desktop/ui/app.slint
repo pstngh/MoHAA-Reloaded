@@ -57,21 +57,14 @@ component GameTab inherits Rectangle {
 
     HorizontalLayout {
         padding: 5px;
-        // the game's icon in a box of its own, lifted off the tab
+        // the game's icon, straight on the tab: only the tab shows the selection
         Rectangle {
             width: 36px;
             height: 36px;
-            border-radius: 6px;
-            background: root.selected ? #ffffff1f : #ffffff12;
-            border-width: 1px;
-            border-color: #ffffff1a;
-            drop-shadow-blur: 6px;
-            drop-shadow-offset-y: 1px;
-            drop-shadow-color: #00000080;
             Image {
                 source: root.icon;
-                width: 24px;
-                height: 24px;
+                width: 28px;
+                height: 28px;
             }
         }
         // the name, centered in the rest, and the selection bar as wide as it
