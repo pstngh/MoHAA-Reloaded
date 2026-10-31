@@ -68,6 +68,7 @@ struct State {
     game: usize,
     edits: CvarEdits,
     sizes: Vec<Resolution>,
+    desktop: Option<Resolution>,
     resolution_entries: Vec<ResolutionEntry>,
     running: bool,
     /// The config last read, and when it was written: read again when it changes
@@ -92,6 +93,7 @@ impl State {
             unwritable: false,
             edits: CvarEdits::new(&CVAR_DEFAULTS),
             sizes: resolution_list(&modes, desktop),
+            desktop,
             resolution_entries: Vec::new(),
             running: false,
             config_seen: (None, None),
@@ -176,6 +178,7 @@ impl State {
         let path = self.config_path();
         let cvars = path.as_deref().and_then(read_config).unwrap_or_default();
         self.edits.load(&cvars);
+        raise_small_resolution(&mut self.edits);
         self.config_seen = (path.clone(), modified(path.as_deref()));
     }
 
@@ -341,7 +344,7 @@ fn show_crosshair(ui: &LauncherWindow, st: &State) {
 }
 
 fn show_display(ui: &LauncherWindow, st: &mut State) {
-    let (entries, index) = resolution_entries(&st.sizes, &st.edits);
+    let (entries, index) = resolution_entries(&st.sizes, st.desktop, &st.edits);
     ui.set_resolutions(strings(entries.iter().map(ResolutionEntry::label)));
     ui.set_resolution_index(index as i32);
     st.resolution_entries = entries;

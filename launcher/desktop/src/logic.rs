@@ -398,7 +398,7 @@ pub fn resolution_list(display_modes: &[Resolution], desktop: Option<Resolution>
     ];
     let mut list: Vec<Resolution> = Vec::new();
     let mut add = |r: Resolution| {
-        if r.width >= 640 && r.height >= 480 && !list.contains(&r) {
+        if r.width >= MIN_RESOLUTION.0 && r.height >= MIN_RESOLUTION.1 && !list.contains(&r) {
             list.push(r);
         }
     };
@@ -417,8 +417,28 @@ pub fn resolution_list(display_modes: &[Resolution], desktop: Option<Resolution>
     list
 }
 
-/// An entry of the resolution menu: the desktop's (r_mode -2) or a size (r_mode -1 with r_customwidth and
-/// r_customheight)
+/// The smallest size the launcher offers or passes
+pub const MIN_RESOLUTION: (i32, i32) = (640, 480);
+
+/// A config's size below 640 x 480 (r_mode 0 to 2, or a custom size) as 640 x 480: the menu shows it, and starting
+/// the game passes it, as a change made in the launcher
+pub fn raise_small_resolution(edits: &mut CvarEdits) {
+    let mode = int(edits.get("r_mode"));
+    let size = if mode == -1 {
+        Some((int(edits.get("r_customwidth")) as i32, int(edits.get("r_customheight")) as i32))
+    } else {
+        usize::try_from(mode).ok().and_then(|m| R_MODES.get(m)).copied()
+    };
+    if let Some((w, h)) = size {
+        if w < MIN_RESOLUTION.0 || h < MIN_RESOLUTION.1 {
+            edits.set("r_mode", "-1");
+            edits.set("r_customwidth", &MIN_RESOLUTION.0.to_string());
+            edits.set("r_customheight", &MIN_RESOLUTION.1.to_string());
+        }
+    }
+}
+
+/// An entry of the resolution menu: a size (r_mode -1 with r_customwidth and r_customheight)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResolutionEntry {
     pub mode: i64,
@@ -428,30 +448,32 @@ pub struct ResolutionEntry {
 
 impl ResolutionEntry {
     pub fn label(&self) -> String {
-        match self.mode {
-            -1 => format!("{} \u{00D7} {} ({})", self.width, self.height, aspect_ratio(self.width, self.height)),
-            _ => "Desktop resolution".into(),
-        }
+        format!("{} \u{00D7} {} ({})", self.width, self.height, aspect_ratio(self.width, self.height))
     }
 }
 
 /// The menu's entries for the sizes offered and the config's own (r_mode, r_customwidth, r_customheight), and the
-/// index of the config's. A numbered mode (r_mode 0 to 11) is its size; nothing is passed to the game unless the
-/// player picks another entry. A number the game doesn't have is the desktop's resolution.
-pub fn resolution_entries(sizes: &[Resolution], edits: &CvarEdits) -> (Vec<ResolutionEntry>, usize) {
-    let mut entries = vec![ResolutionEntry { mode: -2, width: 0, height: 0 }];
-    entries.extend(sizes.iter().map(|r| ResolutionEntry { mode: -1, width: r.width, height: r.height }));
+/// index of the config's. A numbered mode (r_mode 0 to 11) is its size, and the desktop's resolution (r_mode -2, the
+/// game's default, or a number the game doesn't have) the desktop's size; nothing is passed to the game unless the
+/// player picks another entry, so r_mode -2 keeps following the desktop.
+pub fn resolution_entries(
+    sizes: &[Resolution],
+    desktop: Option<Resolution>,
+    edits: &CvarEdits,
+) -> (Vec<ResolutionEntry>, usize) {
+    let entry = |width, height| ResolutionEntry { mode: -1, width, height };
+    let mut entries: Vec<ResolutionEntry> = sizes.iter().map(|r| entry(r.width, r.height)).collect();
     let mode = int(edits.get("r_mode"));
     let current = if mode == -1 {
-        ResolutionEntry {
-            mode: -1,
-            width: int(edits.get("r_customwidth")) as i32,
-            height: int(edits.get("r_customheight")) as i32,
-        }
+        entry(int(edits.get("r_customwidth")) as i32, int(edits.get("r_customheight")) as i32)
     } else if let Some(&(width, height)) = usize::try_from(mode).ok().and_then(|m| R_MODES.get(m)) {
-        ResolutionEntry { mode: -1, width, height }
+        entry(width, height)
+    } else if let Some(d) = desktop {
+        entry(d.width, d.height)
+    } else if let Some(&first) = entries.first() {
+        first
     } else {
-        ResolutionEntry { mode: -2, width: 0, height: 0 }
+        entry(MIN_RESOLUTION.0, MIN_RESOLUTION.1)
     };
     if let Some(k) = entries.iter().position(|e| *e == current) {
         return (entries, k);
@@ -459,9 +481,8 @@ pub fn resolution_entries(sizes: &[Resolution], edits: &CvarEdits) -> (Vec<Resol
     // the config's own size, where it belongs in the list
     let k = entries
         .iter()
-        .skip(1)
         .position(|e| e.width < current.width || (e.width == current.width && e.height < current.height))
-        .map_or(entries.len(), |k| k + 1);
+        .unwrap_or(entries.len());
     entries.insert(k, current);
     (entries, k)
 }
@@ -729,27 +750,44 @@ mod tests {
 
         let mut e = CvarEdits::new(&[("r_mode", "-2"), ("r_customwidth", "1600"), ("r_customheight", "1024")]);
         let sizes = [r(1920, 1080), r(1280, 720)];
-        assert_eq!(resolution_entries(&sizes, &e).1, 0);
+        let desktop = Some(r(1920, 1080));
+        // the desktop's resolution is the desktop's size, and no entry of its own
+        let (entries, k) = resolution_entries(&sizes, desktop, &e);
+        assert_eq!((entries.len(), k, entries[k].label()), (2, 0, "1920 \u{00D7} 1080 (16:9)".to_string()));
         e.set("r_mode", "-1");
-        let (entries, k) = resolution_entries(&sizes, &e);
-        assert_eq!((entries.len(), k, entries[k].width), (4, 2, 1600));
+        let (entries, k) = resolution_entries(&sizes, desktop, &e);
+        assert_eq!((entries.len(), k, entries[k].width), (3, 1, 1600));
         // a numbered mode is its size: the list's own entry, or one more where it belongs
         let sizes = resolution_list(&[], Some(r(1920, 1080)));
         e.set("r_mode", "6");
-        let (entries, k) = resolution_entries(&sizes, &e);
-        assert_eq!((entries.len(), entries[k].label()), (sizes.len() + 1, "1024 \u{00D7} 768 (4:3)".to_string()));
+        let (entries, k) = resolution_entries(&sizes, desktop, &e);
+        assert_eq!((entries.len(), entries[k].label()), (sizes.len(), "1024 \u{00D7} 768 (4:3)".to_string()));
         e.set("r_mode", "10");
-        let (entries, k) = resolution_entries(&sizes, &e);
-        assert_eq!((entries.len(), k, entries[k].label()), (sizes.len() + 2, 1, "2048 \u{00D7} 1536 (4:3)".to_string()));
+        let (entries, k) = resolution_entries(&sizes, desktop, &e);
+        assert_eq!((entries.len(), k, entries[k].label()), (sizes.len() + 1, 0, "2048 \u{00D7} 1536 (4:3)".to_string()));
+        // below 640 x 480: 640 x 480, passed as a change
         e.set("r_mode", "1");
-        let (entries, k) = resolution_entries(&sizes, &e);
-        assert_eq!((k, entries[k].label()), (entries.len() - 1, "400 \u{00D7} 300 (4:3)".to_string()));
+        e.applied();
+        raise_small_resolution(&mut e);
+        let (entries, k) = resolution_entries(&sizes, desktop, &e);
+        assert_eq!((entries.len(), entries[k].label()), (sizes.len(), "640 \u{00D7} 480 (4:3)".to_string()));
+        assert_eq!(e.changes().len(), 3);
+        e.set("r_customwidth", "320");
+        e.set("r_customheight", "200");
+        e.applied();
+        raise_small_resolution(&mut e);
+        assert_eq!((e.get("r_mode"), e.get("r_customwidth"), e.get("r_customheight")), ("-1", "640", "480"));
         e.set("r_mode", "11");
-        let (entries, k) = resolution_entries(&sizes, &e);
+        e.applied();
+        raise_small_resolution(&mut e);
+        assert!(e.changes().is_empty());
+        e.set("r_mode", "11");
+        let (entries, k) = resolution_entries(&sizes, desktop, &e);
         assert_eq!(entries[k].label(), "856 \u{00D7} 480 (16:9)");
         e.set("r_mode", "12");
-        assert_eq!(resolution_entries(&sizes, &e).1, 0);
-        assert!(resolution_entries(&sizes, &e).0.iter().all(|e| !e.label().contains("r_mode")));
+        let (entries, k) = resolution_entries(&sizes, desktop, &e);
+        assert_eq!((entries.len(), entries[k].label()), (sizes.len(), "1920 \u{00D7} 1080 (16:9)".to_string()));
+        assert!(entries.iter().all(|e| !e.label().contains("r_mode") && !e.label().contains("Desktop")));
 
         assert_eq!(aspect_ratio(1920, 1080), "16:9");
         assert_eq!(aspect_ratio(1366, 768), "16:9");
