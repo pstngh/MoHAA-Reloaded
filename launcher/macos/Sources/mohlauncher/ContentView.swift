@@ -297,8 +297,11 @@ struct ServerList: View {
                     ServerRow(item: item)
                 }
             }
+            .frame(maxWidth: .infinity)
             .padding(2)
         }
+        // the row's width even with nothing in it (an empty ScrollView has none of its own)
+        .frame(maxWidth: .infinity)
         .frame(height: 3 * Metrics.row + 4)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.black.opacity(0.19)))
         .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.white.opacity(0.04)))
