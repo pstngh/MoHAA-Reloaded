@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # The v1.0.0 release's Linux and Windows downloads from CI's build artifacts (out-linux-amd64, out-windows-x64):
-# the build's files, plus COPYING.txt, this folder's INSTALL-<platform>.txt as INSTALL.txt (with the commit) and
+# the build's files without the dedicated server, plus COPYING.txt, this folder's INSTALL-<platform>.txt as INSTALL.txt (with the commit) and
 # this folder's licenses/ (licenses-linux/ too on Linux: wolfSSL is only in the Linux build). The download must hold
 # exactly the files in files-<platform>.txt, so a build that adds or drops a file stops here instead of shipping.
 #
@@ -30,6 +30,8 @@ stage="$out/$name"
 rm -rf "$stage"
 mkdir -p "$stage"
 cp -R "$artifact/." "$stage/"
+# the downloads are the client only, as the release notes say: no dedicated server
+rm -f "$stage/omohaaded" "$stage/omohaaded.exe"
 cp "$root/COPYING.txt" "$stage/"
 cp -R "$here/licenses" "$stage/"
 
