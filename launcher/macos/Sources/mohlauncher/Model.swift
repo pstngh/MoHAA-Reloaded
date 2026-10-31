@@ -219,6 +219,14 @@ final class LauncherModel: ObservableObject {
     }
 
     /// The server in the fields, kept in the list without joining it (or its passwords updated)
+    var closeOnStart: Bool {
+        get { settings.closeOnStart }
+        set {
+            settings.closeOnStart = newValue
+            save()
+        }
+    }
+
     func bookmark() {
         let a = trimmed(address)
         guard !a.isEmpty else { return }
@@ -465,6 +473,8 @@ final class LauncherModel: ObservableObject {
                 } else {
                     self.gameApp = app
                     self.edits.applied()
+                    // the settings are saved above; the game keeps running on its own
+                    if self.settings.closeOnStart { NSApp.terminate(nil) }
                 }
             }
         }

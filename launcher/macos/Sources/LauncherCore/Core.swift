@@ -427,6 +427,8 @@ public struct GameSlot: Codable {
 public struct LauncherSettings: Codable {
     public var game = Game.alliedAssault
     public var slots = [GameSlot](repeating: GameSlot(), count: Game.allCases.count)
+    /// Quit the launcher once the game has started (Single Player or Connect)
+    public var closeOnStart = false
 
     public init() {}
 
@@ -435,6 +437,7 @@ public struct LauncherSettings: Codable {
         game = (try? c.decodeIfPresent(Game.self, forKey: .game)) ?? .alliedAssault
         slots = (try? c.decodeIfPresent([GameSlot].self, forKey: .slots)) ?? []
         while slots.count < Game.allCases.count { slots.append(GameSlot()) }
+        closeOnStart = (try? c.decodeIfPresent(Bool.self, forKey: .closeOnStart)) ?? false
     }
 
     public static func from(json data: Data?) -> LauncherSettings {

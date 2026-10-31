@@ -177,6 +177,11 @@ final class CoreTests: XCTestCase {
     func testSettingsAndServers() throws {
         // the Windows and Linux launcher's mohlauncher.json reads the same
         let json = #"{"game": 1, "slots": [{"address": "a:1", "servers": [{"label": "", "address": "a:1"}, {"address": " "}]}]}"#
+        // Close on start: off unless turned on, kept as closeOnStart (the Windows and Linux launcher's name too)
+        XCTAssertFalse(LauncherSettings.from(json: json.data(using: .utf8)).closeOnStart)
+        XCTAssertTrue(LauncherSettings.from(json: #"{"closeOnStart": true}"#.data(using: .utf8)).closeOnStart)
+        let saved = String(decoding: try JSONEncoder().encode(LauncherSettings()), as: UTF8.self)
+        XCTAssertTrue(saved.contains("\"closeOnStart\":false"))
         var s = LauncherSettings.from(json: json.data(using: .utf8))
         XCTAssertEqual(s.game, .spearhead)
         XCTAssertEqual(s.slots.count, 3)

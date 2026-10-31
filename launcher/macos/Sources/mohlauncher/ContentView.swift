@@ -153,6 +153,7 @@ extension Field where Accessory == EmptyView {
 struct LabelAction: View {
     let systemImage: String?
     let title: String
+    var active = true // in the accent color, or (a toggle that's off) in the labels' color
     var enabled = true
     @State var hover = false
     let action: () -> Void
@@ -166,7 +167,7 @@ struct LabelAction: View {
                 Text(title).font(.system(size: 12))
             }
             .foregroundStyle(!enabled ? Color.secondary.opacity(0.5)
-                : hover ? Color.primary : Color.accentColor)
+                : hover ? Color.primary : active ? Color.accentColor : Color.secondary)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -572,6 +573,12 @@ struct Footer: View {
             }
             .buttonStyle(.plain)
             .help("The game folder: click to choose another")
+            LabelAction(systemImage: model.closeOnStart ? "checkmark.square.fill" : "square",
+                        title: "Close on start", active: model.closeOnStart) {
+                model.closeOnStart.toggle()
+            }
+            .help("Quit MoHAA Launcher once the game has started")
+            .padding(.horizontal, Metrics.gap / 2)
             Button {
                 model.start(connect: false)
             } label: {
