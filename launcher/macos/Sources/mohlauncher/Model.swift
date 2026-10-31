@@ -31,8 +31,6 @@ struct ResolutionEntry: Hashable, Identifiable {
 final class LauncherModel: ObservableObject {
     nonisolated static let cvarDefaults: [(String, String)] = [
         ("name", ""),
-        // off unless the player turns it on (the game's own default is on): always passed, so the game agrees
-        ("cl_discordPresence", "0"),
         ("cg_crosshair_length", "4"),
         ("cg_crosshair_gap", "3"),
         ("cg_crosshair_thickness", "1"),
@@ -303,11 +301,6 @@ final class LauncherModel: ObservableObject {
         Binding(get: { self.edits.get("name") }, set: { self.edits.set("name", $0) })
     }
 
-    var discordPresence: Bool {
-        get { (Int(edits.get("cl_discordPresence")) ?? 0) != 0 }
-        set { edits.set("cl_discordPresence", newValue ? "1" : "0") }
-    }
-
     func number(_ cvar: String, _ range: ClosedRange<Int>) -> Binding<Int> {
         Binding(get: {
             let value = Int((Double(self.edits.get(cvar)) ?? Double(range.lowerBound)).rounded())
@@ -439,9 +432,6 @@ final class LauncherModel: ObservableObject {
             launch.basepath = folder.path
         }
         let changes = edits.changes
-        if !changes.contains(where: { $0.0 == "cl_discordPresence" }) {
-            launch.cvars.append(("cl_discordPresence", edits.get("cl_discordPresence")))
-        }
         for change in changes {
             if change.0 == "name" {
                 let name = trimmed(change.1)

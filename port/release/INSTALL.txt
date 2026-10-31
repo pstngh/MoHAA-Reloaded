@@ -37,10 +37,9 @@ Install
 
 5. Start mohlauncher.app, MoHAA Launcher: it starts Allied Assault, Spearhead or Breakthrough, at the
    main menu (Single Player) or onto a server (Connect), with your name, the server's passwords, the
-   crosshair, the resolution and display mode, and Discord presence (off unless you turn it on). The
-   servers you join are kept in its list. If the game folder is on an external drive (or in a folder
-   macOS protects, such as Documents or Desktop), macOS asks whether the launcher and the game may
-   access files there: click Allow. It asks again after each update (the permission belongs to that
+   crosshair, and the resolution and display mode. The servers you join are kept in its list. If the
+   game folder is on an external drive (or in a folder macOS protects, such as Documents or Desktop),
+   macOS asks whether the launcher and the game may access files there: click Allow. It asks again after each update (the permission belongs to that
    exact build), as step 2 is needed again.
 
    openmohaa.app starts directly too: Allied Assault by default. For Spearhead or Breakthrough, open

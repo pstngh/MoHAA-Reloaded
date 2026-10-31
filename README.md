@@ -37,7 +37,7 @@ Configs, saves, screenshots, demos and logs go into the game folder (`main/confi
 `mohlauncher.app` starts the game for Allied Assault, Spearhead or Breakthrough, at its main menu (**Single Player**) or onto a server (**Connect**):
 
 - **Servers:** the address, the server's password and the RCON password. The servers you join are kept in a list (**Bookmark** keeps one without joining), Forte FFA built into Allied Assault's.
-- **Settings:** your name, the crosshair (with a preview), the resolution and the display mode (the fullscreen Space, exclusive or borderless fullscreen, a window), and Discord presence (`cl_discordPresence`, off unless you turn it on). Only what you change in the launcher goes to the game, so what you change in the game stays.
+- **Settings:** your name, the crosshair (with a preview), the resolution and the display mode (the fullscreen Space, exclusive or borderless fullscreen, a window). Only what you change in the launcher goes to the game, so what you change in the game stays.
 - **Portable:** it writes only into the game folder. `mohlauncher.json` holds the servers and their passwords; the game is started with its home there (`fs_homepath`), so its configs, saves, screenshots, demos, logs and state files go there too. A config kept in Application Support is copied over once.
 - It finds the game folder by its `main/Pak0.pk3`, beside it, and asks for it otherwise.
 

@@ -153,7 +153,6 @@ extension Field where Accessory == EmptyView {
 struct LabelAction: View {
     let systemImage: String?
     let title: String
-    var active = true // in the accent color, or (a toggle that's off) in the labels' color
     var enabled = true
     @State var hover = false
     let action: () -> Void
@@ -167,7 +166,7 @@ struct LabelAction: View {
                 Text(title).font(.system(size: 12))
             }
             .foregroundStyle(!enabled ? Color.secondary.opacity(0.5)
-                : hover ? Color.primary : active ? Color.accentColor : Color.secondary)
+                : hover ? Color.primary : Color.accentColor)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -242,13 +241,7 @@ struct PlayerAndServers: View {
         VStack(spacing: Metrics.gap) {
             Grid(horizontalSpacing: Metrics.gap, verticalSpacing: Metrics.gap) {
                 GridRow {
-                    Field("Player name", accessory: {
-                        LabelAction(systemImage: model.discordPresence ? "checkmark.square.fill" : "square",
-                                    title: "Discord presence", active: model.discordPresence) {
-                            model.discordPresence.toggle()
-                        }
-                        .help("Show what you play on your Discord profile while Discord runs (cl_discordPresence)")
-                    }) {
+                    Field("Player name") {
                         TextField("Player name", text: model.name, prompt: Text("UnnamedSoldier"))
                     }
                     Field("Server", accessory: {
