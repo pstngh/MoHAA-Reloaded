@@ -7,11 +7,11 @@
 	<key>CFBundleDisplayName</key>
 	<string>MoHAA Launcher</string>
 	<key>CFBundleExecutable</key>
-	<string>MoHAALauncher</string>
+	<string>mohlauncher</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
-	<string>io.github.pstngh.mohaa-launcher</string>
+	<string>io.github.pstngh.mohlauncher</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>

@@ -16,9 +16,9 @@ BEGIN
 		BEGIN
 			VALUE "FileDescription", "MoHAA Launcher"
 			VALUE "FileVersion", "1.0.0"
-			VALUE "InternalName", "mohaa-launcher"
+			VALUE "InternalName", "mohlauncher"
 			VALUE "LegalCopyright", "GPL-3.0-or-later, MoHAA Reloaded"
-			VALUE "OriginalFilename", "mohaa-launcher.exe"
+			VALUE "OriginalFilename", "mohlauncher.exe"
 			VALUE "ProductName", "MoHAA Reloaded"
 			VALUE "ProductVersion", "1.0.0"
 		END

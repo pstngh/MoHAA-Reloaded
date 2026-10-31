@@ -47,12 +47,10 @@ jobs:
         printf '%s\n' 'seta name "lol"' 'seta cg_crosshair_length "5"' 'seta cg_crosshair_thickness "2"' \
           'seta r_mode "-1"' 'seta r_customwidth "1920"' 'seta r_customheight "1080"' \
           'seta r_fullscreen "1"' 'seta r_noborder "1"' > "$game/main/configs/omconfig.cfg"
-        mkdir -p "$HOME/Library/Application Support/openmohaa"
-        cat > "$HOME/Library/Application Support/openmohaa/launcher.json" <<'EOF'
-        {"game": 0, "slots": [{"address": "78.141.207.18:12603", "password": "abc", "rcon": "secret",
-          "servers": [{"name": "Forte FFA", "address": "forte.example:12203"},
-                      {"name": "forte war", "address": "forte.example:12204"},
-                      {"name": "78.141.207.18:12603", "address": "78.141.207.18:12603", "password": "abc"}]},
+        cat > "$game/mohlauncher.json" <<'EOF'
+        {"game": 0, "slots": [{"address": "151.80.234.90:12203",
+          "servers": [{"label": "Forte War", "address": "151.80.234.90:12204"},
+                      {"label": "78.141.207.18:12603", "address": "78.141.207.18:12603", "password": "abc"}]},
           {}, {}]}
         EOF
         launcher/macos/build.sh "$game"
@@ -60,7 +58,7 @@ jobs:
     - name: Screenshot
       continue-on-error: true
       run: |
-        "$RUNNER_TEMP/game/MoHAA Launcher.app/Contents/MacOS/MoHAALauncher" --snapshot "$RUNNER_TEMP/launcher-macos.png"
+        "$RUNNER_TEMP/game/mohlauncher.app/Contents/MacOS/mohlauncher" --snapshot "$RUNNER_TEMP/launcher-macos.png"
         sips -g pixelWidth -g pixelHeight "$RUNNER_TEMP/launcher-macos.png"
 
     - name: Screenshot as text (review)
@@ -72,7 +70,7 @@ jobs:
     - name: Package
       run: |
         mkdir -p out
-        ditto -c -k --keepParent "$RUNNER_TEMP/game/MoHAA Launcher.app" out/mohaa-launcher-macos-arm64.zip
+        ditto -c -k --keepParent "$RUNNER_TEMP/game/mohlauncher.app" out/mohlauncher-macos-arm64.zip
         cp "$RUNNER_TEMP/launcher-macos.png" out/ || true
         shasum -a 256 out/*.zip
 
@@ -110,7 +108,7 @@ jobs:
         rustc --version
         cargo test --locked
         cargo build --release --locked
-        ls -l target/release/mohaa-launcher
+        ls -l target/release/mohlauncher
 
     # a stand-in game folder (Allied Assault's and Spearhead's data, a config, saved servers) for a screenshot
     - name: Screenshot
@@ -119,17 +117,17 @@ jobs:
         game="$RUNNER_TEMP/game"; home="$RUNNER_TEMP/home"
         mkdir -p "$game/main" "$game/mainta" "$home/.config/openmohaa/main/configs"
         cp /bin/true "$game/openmohaa"
-        cp target/release/mohaa-launcher "$game/"
+        cp target/release/mohlauncher "$game/"
         printf '%s\n' 'seta name "lol"' 'seta cg_crosshair_length "5"' 'seta cg_crosshair_thickness "2"' \
           'seta r_mode "-1"' 'seta r_customwidth "1920"' 'seta r_customheight "1080"' \
           > "$home/.config/openmohaa/main/configs/omconfig.cfg"
-        echo '{"slots": [{"address": "151.80.234.90:12203", "servers": [{"name": "78.141.207.18:12603", "address": "78.141.207.18:12603"}]}]}' \
-          > "$home/.config/openmohaa/launcher.json"
+        echo '{"slots": [{"address": "151.80.234.90:12203", "servers": [{"label": "Forte War", "address": "151.80.234.90:12204"}]}]}' \
+          > "$game/mohlauncher.json"
         Xvfb :99 -screen 0 1280x800x24 & xvfb=$!
         sleep 1
         export DISPLAY=:99 HOME="$home"
         xdotool mousemove 1270 790
-        "$game/mohaa-launcher" & launcher=$!
+        "$game/mohlauncher" & launcher=$!
         sleep 3
         import -window root -trim "$RUNNER_TEMP/launcher-linux.png"
         kill $launcher $xvfb
@@ -137,7 +135,7 @@ jobs:
     - name: Package
       run: |
         mkdir -p "$GITHUB_WORKSPACE/out"
-        tar -czf "$GITHUB_WORKSPACE/out/mohaa-launcher-linux-amd64.tar.gz" -C target/release mohaa-launcher
+        tar -czf "$GITHUB_WORKSPACE/out/mohlauncher-linux-amd64.tar.gz" -C target/release mohlauncher
         cp "$RUNNER_TEMP/launcher-linux.png" "$GITHUB_WORKSPACE/out/" || true
         sha256sum "$GITHUB_WORKSPACE"/out/*.tar.gz
 
@@ -170,14 +168,14 @@ jobs:
         rustc --version
         cargo test --locked
         cargo build --release --locked
-        ls -l target/release/mohaa-launcher.exe
+        ls -l target/release/mohlauncher.exe
 
     - name: Package
       run: |
         mkdir -p "$GITHUB_WORKSPACE/out"
-        cp target/release/mohaa-launcher.exe "$GITHUB_WORKSPACE/out/"
-        cd "$GITHUB_WORKSPACE/out" && 7z a -tzip mohaa-launcher-windows-x64.zip mohaa-launcher.exe && rm mohaa-launcher.exe
-        sha256sum mohaa-launcher-windows-x64.zip
+        cp target/release/mohlauncher.exe "$GITHUB_WORKSPACE/out/"
+        cd "$GITHUB_WORKSPACE/out" && 7z a -tzip mohlauncher-windows-x64.zip mohlauncher.exe && rm mohlauncher.exe
+        sha256sum mohlauncher-windows-x64.zip
 
     - uses: actions/upload-artifact@v4
       with:

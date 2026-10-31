@@ -5,15 +5,16 @@ import SwiftUI
 
 struct Server: Codable, Identifiable, Hashable {
     var id = UUID()
-    var name: String
+    /// what it's called in the list (its address until it's renamed); the player's own name is the game's
+    var label: String
     var address: String
     var password = ""
     var rcon = ""
 
-    enum CodingKeys: String, CodingKey { case name, address, password, rcon }
+    enum CodingKeys: String, CodingKey { case label, address, password, rcon }
 
-    init(name: String, address: String, password: String = "", rcon: String = "") {
-        self.name = name
+    init(label: String, address: String, password: String = "", rcon: String = "") {
+        self.label = label
         self.address = address
         self.password = password
         self.rcon = rcon
@@ -22,7 +23,7 @@ struct Server: Codable, Identifiable, Hashable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         address = try c.decodeIfPresent(String.self, forKey: .address) ?? ""
-        name = try c.decodeIfPresent(String.self, forKey: .name) ?? address
+        label = try c.decodeIfPresent(String.self, forKey: .label) ?? address
         password = try c.decodeIfPresent(String.self, forKey: .password) ?? ""
         rcon = try c.decodeIfPresent(String.self, forKey: .rcon) ?? ""
     }
@@ -111,7 +112,12 @@ final class LauncherModel: ObservableObject {
 
     nonisolated static let supportFolder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("openmohaa", isDirectory: true)
-    nonisolated static let settingsURL = supportFolder.appendingPathComponent("launcher.json")
+    /// mohlauncher.json beside the app (portable: it goes where the launcher goes), else, where that folder can't be
+    /// written (a translocated or read-only copy), in Application Support
+    nonisolated static let settingsURLs = [
+        ownFolder.appendingPathComponent("mohlauncher.json"),
+        supportFolder.appendingPathComponent("mohlauncher.json"),
+    ]
     /// The folder the launcher is in: the game folder, if openmohaa.app is beside it
     nonisolated static let ownFolder = Bundle.main.bundleURL.deletingLastPathComponent()
 
@@ -131,7 +137,7 @@ final class LauncherModel: ObservableObject {
 
     init() {
         displaySizes = LauncherModel.findDisplaySizes()
-        if let data = try? Data(contentsOf: LauncherModel.settingsURL),
+        if let data = LauncherModel.settingsURLs.lazy.compactMap({ try? Data(contentsOf: $0) }).first,
            let saved = try? JSONDecoder().decode(LauncherSettings.self, from: data) {
             settings = saved
         }
@@ -261,7 +267,7 @@ final class LauncherModel: ObservableObject {
 
     func beginRename(_ id: Server.ID) {
         guard let server = servers.first(where: { $0.id == id }) else { return }
-        renameText = server.name
+        renameText = server.label
         renamingID = id
     }
 
@@ -269,7 +275,7 @@ final class LauncherModel: ObservableObject {
         defer { renamingID = nil }
         guard let id = renamingID, let k = servers.firstIndex(where: { $0.id == id }) else { return }
         let name = trimmed(renameText)
-        settings.slots[game.rawValue].servers[k].name = name.isEmpty ? servers[k].address : name
+        settings.slots[game.rawValue].servers[k].label = name.isEmpty ? servers[k].address : name
         save()
     }
 
@@ -386,7 +392,7 @@ final class LauncherModel: ObservableObject {
     func start(connect: Bool) {
         guard !running, !starting else { return }
         guard gameFound else {
-            alertMessage = "openmohaa.app isn't in \(gameFolder.path).\n\nCopy MoHAA Launcher.app next to openmohaa.app, or choose the game folder."
+            alertMessage = "openmohaa.app isn't in \(gameFolder.path).\n\nCopy mohlauncher.app next to openmohaa.app, or choose the game folder."
             return
         }
         storeFields()
@@ -421,7 +427,7 @@ final class LauncherModel: ObservableObject {
                 settings.slots[game.rawValue].servers[k].rcon = slot.rcon
             } else {
                 settings.slots[game.rawValue].servers.append(
-                    Server(name: slot.address, address: slot.address, password: slot.password, rcon: slot.rcon))
+                    Server(label: slot.address, address: slot.address, password: slot.password, rcon: slot.rcon))
             }
         }
         save()
@@ -467,10 +473,13 @@ final class LauncherModel: ObservableObject {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(settings) else { return }
         let fm = FileManager.default
-        try? fm.createDirectory(at: LauncherModel.supportFolder, withIntermediateDirectories: true)
-        if (try? data.write(to: LauncherModel.settingsURL, options: .atomic)) != nil {
-            // it holds passwords
-            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: LauncherModel.settingsURL.path)
+        for (k, url) in LauncherModel.settingsURLs.enumerated() {
+            if k > 0 { try? fm.createDirectory(at: LauncherModel.supportFolder, withIntermediateDirectories: true) }
+            if (try? data.write(to: url, options: .atomic)) != nil {
+                // it holds passwords
+                try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+                return
+            }
         }
     }
 }

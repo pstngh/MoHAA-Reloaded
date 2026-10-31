@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds "MoHAA Launcher.app" (arm64, signed ad hoc) into the folder given, launcher/macos/build by default.
+# Builds "mohlauncher.app" (arm64, signed ad hoc) into the folder given, launcher/macos/build by default.
 #   launcher/macos/build.sh [out-folder]
 # Needs Xcode (or its command line tools) on macOS 14 or later. `swift test` here checks the logic.
 set -eu
@@ -11,10 +11,10 @@ cd "$here"
 swift build -c release --arch arm64
 bin=$(swift build -c release --arch arm64 --show-bin-path)
 
-app="$out/MoHAA Launcher.app"
+app="$out/mohlauncher.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp "$bin/MoHAALauncher" "$app/Contents/MacOS/"
+cp "$bin/mohlauncher" "$app/Contents/MacOS/"
 cp "$here/Resources/Info.plist" "$app/Contents/"
 cp "$here/Resources/AppIcon.icns" "$app/Contents/Resources/"
 # the games' icons at 1x and 2x, for NSImage(named:)

@@ -3,12 +3,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "MoHAALauncher",
+    name: "mohlauncher",
     platforms: [.macOS(.v14)],
     targets: [
         // the logic, without UI: the game's config, the edited settings, the command line (as launcher/desktop's core)
         .target(name: "LauncherCore"),
-        .executableTarget(name: "MoHAALauncher", dependencies: ["LauncherCore"]),
+        .executableTarget(name: "mohlauncher", dependencies: ["LauncherCore"]),
         .testTarget(name: "LauncherCoreTests", dependencies: ["LauncherCore"]),
     ]
 )

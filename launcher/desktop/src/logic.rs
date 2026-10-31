@@ -454,10 +454,12 @@ pub struct GameSlot {
     pub servers: Vec<Server>,
 }
 
+/// A server in the list: what it's called there (its address until it's renamed), its address and the passwords
+/// used on it. The player's own name isn't part of it: that's the game's.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Server {
-    pub name: String,
+    pub label: String,
     pub address: String,
     pub password: String,
     pub rcon: String,
@@ -478,8 +480,8 @@ impl Settings {
         for slot in &mut self.slots {
             slot.servers.retain(|s| !s.address.trim().is_empty());
             for s in &mut slot.servers {
-                if s.name.trim().is_empty() {
-                    s.name = s.address.clone();
+                if s.label.trim().is_empty() {
+                    s.label = s.address.clone();
                 }
             }
         }
@@ -494,7 +496,7 @@ impl Settings {
             s.rcon = rcon.to_string();
         } else {
             servers.push(Server {
-                name: address.to_string(),
+                label: address.to_string(),
                 address: address.to_string(),
                 password: password.to_string(),
                 rcon: rcon.to_string(),
@@ -525,7 +527,7 @@ pub fn listed_servers(settings: &Settings, game: usize) -> Vec<Listed> {
     for &(_, name, address) in BUILTIN_SERVERS.iter().filter(|b| b.0 == game) {
         let k = saved.iter().position(|s| same_address(&s.address, address));
         let (password, rcon) = k.map_or_else(Default::default, |k| (saved[k].password.clone(), saved[k].rcon.clone()));
-        let server = Server { name: name.into(), address: address.into(), password, rcon };
+        let server = Server { label: name.into(), address: address.into(), password, rcon };
         list.push(Listed { server, saved: k, builtin: true });
     }
     for (k, s) in saved.iter().enumerate() {
@@ -704,11 +706,11 @@ mod tests {
     fn reads_and_keeps_settings() {
         // the macOS launcher's launcher.json reads the same
         let s = Settings::from_json(
-            r#"{"game": 1, "slots": [{"address": "a:1", "servers": [{"name": "", "address": "a:1"}, {"address": " "}]}]}"#,
+            r#"{"game": 1, "slots": [{"address": "a:1", "servers": [{"label": "", "address": "a:1"}, {"address": " "}]}]}"#,
         );
         assert_eq!(s.game, 1);
         assert_eq!(s.slots.len(), GAME_COUNT);
-        assert_eq!(s.slots[0].servers, vec![Server { name: "a:1".into(), address: "a:1".into(), ..Default::default() }]);
+        assert_eq!(s.slots[0].servers, vec![Server { label: "a:1".into(), address: "a:1".into(), ..Default::default() }]);
         assert_eq!(Settings::from_json("not json").slots.len(), GAME_COUNT);
 
         let mut s = Settings::from_json("{}");
@@ -717,7 +719,8 @@ mod tests {
         assert_eq!(s.slots[0].servers.len(), 1);
         assert_eq!((s.slots[0].servers[0].address.as_str(), s.slots[0].servers[0].password.as_str()), ("HOST:12203", "pw2"));
         let json = serde_json::to_string(&s).unwrap();
-        assert!(json.contains("\"slots\"") && !json.contains("gameFolder"));
+        assert!(json.contains("\"slots\"") && json.contains("\"label\"") && !json.contains("gameFolder"));
+        assert!(!json.contains("\"name\"")); // a server has a label; the player's name is the game's
     }
 
     #[test]
@@ -727,7 +730,7 @@ mod tests {
         let list = listed_servers(&s, 0);
         assert_eq!(list.len(), 2);
         assert!(list[0].builtin && list[0].saved.is_none());
-        assert_eq!((list[0].server.name.as_str(), list[0].server.address.as_str()), ("Forte FFA", "151.80.234.90:12203"));
+        assert_eq!((list[0].server.label.as_str(), list[0].server.address.as_str()), ("Forte FFA", "151.80.234.90:12203"));
         assert_eq!((list[1].server.address.as_str(), list[1].saved), ("a:1", Some(0)));
         // joined with a password: listed once, with it
         s.remember_server(0, "151.80.234.90:12203", "pw", "");

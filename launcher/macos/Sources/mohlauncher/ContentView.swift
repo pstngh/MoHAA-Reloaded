@@ -146,8 +146,8 @@ private struct ServerRow: View {
     var body: some View {
         HStack(spacing: 6) {
             VStack(alignment: .leading, spacing: 1) {
-                Text(server.name).lineLimit(1)
-                if server.name != server.address {
+                Text(server.label).lineLimit(1)
+                if server.label != server.address {
                     Text(server.address).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
             }

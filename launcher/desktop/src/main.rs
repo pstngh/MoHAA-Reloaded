@@ -51,7 +51,7 @@ enum Dialog {
 
 struct State {
     settings: Settings,
-    settings_path: PathBuf,
+    settings_paths: [PathBuf; 2],
     own_folder: PathBuf,
     game: usize,
     edits: CvarEdits,
@@ -69,9 +69,9 @@ fn modified(path: Option<&Path>) -> Option<SystemTime> {
 
 impl State {
     fn new() -> State {
-        let settings_path = platform::settings_path();
-        let settings = std::fs::read_to_string(&settings_path).map_or_else(
-            |_| {
+        let settings_paths = platform::settings_paths();
+        let settings = settings_paths.iter().find_map(|p| std::fs::read_to_string(p).ok()).map_or_else(
+            || {
                 let mut s = Settings::default();
                 s.normalize();
                 s
@@ -82,7 +82,7 @@ impl State {
         let mut state = State {
             game: settings.game,
             settings,
-            settings_path,
+            settings_paths,
             own_folder: platform::own_folder(),
             edits: CvarEdits::new(&CVAR_DEFAULTS),
             sizes: resolution_list(&modes, desktop),
@@ -175,18 +175,26 @@ impl State {
     fn save(&mut self) {
         self.settings.game = self.game;
         let Ok(json) = serde_json::to_string_pretty(&self.settings) else { return };
-        if let Some(dir) = self.settings_path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        // a new file in place of the old one, readable by the player only: it holds passwords
-        let tmp = self.settings_path.with_extension("json.tmp");
-        if std::fs::write(&tmp, json).is_ok() {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+        // beside the launcher, else in the player's settings folder
+        for (k, path) in self.settings_paths.iter().enumerate() {
+            if k > 0 {
+                if let Some(dir) = path.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
             }
-            let _ = std::fs::rename(&tmp, &self.settings_path);
+            // a new file in place of the old one, readable by the player only: it holds passwords
+            let tmp = path.with_extension("json.tmp");
+            if std::fs::write(&tmp, &json).is_ok() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+                }
+                if std::fs::rename(&tmp, path).is_ok() {
+                    return;
+                }
+                let _ = std::fs::remove_file(&tmp);
+            }
         }
     }
 
@@ -225,10 +233,13 @@ fn show_fields(ui: &LauncherWindow, st: &State) {
 
 fn show_servers(ui: &LauncherWindow, st: &State) {
     let address = st.slot().address.trim();
-    let items: Vec<ServerItem> = listed_servers(&st.settings, st.game)
+    let listed = listed_servers(&st.settings, st.game);
+    ui.set_can_bookmark(!address.is_empty());
+    ui.set_bookmarked(!address.is_empty() && listed.iter().any(|l| same_address(&l.server.address, address)));
+    let items: Vec<ServerItem> = listed
         .iter()
         .map(|l| ServerItem {
-            name: l.server.name.as_str().into(),
+            name: l.server.label.as_str().into(),
             address: l.server.address.as_str().into(),
             selected: !address.is_empty() && same_address(&l.server.address, address),
             builtin: l.builtin,
@@ -454,7 +465,7 @@ fn dialog_accepted(ui: &LauncherWindow, st: &mut State) {
         Dialog::Rename(i) => {
             if let Some(server) = st.slot_mut().servers.get_mut(i) {
                 let name = value.trim();
-                server.name = if name.is_empty() { server.address.clone() } else { name.to_string() };
+                server.label = if name.is_empty() { server.address.clone() } else { name.to_string() };
             }
             st.save();
             show_servers(ui, st);
@@ -544,18 +555,30 @@ fn main() -> Result<(), slint::PlatformError> {
             start(&ui, &state, true);
         });
     }
+    // the server in the fields, kept in the list without joining it (or its passwords updated)
+    on!(on_bookmark, |ui, st| {
+        let slot = st.slot().clone();
+        let address = slot.address.trim();
+        if address.is_empty() {
+            return;
+        }
+        let game = st.game;
+        st.settings.remember_server(game, address, &slot.password, &slot.rcon);
+        st.save();
+        show_servers(&ui, &st);
+    });
     // a built-in server has neither
     on!(on_server_rename, |ui, st, index| {
         let listed = listed_servers(&st.settings, st.game);
         if let Some(Listed { server, saved: Some(i), builtin: false }) = listed.get(index as usize).cloned() {
             let text = format!("A name for {}.", server.address);
-            show_input(&ui, &mut st, Dialog::Rename(i), "Rename server", &text, &server.name, "Rename");
+            show_input(&ui, &mut st, Dialog::Rename(i), "Rename server", &text, &server.label, "Rename");
         }
     });
     on!(on_server_remove, |ui, st, index| {
         let listed = listed_servers(&st.settings, st.game);
         if let Some(Listed { server, saved: Some(i), builtin: false }) = listed.get(index as usize).cloned() {
-            let text = format!("{} and its passwords leave the list.", server.name);
+            let text = format!("{} and its passwords leave the list.", server.label);
             show_dialog(&ui, &mut st, Dialog::Remove(i), "Remove server?", &text, "Remove", "Cancel");
         }
     });

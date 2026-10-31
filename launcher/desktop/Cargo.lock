@@ -2614,7 +2614,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "mohaa-launcher"
+name = "mohlauncher"
 version = "1.0.0"
 dependencies = [
  "embed-resource",

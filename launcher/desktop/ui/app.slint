@@ -134,6 +134,45 @@ component Field inherits VerticalLayout {
     @children
 }
 
+/// A small action in a field's label row, on the right: an optional icon and a word
+component LabelAction inherits Rectangle {
+    in property <image> icon;
+    in property <string> text;
+    in property <bool> enabled: true;
+    in property <styled-text> tip;
+    callback clicked;
+
+    width: row.preferred-width;
+    height: Theme.label-height;
+    property <brush> tint: !root.enabled ? Theme.tertiary : touch.has-hover ? Palette.foreground
+        : Palette.accent-background;
+
+    row := HorizontalLayout {
+        spacing: 4px;
+        if root.icon.width > 0: VerticalLayout {
+            alignment: center;
+            Image {
+                source: root.icon;
+                width: 12px;
+                height: 12px;
+                colorize: root.tint;
+            }
+        }
+        Text {
+            text: root.text;
+            font-size: 12px;
+            vertical-alignment: center;
+            color: root.tint;
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+    Tooltip { text: root.tip; }
+}
+
 component IconButton inherits Rectangle {
     in property <image> icon;
     in property <bool> enabled: true;
@@ -323,6 +362,8 @@ export component LauncherWindow inherits Window {
     in-out property <string> password;
     in-out property <string> rcon;
     in property <[ServerItem]> servers;
+    in property <bool> bookmarked;   // the server in the fields is in the list
+    in property <bool> can-bookmark;
 
     // the crosshair
     in-out property <int> length: 4;
@@ -354,6 +395,7 @@ export component LauncherWindow inherits Window {
     callback address-edited(string);
     callback password-edited(string);
     callback rcon-edited(string);
+    callback bookmark();
     callback server-clicked(int);
     callback server-connect(int);
     callback server-rename(int);
@@ -415,8 +457,23 @@ export component LauncherWindow inherits Window {
                             edited(text) => { root.name-edited(text); }
                         }
                     }
-                    Field {
-                        label: "Server";
+                    VerticalLayout {
+                        spacing: Theme.label-gap;
+                        HorizontalLayout {
+                            FieldLabel {
+                                text: "Server";
+                                horizontal-stretch: 1;
+                            }
+                            LabelAction {
+                                icon: root.bookmarked ? @image-url("icons/bookmark-filled.svg")
+                                    : @image-url("icons/bookmark.svg");
+                                text: root.bookmarked ? "Bookmarked" : "Bookmark";
+                                enabled: root.can-bookmark;
+                                tip: root.bookmarked ? @markdown("In the list: click to keep its passwords too")
+                                    : @markdown("Add it to the list without joining");
+                                clicked => { root.bookmark(); }
+                            }
+                        }
                         LineEdit {
                             text <=> root.address;
                             placeholder-text: "host:port";
@@ -497,16 +554,10 @@ export component LauncherWindow inherits Window {
                                 text: "Crosshair";
                                 horizontal-stretch: 1;
                             }
-                            reset := Text {
+                            LabelAction {
                                 text: "Reset";
-                                height: Theme.label-height;
-                                vertical-alignment: center;
-                                font-size: 12px;
-                                color: reset-touch.has-hover ? Palette.foreground : Palette.accent-background;
-                                reset-touch := TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => { root.reset-crosshair(); }
-                                }
+                                tip: @markdown("The stock crosshair: length 4, gap 3, thickness 1, white");
+                                clicked => { root.reset-crosshair(); }
                             }
                         }
                         CrosshairPreview {
