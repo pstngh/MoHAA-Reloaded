@@ -1682,6 +1682,10 @@ void R_Register( void )
 	// 1: consecutive 2D draws of one shader are one surface, 2: DrawBox leaves
 	// out the boxes that change no pixel; 0 draws each as it comes (tr_draw.c)
 	r_batch2D = ri.Cvar_Get("r_batch2D", "3", 0);
+	// the opaque shaders drawn in the order of their pipelines (tr_shader.c,
+	// SortNewShader), so the back end binds fewer
+	r_sortPipelines = ri.Cvar_Get("r_sortPipelines", "1", CVAR_LATCH);
+	ri.Cvar_SetDescription(r_sortPipelines, "1: the opaque shaders are drawn in the order of the pipelines their draws bind (fewer pipeline binds a frame); 0: in the order they were loaded, as before. Opaque draws with the same depth at a pixel (z-fighting) can come out the other way");
 	// the back end on a render thread (tr_smp.c)
 	r_smp = ri.Cvar_Get("r_smp", "1", CVAR_ARCHIVE | CVAR_LATCH);
 	ri.Cvar_SetDescription(r_smp, "1: the back end (the draws' recording, the submission and the present) runs on a render thread while the game and the front end build the next frame; the frame rate is the slower half's, a frame's input to its present as before (see README, Render thread); 0: one thread");

@@ -874,8 +874,12 @@ below are done.
   every texture slot in one descriptor set per frame slot, bound once, the
   draws naming their slots in `firstInstance` or their records, so the 67
   descriptor set binds a frame become 2 (10,729 to 10,948 frames a
-  second). `vkinfo` counts the vertex and index binds, push constants and
-  dynamic state calls (see Performance, Each stage cheaper)
+  second). The opaque shaders are drawn in the order of their pipelines
+  (`r_sortPipelines 1`): 31 to 26 pipeline binds a frame, 2.5 % more
+  frames a second, at the price of z-fighting surfaces coming out the
+  other way in two of ten views. `vkinfo` counts the vertex and index
+  binds, push constants and dynamic state calls (see Performance, Each
+  stage cheaper)
 - GL1 was the visual reference until 2026-10-19; since then the look may
   change where that buys performance, and comparisons with the build before
   (until 2026-10-23 also with GL1) check for bugs and show what changed
@@ -1042,6 +1046,7 @@ Cvars of the backend:
 | `r_batch2D` (default 3) | bits: 1 draws consecutive 2D pics, strings and triangles of one shader as one surface, 2 leaves out the boxes of `DrawBox` with alpha 0 (they change no pixel); 0 draws every 2D call as it comes (see Implementation notes, 2D batches) |
 | `r_vkFrameLog` (latched, default 0) | the frame log: 1 records the last 131072 frames (larger values: that many), see `vkframelog` below and Performance, Frame spikes; 0 costs nothing |
 | `r_vkSubmitThread` (latched, archived, default 0) | 1: a thread submits and presents the frames and acquires the swapchain images, so the main thread never waits in `vkQueueSubmit`, `vkAcquireNextImageKHR` or `vkQueuePresentKHR` (see Implementation notes, Submit thread, and Performance, Submit thread); the swapchain then has 5 images without vsync, 3 with FIFO. The startup line `Vulkan present mode: ..., N swapchain images, N frames in flight, submit thread` says what is used |
+| `r_sortPipelines` (latched, default 1) | 1: the opaque shaders are drawn in the order of the pipelines their draws bind (`R_ShaderPipelineClass`: the stages' state bits, color generators, texture formats and environments, the cull mode, polygon offset, deforms), those of one pipeline in the order they were loaded, so consecutive draws bind the same pipeline more often (31 to 26 binds a frame at the `dm/mohdm6` spot, 2.5 % more frames a second); 0: the order they were loaded, as before. Only the opaque sort class moves: blended and decal shaders keep their order. Where two opaque surfaces have the same depth at a pixel (z-fighting) the other one can win (see Performance, Each stage cheaper) |
 | `r_vkBindless` (latched, archived, default 1) | 1: bindless textures: every texture slot is in one descriptor set bound once a frame, and a draw names its textures by slot (in `firstInstance`, or its record for the effects and skinned draws) instead of a descriptor set bind per texture change; on where the device has the limits for 4096 combined image samplers in a stage and a set and dynamic indexing of sampler arrays, which the startup line `Vulkan ... bindless textures yes` says; 0 (or without them): a set per texture, as before (see Implementation notes, Bindless textures) |
 | `r_smp` (latched, archived, default 1) | 1: the back end (the draws' recording, the submission and the present) runs on a render thread while the game and the front end build the next frame; the frame rate is the slower half's, a frame's input reaches its present as before, and with vsync the input is read after the display is waited for, as without the thread; no thread on one core; 0: one thread (see Implementation notes, Render thread, and Performance, Render thread). The startup line `r_smp: the back end runs on a render thread` says it runs |
 | `r_temporal` (latched, archived, default 0) | 1: the temporal path: the 3D views are drawn into an RGBA16F scene with motion vectors and normals, for temporal anti-aliasing (`r_taa`), ambient occlusion (`r_ao`), motion blur (`r_motionBlur`) and the HDR look; their own images (the depth pyramid, histories) are made only while they are on; off with multisampling (see Implementation notes, Temporal path) |
@@ -6821,6 +6826,32 @@ recording about 12, the hand-off and waits the rest). So:
   and submission (about 40 µs) plus what the renderer's own recording
   code can lose: a frame rate near 12,000 at the spot, not the 17,000 the
   call count had suggested.
+- the opaque shaders in the order of their pipelines (`r_sortPipelines`,
+  `R_ShaderPipelineClass` in `tr_shader.c`, `SortNewShader`): the sort
+  key of a draw surface orders by the shader's sort class, then its index
+  in `tr.sortedShaders`, which was the order the shaders were loaded in;
+  now, within the opaque class only, by a hash of what decides a shader's
+  pipelines (its stages' state bits, color generators, texture formats
+  and environments, the cull mode, polygon offset, deforms), then the
+  load order. Pipeline binds a frame at the spot 30.9 to 25.6 (the rest
+  are the stage changes within shaders, the decals and blends, the 2D
+  draws and the view's clears), frames a second 10,891 to 11,160 and
+  11,168 to 11,475 in two interleaved pairs. The draw order of opaque
+  surfaces changes, so where two have the same depth at a pixel the
+  other one wins: of the 10 views of `mohdm6.txt` and `mohdm1.txt`
+  (fixed-time screenshots, the flickering ones, `d6_roofs` and `m1_sky`,
+  compared against a second run of the same setting), `d6_room` differs
+  in a 33 x 50 pixel patch on a wall (535 pixels, at most 28 levels) and
+  `m1_top` in 37 pixels; the other eight are identical.
+- the renderer's own recording time, from the thread's profile on this
+  build: `RB_RenderDrawSurfList` 2.7 % (about 5 ns a draw surface),
+  `RB_StaticMesh` 2.6 %, `R_Bind` 1.0 %, `vk_draw` 0.8 %,
+  `VK_BuildPipelineKey` and `VK_MultiplyMVP` 0.6 % each, then two dozen
+  functions below 0.6 %: about 15 % of the frame spread over per-surface
+  work that is already a few tens of nanoseconds a call. Nothing of it is
+  a single lever; what would move it is fewer surfaces and draws to walk
+  (the front end merging more of the world per shader), which is a
+  change of the static geometry's batching, not of the recording.
 
 ### Coordinate conventions
 
@@ -11118,8 +11149,10 @@ variable-length array, checked with clang's `-Wvla`).
     recording, indirect draws over the 65 static draws (at most 1.6 µs,
     under 2 %). The frame rate is the back end's (about 85 µs: the
     present and submission 40, the recording 37, of which the driver
-    about 15); the front end is at 47. What could still move it: the
-    renderer's own recording code (tessellation, stage iteration,
-    batching, about 20 µs) and sorting the opaque draws by pipeline (31
-    binds a frame, the costliest state change), which changes the draw
-    order and so needs the pixel comparison per view.
+    about 15); the front end is at 47. Then the opaque shaders in the
+    order of their pipelines (`r_sortPipelines`): 31 to 26 binds a frame,
+    2.5 % more frames a second, two of ten views with a z-fighting patch
+    the other way. The renderer's own recording code (about 15 % of the
+    frame) is spread over per-surface work of tens of nanoseconds a call,
+    with no single lever left; fewer surfaces to walk (the static
+    geometry's batching) would be the next change.

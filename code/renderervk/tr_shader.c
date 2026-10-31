@@ -2937,12 +2937,20 @@ static void SortNewShader( void ) {
 	int		i;
 	float	sort;
 	shader_t	*newShader;
+	qboolean	byPipeline;
 
 	newShader = tr.shaders[ tr.numShaders - 1 ];
 	sort = newShader->sort;
+	// the opaque shaders in the order of their pipelines (R_ShaderPipelineClass),
+	// those of one pipeline in the order they were made; the other sort
+	// classes blend, so they keep the order they were made in
+	byPipeline = r_sortPipelines->integer && sort == SS_OPAQUE;
 
 	for ( i = tr.numShaders - 2 ; i >= 0 ; i-- ) {
-		if ( tr.sortedShaders[ i ]->sort <= sort ) {
+		if ( tr.sortedShaders[ i ]->sort < sort ) {
+			break;
+		}
+		if ( tr.sortedShaders[ i ]->sort == sort && ( !byPipeline || tr.sortedShaders[ i ]->pipelineClass <= newShader->pipelineClass ) ) {
 			break;
 		}
 		tr.sortedShaders[i+1] = tr.sortedShaders[i];
@@ -3106,6 +3114,45 @@ Returns a freshly allocated shader with all the needed info
 from the current global working shader
 =========================
 */
+/*
+====================
+R_ShaderPipelineClass
+
+What of the shader being finished decides the pipelines its draws bind
+(VK_BuildPipelineKey: the stages' state bits and color generators, the
+textures' formats and environments, the cull mode, polygon offset, the
+effects shader for deforms), hashed: opaque shaders are sorted by it
+(SortNewShader, r_sortPipelines), so consecutive draws bind the same
+pipeline more often
+====================
+*/
+static unsigned R_ShaderPipelineClass( void ) {
+	unsigned h = 2166136261u;
+	int i, b;
+#define HASH( v ) ( h = ( h ^ (unsigned)( v ) ) * 16777619u )
+
+	HASH( shader.cullType );
+	HASH( shader.polygonOffset );
+	HASH( shader.numDeforms != 0 );
+	for ( i = 0; i < MAX_SHADER_STAGES && unfoggedStages[i].active; i++ ) {
+		const shaderStage_t *s = &unfoggedStages[i];
+
+		HASH( s->stateBits );
+		HASH( s->rgbGen );
+		HASH( s->alphaGen );
+		HASH( s->multitextureEnv );
+		for ( b = 0; b < NUM_TEXTURE_BUNDLES; b++ ) {
+			const textureBundle_t *tb = &s->bundle[b];
+			int fmt = tb->isLightmap ? TEXFMT_RGB8 : tb->image[0] ? tb->image[0]->internalFormat : -1;
+
+			// a unit, and whether its texture samples alpha as 1 (VK_PIPE_TEX*_RGB)
+			HASH( fmt < 0 ? 2 : ( fmt == TEXFMT_RGB8 || fmt == TEXFMT_RGB5 || fmt == TEXFMT_BC1_RGB ) ? 1 : 0 );
+		}
+	}
+#undef HASH
+	return h;
+}
+
 static shader_t *FinishShader( void ) {
 	int stage;
 	int i;
@@ -3294,6 +3341,8 @@ static shader_t *FinishShader( void ) {
 
 	// determine which stage iterator function is appropriate
 	ComputeStageIteratorFunc();
+
+	shader.pipelineClass = R_ShaderPipelineClass();
 
 	return GeneratePermanentShader();
 }

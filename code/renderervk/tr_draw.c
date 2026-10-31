@@ -26,6 +26,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 vec4_t r_colorWhite = { 1.0, 1.0, 1.0, 1.0 };
 
 cvar_t *r_batch2D;
+cvar_t *r_sortPipelines;
 
 /*
 ====================================================================

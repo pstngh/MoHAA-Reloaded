@@ -555,6 +555,7 @@ typedef struct shader_s {
 
 	int			index;					// this shader == tr.shaders[index]
 	int			sortedIndex;			// this shader == tr.sortedShaders[sortedIndex]
+	unsigned	pipelineClass;			// what of the shader decides its draws' pipelines; opaque shaders are sorted by it (r_sortPipelines)
 
 	float		sort;					// lower numbered shaders draw before higher numbered
 
@@ -1932,6 +1933,7 @@ typedef enum {
 } r2dSource_t;
 
 extern cvar_t *r_batch2D;	// 1: 2D draws of one shader in one surface, 2: transparent boxes left out
+extern cvar_t *r_sortPipelines;	// 1: opaque shaders ordered by the pipelines their draws bind
 
 void R_IssuePending2DCommands( void );
 void R_Begin2D( shader_t *shader, r2dSource_t source, int numVertexes, int numIndexes );
