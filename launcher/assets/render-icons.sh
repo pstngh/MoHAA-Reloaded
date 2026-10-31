@@ -1,7 +1,8 @@
 #!/bin/sh
 # Renders the launchers' PNG icons from the SVGs beside this script. The PNGs are committed, so building a launcher
 # needs no SVG renderer; run this again after an SVG changes. Needs rsvg-convert (librsvg).
-#   game-aa.svg, game-sh.svg, game-bt.svg: the games' icons (the main branch's icons/)
+#   game-aa.svg, game-sh.svg, game-bt.svg: the games' icons (the main branch's icons/; Allied Assault's without its
+#   black disc, transparent as the app icon is)
 #   app-icon.svg: the launcher's icon, the game's gold star (the metal branch's misc/macos/openmohaa-metal.svg)
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
