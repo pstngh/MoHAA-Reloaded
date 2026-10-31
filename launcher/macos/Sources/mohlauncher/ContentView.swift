@@ -577,6 +577,8 @@ struct Footer: View {
                         .truncationMode(.tail)
                 }
                 .foregroundStyle(model.problem ? Color.warning : Color.secondary)
+                // the links' icons sit inset in their boxes: as far from the Discord icon as it is from GitHub's
+                .padding(.leading, LinkButton.inset)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
@@ -618,6 +620,9 @@ struct Footer: View {
 
 /// An icon that opens a web page
 struct LinkButton: View {
+    static let icon: CGFloat = 17
+    static let box: CGFloat = 28 // the hover background and the click target
+    static let inset = (box - icon) / 2
     let image: NSImage
     let help: String
     let hoverColor: Color
@@ -629,9 +634,9 @@ struct LinkButton: View {
             Image(nsImage: image)
                 .renderingMode(.template)
                 .resizable()
-                .frame(width: 17, height: 17)
+                .frame(width: LinkButton.icon, height: LinkButton.icon)
                 .foregroundStyle(hover ? hoverColor : Color.secondary)
-                .frame(width: 28, height: 28)
+                .frame(width: LinkButton.box, height: LinkButton.box)
                 .background(RoundedRectangle(cornerRadius: 4).fill(hover ? Color.hoverFill : Color.clear))
                 .contentShape(Rectangle())
         }
