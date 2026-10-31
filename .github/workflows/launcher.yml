@@ -62,12 +62,6 @@ jobs:
         "$RUNNER_TEMP/game/mohlauncher.app/Contents/MacOS/mohlauncher" --snapshot "$RUNNER_TEMP/launcher-macos.png"
         sips -g pixelWidth -g pixelHeight "$RUNNER_TEMP/launcher-macos.png"
 
-    - name: Screenshot as text (review)
-      continue-on-error: true
-      run: |
-        sips -Z 900 "$RUNNER_TEMP/launcher-macos.png" --out "$RUNNER_TEMP/review.png" >/dev/null
-        echo "REVIEW-BEGIN"; base64 -i "$RUNNER_TEMP/review.png" | tr -d '\n' | fold -w 3000; echo; echo "REVIEW-END"
-
     - name: Package
       run: |
         mkdir -p out
