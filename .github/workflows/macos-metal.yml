@@ -176,7 +176,8 @@ jobs:
         text, n = re.subn(r"(\| `" + re.escape(name) + r"` \| `)[0-9a-f]{64}(` \|)", r"\g<1>" + digest + r"\g<2>", text)
         if n != 1:
             sys.exit(f"the notes have {n} SHA-256 rows for {name}, not one")
-        open(notes, "w", encoding="utf-8").write(text)
+        # gh adds a newline to the body it reads: without this, each update would add one
+        open(notes, "w", encoding="utf-8").write(text.rstrip("\n") + "\n")
         EOF
 
         gh release upload v1.0.0 "$zip" --clobber
