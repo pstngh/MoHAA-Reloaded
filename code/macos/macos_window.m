@@ -33,8 +33,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // - a window: titled (borderless with r_noborder), resizable with r_allowResize, on r_displayIndex, centered (SDL
 //   centers windows whether r_centerWindow is set or not), at its old position after a vid_restart;
 // - exclusive fullscreen, r_fullscreen 1: a borderless window over the screen at the shielding level. The display
-//   keeps its mode: the game renders at r_mode's size and the final pass scales that to the screen, each pixel from
-//   the nearest one, in its own shape or stretched (r_fullscreenStretch; docs/METAL_PORT_PLAN.md 3.1 #60). Losing
+//   keeps its mode: the game renders at r_mode's size and the display hardware scales the drawable to the screen
+//   (still direct to display, no GPU pass), in its own shape or stretched (r_fullscreenStretch; docs/METAL_PORT_PLAN.md
+//   3.1 #60). Losing
 //   the focus minimizes the window, as SDL does;
 // - borderless fullscreen, r_fullscreen 1 + r_noborder 1: a native fullscreen Space at the desktop resolution, or
 //   with r_borderlessWindow 1 a borderless window over the screen at the normal level, the dock and menu bar
@@ -963,47 +964,48 @@ static void MTLimp_DetectAvailableModes(void)
 ===============
 MTLimp_SetGameRect
 
-Where the game's image goes in the drawable. Exclusive fullscreen at another size than the display's: the final pass
-scales the scene to the screen, each pixel from the nearest one (sharp, the user's choice): stretched to fill it with
-r_fullscreenStretch 1, else in its own shape, as large as it fits, centered between black bars. Everywhere else the
-scene has the drawable's size. The input layer maps the cursor through the same rectangle (MacOS_GameRect).
+Where the game's image goes on the screen. Exclusive fullscreen at another size than the display's: the drawable has
+the game's size and the display hardware scales it to the layer, stretched to fill it with r_fullscreenStretch 1, else
+in its own shape, as large as it fits, centered between black bars (the layer's black background). Still direct to
+display, with no GPU pass: as a PC's GPU scaling (docs/METAL_PORT_PLAN.md 2, session 80). Everywhere else the drawable
+has the screen's size. The input layer maps the cursor through the same rectangle (MacOS_GameRect).
 ===============
 */
-static void MTLimp_SetGameRect( int drawableWidth, int drawableHeight, CGFloat scale )
+static void MTLimp_SetGameRect( int screenWidth, int screenHeight, CGFloat scale )
 {
 	int x, y, width = glConfig.vidWidth, height = glConfig.vidHeight;
 
 	mac_gameRect = NSZeroRect;
-	if( width == drawableWidth && height == drawableHeight )
-	{
-		mbSetOutputRect( 0, 0, 0, 0 );
+	if( width == screenWidth && height == screenHeight )
 		return;
-	}
 
+	mac_layer.contentsGravity = r_fullscreenStretch->integer ? kCAGravityResize : kCAGravityResizeAspect;
+	mac_layer.backgroundColor = CGColorGetConstantColor( kCGColorBlack );
+
+	// the rectangle Core Animation fits the drawable into, for the cursor
 	if( r_fullscreenStretch->integer )
 	{
-		width = drawableWidth;
-		height = drawableHeight;
+		width = screenWidth;
+		height = screenHeight;
 	}
-	else if( (long long)width * drawableHeight > (long long)height * drawableWidth )
+	else if( (long long)width * screenHeight > (long long)height * screenWidth )
 	{
 		// wider than the screen: the bars above and below
-		height = (int)lround( (double)height * drawableWidth / width );
-		width = drawableWidth;
+		height = (int)lround( (double)height * screenWidth / width );
+		width = screenWidth;
 	}
 	else
 	{
-		width = (int)lround( (double)width * drawableHeight / height );
-		height = drawableHeight;
+		width = (int)lround( (double)width * screenHeight / height );
+		height = screenHeight;
 	}
-	x = ( drawableWidth - width ) / 2;
-	y = ( drawableHeight - height ) / 2;
-	mbSetOutputRect( x, y, width, height );
+	x = ( screenWidth - width ) / 2;
+	y = ( screenHeight - height ) / 2;
 
 	// in the view's points, y up
-	mac_gameRect = NSMakeRect( x / scale, ( drawableHeight - y - height ) / scale, width / scale, height / scale );
+	mac_gameRect = NSMakeRect( x / scale, ( screenHeight - y - height ) / scale, width / scale, height / scale );
 
-	ri.Printf( PRINT_ALL, "Scaled to %dx%d of the %dx%d screen (%s)\n", width, height, drawableWidth, drawableHeight,
+	ri.Printf( PRINT_ALL, "Scaled to %dx%d of the %dx%d screen (%s)\n", width, height, screenWidth, screenHeight,
 		r_fullscreenStretch->integer ? "stretched" : "its own shape" );
 }
 
@@ -1012,7 +1014,7 @@ static void MTLimp_SetGameRect( int drawableWidth, int drawableHeight, CGFloat s
 MacOS_GameRect
 
 The game's image in the content view, in points (AppKit's, y up): the whole view, but for exclusive fullscreen at
-another size than the display's (MTLimp_SetGameRect).
+another size than the display's, scaled by the display hardware (MTLimp_SetGameRect).
 ===============
 */
 NSRect MacOS_GameRect( void )
@@ -1039,7 +1041,7 @@ static int MTLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 	qboolean keepPosition = qfalse;
 	NSPoint topLeft = NSZeroPoint;
 	int windowWidth, windowHeight;
-	int drawableWidth, drawableHeight;
+	int screenWidth, screenHeight;
 	CGFloat scale;
 
 	ri.Printf( PRINT_ALL, "Initializing Metal display\n");
@@ -1236,10 +1238,10 @@ static int MTLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 	scale = mac_window.backingScaleFactor;
 	mac_layer.contentsScale = scale;
 
-	// the drawable has the window's full pixel size (Retina: 2x the window size in points), and the game renders at
-	// that size, but for exclusive fullscreen: at r_mode's size in pixels, scaled to the screen in the final pass
-	drawableWidth = (int)lround( NSWidth( contentRect ) * scale );
-	drawableHeight = (int)lround( NSHeight( contentRect ) * scale );
+	// the game renders at the window's full pixel size (Retina: 2x the window size in points), the drawable's, but
+	// for exclusive fullscreen: at r_mode's size in pixels, and the display scales the drawable to the screen
+	screenWidth = (int)lround( NSWidth( contentRect ) * scale );
+	screenHeight = (int)lround( NSHeight( contentRect ) * scale );
 	if( mac_windowMode == MAC_EXCLUSIVE )
 	{
 		glConfig.vidWidth = (int)lround( windowWidth * scale );
@@ -1247,8 +1249,8 @@ static int MTLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 	}
 	else
 	{
-		glConfig.vidWidth = drawableWidth;
-		glConfig.vidHeight = drawableHeight;
+		glConfig.vidWidth = screenWidth;
+		glConfig.vidHeight = screenHeight;
 	}
 
 	mac_layer.opaque = YES;
@@ -1261,8 +1263,8 @@ static int MTLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 		mac_layer.maximumDrawableCount = fullscreen && r_swapInterval->integer ? 3 : 2;
 	mac_layer.displaySyncEnabled = r_swapInterval->integer ? YES : NO;
 	mac_layer.presentsWithTransaction = NO;
-	mac_layer.drawableSize = CGSizeMake( drawableWidth, drawableHeight );
-	MTLimp_SetGameRect( drawableWidth, drawableHeight, scale );
+	mac_layer.drawableSize = CGSizeMake( glConfig.vidWidth, glConfig.vidHeight );
+	MTLimp_SetGameRect( screenWidth, screenHeight, scale );
 
 	if( !mbInit( (__bridge void *)mac_layer ) )
 	{

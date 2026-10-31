@@ -95,14 +95,12 @@ static id<MTLDevice>				mb_device;
 static id<MTLCommandQueue>			mb_queue;
 static id<MTLLibrary>				mb_library;
 static id<MTLRenderPipelineState>	mb_finalPipeline;
-static id<MTLRenderPipelineState>	mb_finalScaledPipeline;	// the final pass into mb_outputRect
 static id<MTLFunction>				mb_stageVS;
 static id<MTLFunction>				mb_stageFS[8];		// [texMask | alphaTest << 2]
 static id<MTLFunction>				mb_clearVS, mb_clearFS;
 static CAMetalLayer					*mb_layer;
 static id<MTLTexture>				mb_sceneColor;		// offscreen RGBA8, what the front end renders into
 static id<MTLTexture>				mb_sceneDepth;		// Depth32Float_Stencil8
-static int							mb_outputRect[4];	// the scene's place in the drawable, scaled (x, y, width, height); width 0 = unscaled
 static id<MTLCommandBuffer>			mb_lastCommitted;	// for shutdown
 static id<MTLSharedEvent>			mb_frameEvent;		// the GPU signals each frame's serial when its work is done
 
@@ -1703,18 +1701,6 @@ static qboolean MB_CreatePipelines( void )
 			return qfalse;
 		}
 	}
-	if ( !mb_finalScaledPipeline && mb_outputRect[2] ) {
-		desc = [MTLRenderPipelineDescriptor new];
-		desc.label = @"final scaled";
-		desc.vertexFunction = [mb_library newFunctionWithName:@"mb_final_vs"];
-		desc.fragmentFunction = [mb_library newFunctionWithName:@"mb_final_scaled_fs"];
-		desc.colorAttachments[0].pixelFormat = mb_layer.pixelFormat;
-		mb_finalScaledPipeline = MB_NewRenderPipeline( desc, &error );
-		if ( !mb_finalScaledPipeline ) {
-			ri.Printf( PRINT_ALL, "mbInit: scaled final pipeline failed: %s\n", error.localizedDescription.UTF8String );
-			return qfalse;
-		}
-	}
 
 	return qtrue;
 }
@@ -1794,8 +1780,7 @@ static void MB_LatencyNotPresented( uint64_t seq );
 ** MB_EncodeFinal
 **
 ** The final pass: the scene through the gamma ramp into the drawable, with the presented handlers. Encoded into the
-** frame's command buffer, or into a late present's on the drawable thread. Exclusive fullscreen at another size than
-** the display's scales the scene into mb_outputRect (the viewport), black around it.
+** frame's command buffer, or into a late present's on the drawable thread.
 */
 static void MB_EncodeFinal( id<MTLCommandBuffer> cmd, id<CAMetalDrawable> drawable, id<MTLTexture> scene,
 	const void *ramp, uint64_t latency )
@@ -1804,23 +1789,10 @@ static void MB_EncodeFinal( id<MTLCommandBuffer> cmd, id<CAMetalDrawable> drawab
 	id<MTLRenderCommandEncoder> enc;
 
 	pass.colorAttachments[0].texture = drawable.texture;
+	pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
 	pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-	if ( mb_outputRect[2] ) {
-		// the rectangle's top left, then the scene's texels per drawable pixel
-		const float map[4] = { mb_outputRect[0], mb_outputRect[1],
-			(float)scene.width / mb_outputRect[2], (float)scene.height / mb_outputRect[3] };
-
-		pass.colorAttachments[0].loadAction = MTLLoadActionClear;
-		pass.colorAttachments[0].clearColor = MTLClearColorMake( 0.0, 0.0, 0.0, 1.0 );
-		enc = [cmd renderCommandEncoderWithDescriptor:pass];
-		[enc setRenderPipelineState:mb_finalScaledPipeline];
-		[enc setViewport:(MTLViewport){ mb_outputRect[0], mb_outputRect[1], mb_outputRect[2], mb_outputRect[3], 0.0, 1.0 }];
-		[enc setFragmentBytes:map length:sizeof( map ) atIndex:1];
-	} else {
-		pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
-		enc = [cmd renderCommandEncoderWithDescriptor:pass];
-		[enc setRenderPipelineState:mb_finalPipeline];
-	}
+	enc = [cmd renderCommandEncoderWithDescriptor:pass];
+	[enc setRenderPipelineState:mb_finalPipeline];
 	[enc setFragmentTexture:scene atIndex:0];
 	[enc setFragmentBytes:ramp length:sizeof( mb_gammaRamp ) atIndex:0];
 	[enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
@@ -2273,21 +2245,6 @@ void mbShutdown( void )
 	mb_sceneDepth = nil;
 	mb_layer = nil;
 	mb_width = mb_height = 0;
-	memset( mb_outputRect, 0, sizeof( mb_outputRect ) );
-}
-
-/*
-** mbSetOutputRect
-**
-** Before mbInit: exclusive fullscreen at another size than the display's puts the scene into this rectangle of the
-** drawable (pixels from the top left), scaled; width 0 = the whole drawable, at the scene's own size.
-*/
-void mbSetOutputRect( int x, int y, int width, int height )
-{
-	mb_outputRect[0] = x;
-	mb_outputRect[1] = y;
-	mb_outputRect[2] = width > 0 && height > 0 ? width : 0;
-	mb_outputRect[3] = width > 0 && height > 0 ? height : 0;
 }
 
 const char *mbRendererString( void )
