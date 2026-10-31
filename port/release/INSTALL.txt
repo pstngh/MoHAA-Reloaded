@@ -30,23 +30,30 @@ Install
    Spearhead and maintt/ for Breakthrough. From the GOG installer you can get it with innoextract:
    https://github.com/pstngh/MoHAA-Reloaded/blob/metal/docs/markdown/01-intro/01-installation.md#linux-and-macos-users
 
-4. Copy openmohaa.app into the game folder, next to main/. The game reads its data from the folder
-   that holds the app; game.dylib and cgame.dylib are inside the app (any left beside it by an earlier
-   version aren't used: you can delete them). (If you copied it before step 2, run the step 2 command
-   on the game folder instead.)
+4. Copy openmohaa.app and mohlauncher.app into the game folder, next to main/. The game reads its data
+   from the folder that holds the app; game.dylib and cgame.dylib are inside the app (any left beside it
+   by an earlier version aren't used: you can delete them). (If you copied them before step 2, run the
+   step 2 command on the game folder instead.)
 
-5. Start openmohaa.app. If the game folder is on an external drive (or in a folder macOS protects, such
-   as Documents or Desktop), macOS asks whether openmohaa may access files there: click Allow. It asks
-   again after each update (the permission belongs to that exact build), as step 2 is needed again.
-   Allied Assault starts by default. For Spearhead or Breakthrough, open Terminal in the game folder and
-   run one of:
+5. Start mohlauncher.app, MoHAA Launcher: it starts Allied Assault, Spearhead or Breakthrough, at the
+   main menu (Single Player) or onto a server (Connect), with your name, the server's passwords, the
+   crosshair, the resolution and display mode, and Discord presence (off unless you turn it on). The
+   servers you join are kept in its list. If the game folder is on an external drive (or in a folder
+   macOS protects, such as Documents or Desktop), macOS asks whether the launcher and the game may
+   access files there: click Allow. It asks again after each update (the permission belongs to that
+   exact build), as step 2 is needed again.
+
+   openmohaa.app starts directly too: Allied Assault by default. For Spearhead or Breakthrough, open
+   Terminal in the game folder and run one of:
 
      open openmohaa.app --args +set com_target_game 1
      open openmohaa.app --args +set com_target_game 2
 
 Configs, saves, screenshots, demos and logs go into the game folder, as in the original game
-(main/configs/omconfig.cfg and main/screenshots/ for Allied Assault), or to ~/Library/Application
-Support/openmohaa/ if the game folder isn't writable. Settings that OpenMoHAA saved there before are
+(main/configs/omconfig.cfg and main/screenshots/ for Allied Assault). Started from MoHAA Launcher,
+everything goes there, the launcher's mohlauncher.json (your servers and their passwords) too, and a
+config kept in ~/Library/Application Support/openmohaa/ is copied over once. Started otherwise, the
+game uses ~/Library/Application Support/openmohaa/ if the game folder isn't writable. Settings that OpenMoHAA saved there before are
 read on the first start and then saved into the game folder, unless the game folder already holds a
 main/configs/omconfig.cfg from another OpenMoHAA build: that one wins (delete it to keep the others).
 The game sends servers no GUID (it keeps no qkey file), as the original game's clients don't. The

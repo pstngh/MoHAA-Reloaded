@@ -86,6 +86,9 @@ jobs:
           fi
         done
 
+    - name: Test MoHAA Launcher's logic
+      run: swift test --package-path launcher/macos
+
     - name: Package
       run: |
         port/release.sh "$PWD/install/lib/openmohaa" "$PWD/dist"

@@ -1,7 +1,8 @@
 #!/bin/bash
 # The release zip, ad-hoc signed (no Developer ID, no notarization): openmohaa-metal-<version>-macos-arm64.zip from
-# an installed build, with the sealed openmohaa.app (game.dylib and cgame.dylib inside it), COPYING.txt, the licenses
-# of the libraries built into it, the install text (port/release/INSTALL.txt) and the source commit. Never game data.
+# an installed build, with the sealed openmohaa.app (game.dylib and cgame.dylib inside it), MoHAA Launcher's
+# mohlauncher.app (launcher/macos, built here), COPYING.txt, the licenses of the libraries built into it, the install
+# text (port/release/INSTALL.txt) and the source commit. Never game data.
 #   port/release.sh [install dir] [output dir]
 # The install dir is the one that holds openmohaa.app: `cmake --install`'s <prefix>/lib/openmohaa (CI,
 # .github/workflows/macos-metal.yml), default build.noindex/metal-install/lib/openmohaa (port/build.sh metal). The
@@ -49,6 +50,8 @@ ZIP="$OUT/$NAME.zip"
 rm -rf "$STAGE" "$ZIP" "$ZIP.sha256"
 mkdir -p "$STAGE/licenses"
 ditto "$APP" "$STAGE/openmohaa.app"
+# MoHAA Launcher, beside the game: built and signed ad hoc here (Swift's build files in the output dir)
+MOHL_SCRATCH="$OUT/mohlauncher-build" "$ROOT/launcher/macos/bundle.sh" "$STAGE" > /dev/null
 cp "$ROOT/COPYING.txt" "$STAGE/"
 for l in "${LICENSES[@]}"; do
 	mkdir -p "$STAGE/licenses/${l%%:*}"
@@ -57,6 +60,7 @@ done
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@COMMIT@/$COMMIT/g" "$ROOT/port/release/INSTALL.txt" > "$STAGE/INSTALL.txt"
 ! grep -q '@[A-Z]*@' "$STAGE/INSTALL.txt" || die "INSTALL.txt has an unfilled placeholder"
 codesign --verify --deep --strict "$STAGE/openmohaa.app" || die "the staged openmohaa.app's seal doesn't verify"
+codesign --verify --deep --strict "$STAGE/mohlauncher.app" || die "the staged mohlauncher.app's seal doesn't verify"
 
 # --norsrc: no extended attributes in the zip (ditto would store them as ._ files, such as this machine's
 # com.apple.provenance, which xattr can't remove); the code signatures don't use any
@@ -73,8 +77,10 @@ ditto -x -k "$ZIP" "$CHECK/ditto"
 unzip -q "$ZIP" -d "$CHECK/unzip"
 for c in ditto unzip; do
 	codesign --verify --deep --strict "$CHECK/$c/$NAME/openmohaa.app" || die "openmohaa.app unzipped by $c: its seal doesn't verify"
+	codesign --verify --deep --strict "$CHECK/$c/$NAME/mohlauncher.app" || die "mohlauncher.app unzipped by $c: its seal doesn't verify"
 	diff <(cd "$STAGE" && find . | sort) <(cd "$CHECK/$c/$NAME" && find . | sort) || die "unzipped by $c: the files differ"
 	[ -x "$CHECK/$c/$NAME/openmohaa.app/Contents/MacOS/openmohaa" ] || die "unzipped by $c: not executable"
+	[ -x "$CHECK/$c/$NAME/mohlauncher.app/Contents/MacOS/mohlauncher" ] || die "unzipped by $c: the launcher isn't executable"
 done
 rm -rf "$CHECK" "$STAGE"
 

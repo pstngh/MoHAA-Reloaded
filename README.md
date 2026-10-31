@@ -27,10 +27,21 @@ Needs an Apple Silicon Mac (M1 or later) with macOS 26 or later. Developed and m
    xattr -dr com.apple.quarantine ~/Downloads/openmohaa-metal-1.0.0-macos-arm64
    ```
    "Open Anyway" in System Settings isn't enough: macOS then runs a read-only copy that can't find your game data, and the game stops and shows this line for your folder.
-3. Copy `openmohaa.app` into your MOHAA folder, next to `main/` (`Pak0.pk3` to `Pak6.pk3`; `mainta/` and `maintt/` for the expansions). Upstream's [installation guide](docs/markdown/01-intro/01-installation.md#linux-and-macos-users) shows how to get the data from the GOG installer.
-4. Start it. If the game folder is on an external drive or in Documents or Desktop, allow the access prompt (it comes back after each update). Spearhead and Breakthrough: `open openmohaa.app --args +set com_target_game 1` (or `2`) in Terminal, in the game folder.
+3. Copy `openmohaa.app` and `mohlauncher.app` into your MOHAA folder, next to `main/` (`Pak0.pk3` to `Pak6.pk3`; `mainta/` and `maintt/` for the expansions). Upstream's [installation guide](docs/markdown/01-intro/01-installation.md#linux-and-macos-users) shows how to get the data from the GOG installer.
+4. Start `mohlauncher.app`: [MoHAA Launcher](#mohaa-launcher). If the game folder is on an external drive or in Documents or Desktop, allow the access prompts (they come back after each update). `openmohaa.app` starts directly too: Spearhead and Breakthrough with `open openmohaa.app --args +set com_target_game 1` (or `2`) in Terminal, in the game folder.
 
-Configs, saves, screenshots, demos and logs go into the game folder (`main/configs/omconfig.cfg`, `main/screenshots/`, …), as in the original game, or into `~/Library/Application Support/openmohaa/` if the game folder isn't writable. An older `main/configs/omconfig.cfg` in the game folder wins over the settings in Application Support: delete it to keep those.
+Configs, saves, screenshots, demos and logs go into the game folder (`main/configs/omconfig.cfg`, `main/screenshots/`, …), as in the original game, or into `~/Library/Application Support/openmohaa/` if the game folder isn't writable. An older `main/configs/omconfig.cfg` in the game folder wins over the settings in Application Support: delete it to keep those. Started from MoHAA Launcher, everything goes into the game folder (below).
+
+### MoHAA Launcher
+
+`mohlauncher.app` starts the game for Allied Assault, Spearhead or Breakthrough, at its main menu (**Single Player**) or onto a server (**Connect**):
+
+- **Servers:** the address, the server's password and the RCON password. The servers you join are kept in a list (**Bookmark** keeps one without joining), Forte FFA built into Allied Assault's.
+- **Settings:** your name, the crosshair (with a preview), the resolution and the display mode (the fullscreen Space, exclusive or borderless fullscreen, a window), and Discord presence (`cl_discordPresence`, off unless you turn it on). Only what you change in the launcher goes to the game, so what you change in the game stays.
+- **Portable:** it writes only into the game folder. `mohlauncher.json` holds the servers and their passwords; the game is started with its home there (`fs_homepath`), so its configs, saves, screenshots, demos, logs and state files go there too. A config kept in Application Support is copied over once.
+- It finds the game folder by its `main/Pak0.pk3`, beside it, and asks for it otherwise.
+
+Its source is [`launcher/macos`](launcher/macos) (SwiftUI: `launcher/macos/bundle.sh` makes the app, `swift test` there checks its logic); `port/release.sh` puts it into the zip.
 
 ## Settings that matter here
 
