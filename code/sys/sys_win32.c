@@ -535,7 +535,7 @@ void Sys_ListFilteredFiles(
 
         if ((findinfo.attrib & _A_SUBDIR) != 0 && wantsubs) {
             if (strlen(subdirs)) {
-                Com_sprintf(newsubdirs, sizeof(newsubdirs), "%s\\%s\\*", subdirs, findinfo.name);
+                Com_sprintf(newsubdirs, sizeof(newsubdirs), "%s\\%s", subdirs, findinfo.name);
             } else {
                 Com_sprintf(newsubdirs, sizeof(newsubdirs), "%s", findinfo.name);
             }
