@@ -115,6 +115,9 @@ public func findConfig(homes: [URL], game: Game) -> URL? {
 /// game (its menus, the console) is never undone by starting it from here.
 public struct CvarEdits: Equatable {
     struct Entry: Equatable {
+        /// lowercase, to find it (cvar names don't depend on case)
+        let key: String
+        /// as written, to pass it
         let name: String
         let def: String
         var value: String
@@ -123,21 +126,21 @@ public struct CvarEdits: Equatable {
     private var entries: [Entry]
 
     public init(defaults: [(String, String)]) {
-        entries = defaults.map { Entry(name: $0.0.lowercased(), def: $0.1, value: $0.1, loaded: $0.1) }
+        entries = defaults.map { Entry(key: $0.0.lowercased(), name: $0.0, def: $0.1, value: $0.1, loaded: $0.1) }
     }
 
     public func get(_ name: String) -> String {
-        entries.first { $0.name == name.lowercased() }?.value ?? ""
+        entries.first { $0.key == name.lowercased() }?.value ?? ""
     }
 
     public mutating func set(_ name: String, _ value: String) {
-        if let k = entries.firstIndex(where: { $0.name == name.lowercased() }) {
+        if let k = entries.firstIndex(where: { $0.key == name.lowercased() }) {
             entries[k].value = value
         }
     }
 
     public func changed(_ name: String) -> Bool {
-        guard let e = entries.first(where: { $0.name == name.lowercased() }) else { return false }
+        guard let e = entries.first(where: { $0.key == name.lowercased() }) else { return false }
         return e.value != e.loaded
     }
 
@@ -145,12 +148,12 @@ public struct CvarEdits: Equatable {
     public mutating func load(_ config: Cvars) {
         for k in entries.indices {
             let changed = entries[k].value != entries[k].loaded
-            entries[k].loaded = config[entries[k].name] ?? entries[k].def
+            entries[k].loaded = config[entries[k].key] ?? entries[k].def
             if !changed { entries[k].value = entries[k].loaded }
         }
     }
 
-    /// The changed values, in the order of the defaults
+    /// The changed values, in the order of the defaults, by their names as written
     public var changes: [(String, String)] {
         entries.filter { $0.value != $0.loaded }.map { ($0.name, $0.value) }
     }

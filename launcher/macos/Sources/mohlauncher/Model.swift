@@ -1,68 +1,8 @@
-// The launcher's state: the game folder, the player's servers, the game's config and starting the game.
+// The launcher's state: the game folder, the player's servers, the game's config and starting the game. It behaves
+// as the Windows and Linux launcher (launcher/desktop/src/main.rs) does; LauncherCore is the logic they share.
 import AppKit
 import LauncherCore
 import SwiftUI
-
-struct Server: Codable, Identifiable, Hashable {
-    var id = UUID()
-    /// what it's called in the list (its address until it's renamed); the player's own name is the game's
-    var label: String
-    var address: String
-    var password = ""
-    var rcon = ""
-
-    enum CodingKeys: String, CodingKey { case label, address, password, rcon }
-
-    init(label: String, address: String, password: String = "", rcon: String = "") {
-        self.label = label
-        self.address = address
-        self.password = password
-        self.rcon = rcon
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        address = try c.decodeIfPresent(String.self, forKey: .address) ?? ""
-        label = try c.decodeIfPresent(String.self, forKey: .label) ?? address
-        password = try c.decodeIfPresent(String.self, forKey: .password) ?? ""
-        rcon = try c.decodeIfPresent(String.self, forKey: .rcon) ?? ""
-    }
-}
-
-/// What the launcher keeps of its own for each game: the server fields and the list
-struct GameSlot: Codable {
-    var address = ""
-    var password = ""
-    var rcon = ""
-    var servers: [Server] = []
-
-    init() {}
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        address = try c.decodeIfPresent(String.self, forKey: .address) ?? ""
-        password = try c.decodeIfPresent(String.self, forKey: .password) ?? ""
-        rcon = try c.decodeIfPresent(String.self, forKey: .rcon) ?? ""
-        servers = try c.decodeIfPresent([Server].self, forKey: .servers) ?? []
-    }
-}
-
-struct LauncherSettings: Codable {
-    var game = Game.alliedAssault
-    /// Chosen with "Game Folder…"; nil for the folder the launcher is in
-    var gameFolder: String?
-    var slots = [GameSlot](repeating: GameSlot(), count: Game.allCases.count)
-
-    init() {}
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        game = (try? c.decodeIfPresent(Game.self, forKey: .game)) ?? .alliedAssault
-        gameFolder = try c.decodeIfPresent(String.self, forKey: .gameFolder)
-        slots = try c.decodeIfPresent([GameSlot].self, forKey: .slots) ?? []
-        while slots.count < Game.allCases.count { slots.append(GameSlot()) }
-    }
-}
 
 struct ColorPreset: Identifiable {
     let name: String
@@ -91,6 +31,8 @@ struct ResolutionEntry: Hashable, Identifiable {
 final class LauncherModel: ObservableObject {
     nonisolated static let cvarDefaults: [(String, String)] = [
         ("name", ""),
+        // off unless the player turns it on (the game's own default is on): always passed, so the game agrees
+        ("cl_discordPresence", "0"),
         ("cg_crosshair_length", "4"),
         ("cg_crosshair_gap", "3"),
         ("cg_crosshair_thickness", "1"),
@@ -110,16 +52,15 @@ final class LauncherModel: ObservableObject {
         ColorPreset(name: "Black", rgb: 0x000000),
     ]
 
+    /// The launcher's settings, in the game folder
+    nonisolated static let settingsFile = "mohlauncher.json"
+    /// Where the Metal port kept its configs when the game folder couldn't be written: only read, to carry them over
     nonisolated static let supportFolder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("openmohaa", isDirectory: true)
-    /// mohlauncher.json beside the app (portable: it goes where the launcher goes), else, where that folder can't be
-    /// written (a translocated or read-only copy), in Application Support
-    nonisolated static let settingsURLs = [
-        ownFolder.appendingPathComponent("mohlauncher.json"),
-        supportFolder.appendingPathComponent("mohlauncher.json"),
-    ]
-    /// The folder the launcher is in: the game folder, if openmohaa.app is beside it
+    /// The folder the launcher is in: the game folder, if the game's data is beside it
     nonisolated static let ownFolder = Bundle.main.bundleURL.deletingLastPathComponent()
+    nonisolated static let githubURL = URL(string: "https://github.com/pstngh/MoHAA-Reloaded")!
+    nonisolated static let discordURL = URL(string: "https://dsc.gg/ForteFFA")!
 
     @Published private(set) var settings = LauncherSettings()
     @Published private(set) var game = Game.alliedAssault
@@ -127,71 +68,82 @@ final class LauncherModel: ObservableObject {
     @Published var password = ""
     @Published var rcon = ""
     @Published var edits = CvarEdits(defaults: LauncherModel.cvarDefaults)
+    /// The game folder (see findGame) and the game, as last found
+    @Published private(set) var folder: URL?
+    @Published private(set) var gameAppURL: URL?
     @Published private(set) var gameApp: NSRunningApplication?
     @Published private(set) var starting = false
+    /// The last save failed: the game folder can't be written
+    @Published private(set) var unwritable = false
+    @Published var askForFolder = false
     @Published var alertMessage: String?
-    @Published var renamingID: Server.ID?
+    @Published var renaming: Int?
     @Published var renameText = ""
+    @Published var removing: Int?
 
+    /// The game folder chosen with the folder dialog, for this session: it's kept nowhere outside the game folder
+    private var chosen: URL?
+    /// The config last read, and when it was written: read again when it changes
+    private var configSeen: (URL?, Date?) = (nil, nil)
+    private var ticker: Timer?
     let displaySizes: [Resolution]
 
     init() {
         displaySizes = LauncherModel.findDisplaySizes()
-        if let data = LauncherModel.settingsURLs.lazy.compactMap({ try? Data(contentsOf: $0) }).first,
-           let saved = try? JSONDecoder().decode(LauncherSettings.self, from: data) {
-            settings = saved
+        findGame()
+        loadSettings()
+        askForFolder = folder == nil
+        // the game folder or its contents changed, or its config (the game saved it): show it
+        ticker = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.tick() }
         }
-        var first = settings.game
-        if !available(first) { first = .alliedAssault } // an expansion picked last time whose data has gone
-        game = first
-        loadFields()
-        reloadConfig()
     }
 
     // MARK: The game folder
 
-    var gameFolder: URL {
-        settings.gameFolder.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? LauncherModel.ownFolder
+    /// Looks for the game folder again: the first with the game's data (main/Pak0.pk3) of the one chosen in this
+    /// session and the launcher's own; everything the launcher and the game write goes there. The game is beside
+    /// the launcher (the download's folder), else in the game folder. True if the folder changed.
+    @discardableResult
+    func findGame() -> Bool {
+        let found = [chosen, LauncherModel.ownFolder].compactMap { $0 }.first(where: hasGameData)
+        gameAppURL = [LauncherModel.ownFolder, found].compactMap { $0 }
+            .map { $0.appendingPathComponent("openmohaa.app", isDirectory: true) }
+            .first { FileManager.default.fileExists(atPath: $0.path) }
+        let changed = found?.standardizedFileURL != folder?.standardizedFileURL
+        folder = found
+        return changed
     }
 
-    var gameAppURL: URL { gameFolder.appendingPathComponent("openmohaa.app", isDirectory: true) }
-
-    var gameFound: Bool { FileManager.default.fileExists(atPath: gameAppURL.path) }
-
-    func hasData(_ game: Game) -> Bool {
-        let fm = FileManager.default
-        if fm.fileExists(atPath: gameFolder.appendingPathComponent(game.dataDir).path) { return true }
-        // a case-sensitive volume, and a retail folder in another case (MAIN, MainTA)
-        let names = (try? fm.contentsOfDirectory(atPath: gameFolder.path)) ?? []
-        return names.contains { $0.caseInsensitiveCompare(game.dataDir) == .orderedSame }
+    /// The game folder's mohlauncher.json (none yet: the defaults), and its config
+    func loadSettings() {
+        unwritable = false
+        let data = folder.flatMap { try? Data(contentsOf: $0.appendingPathComponent(LauncherModel.settingsFile)) }
+        settings = LauncherSettings.from(json: data)
+        game = available(settings.game) ? settings.game : .alliedAssault
+        loadFields()
+        reloadConfig()
     }
 
-    /// An expansion without its data can't start; without main/ nobody knows, so all stay open
-    func available(_ game: Game) -> Bool {
-        game == .alliedAssault || !gameFound || !hasData(.alliedAssault) || hasData(game)
-    }
-
-    /// Where the game reads its config: the game folder when it can write there (else Application Support), the
-    /// other one behind it
-    var configHomes: [URL] {
-        let support = LauncherModel.supportFolder
-        return FileManager.default.isWritableFile(atPath: gameFolder.path) ? [gameFolder, support] : [support, gameFolder]
+    /// An expansion without its data can't start
+    func available(_ g: Game) -> Bool {
+        g == .alliedAssault || folder.map { dataFolder($0, g.dataDir) != nil } ?? true
     }
 
     var running: Bool { gameApp.map { !$0.isTerminated } ?? false }
-    var canStart: Bool { gameFound && !running && !starting }
+    var canStart: Bool { folder != nil && gameAppURL != nil && !running && !starting }
     var canConnect: Bool { canStart && !trimmed(address).isEmpty }
+    /// Something stands in the way: no game, or a game folder that can't be written
+    var problem: Bool { folder == nil || gameAppURL == nil || unwritable }
 
+    /// The problem first: the line may be cut off at the end
     var status: String {
-        let folder = (gameFolder.path as NSString).abbreviatingWithTildeInPath
-        if !gameFound { return "openmohaa.app isn't in \(folder): choose the game folder." }
-        if !hasData(.alliedAssault) { return "No game data (main/ with Pak0.pk3 to Pak6.pk3) in \(folder)." }
+        guard let folder else { return "No game found: choose your MOHAA folder." }
+        let path = (folder.path as NSString).abbreviatingWithTildeInPath
+        if gameAppURL == nil { return "No openmohaa.app beside the launcher or in \(path)" }
+        if unwritable { return "Can't write to the game folder: \(path)" }
         if running { return "\(game.title) is running." }
-        return "Game folder: \(folder)"
-    }
-
-    func icon(for game: Game) -> NSImage {
-        NSImage(named: ["game-aa", "game-sh", "game-bt"][game.rawValue]) ?? NSImage()
+        return path
     }
 
     func chooseGameFolder() {
@@ -199,35 +151,40 @@ final class LauncherModel: ObservableObject {
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        panel.directoryURL = gameFolder
-        panel.message = "Choose your MOHAA folder: the one with openmohaa.app and main/."
+        panel.directoryURL = folder ?? LauncherModel.ownFolder
+        panel.message = "Choose your MOHAA folder: the one with main/ (Pak0.pk3 to Pak6.pk3)."
         panel.prompt = "Choose"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        let own = LauncherModel.ownFolder.standardizedFileURL.path
-        settings.gameFolder = url.standardizedFileURL.path == own ? nil : url.path
-        if !gameFound { alertMessage = "openmohaa.app isn't in \(url.path)." }
-        if !available(game) {
-            select(.alliedAssault)
-        } else {
-            reloadConfig()
+        guard hasGameData(url) else {
+            alertMessage = "\(url.path) has no main/ with Pak0.pk3."
+            return
         }
-        save()
+        chosen = url.standardizedFileURL == LauncherModel.ownFolder.standardizedFileURL ? nil : url
+        findGame()
+        loadSettings()
+    }
+
+    func icon(for game: Game) -> NSImage {
+        NSImage(named: ["game-aa", "game-sh", "game-bt"][game.rawValue]) ?? NSImage()
+    }
+
+    /// The GitHub and Discord logos, drawn in the text's color
+    func logo(_ name: String) -> NSImage {
+        let image = Bundle.main.url(forResource: name, withExtension: "svg").flatMap { NSImage(contentsOf: $0) } ?? NSImage()
+        image.isTemplate = true
+        return image
     }
 
     // MARK: Games and servers
 
-    var servers: [Server] { settings.slots[game.rawValue].servers }
+    var listed: [Listed] { listedServers(settings, game) }
 
-    var matchingServer: Server? {
-        guard !trimmed(address).isEmpty else { return nil }
-        return servers.first { sameAddress($0.address, address) }
+    var bookmarked: Bool {
+        !trimmed(address).isEmpty && listed.contains { sameAddress($0.server.address, address) }
     }
 
-    /// The list's selection is the server whose address is in the field; picking one fills the fields
-    var selection: Binding<Server.ID?> {
-        Binding(get: { self.matchingServer?.id }, set: { id in
-            if let server = self.servers.first(where: { $0.id == id }) { self.fill(server) }
-        })
+    func isSelected(_ item: Listed) -> Bool {
+        !trimmed(address).isEmpty && sameAddress(item.server.address, address)
     }
 
     func select(_ newGame: Game) {
@@ -253,46 +210,102 @@ final class LauncherModel: ObservableObject {
         rcon = slot.rcon
     }
 
-    func fill(_ server: Server) {
-        address = server.address
-        password = server.password
-        rcon = server.rcon
+    func fill(_ item: Listed) {
+        address = item.server.address
+        password = item.server.password
+        rcon = item.server.rcon
     }
 
-    func connect(to id: Server.ID) {
-        guard let server = servers.first(where: { $0.id == id }) else { return }
-        fill(server)
+    func connect(_ item: Listed) {
+        fill(item)
         start(connect: true)
     }
 
-    func beginRename(_ id: Server.ID) {
-        guard let server = servers.first(where: { $0.id == id }) else { return }
-        renameText = server.label
-        renamingID = id
-    }
-
-    func commitRename() {
-        defer { renamingID = nil }
-        guard let id = renamingID, let k = servers.firstIndex(where: { $0.id == id }) else { return }
-        let name = trimmed(renameText)
-        settings.slots[game.rawValue].servers[k].label = name.isEmpty ? servers[k].address : name
+    /// The server in the fields, kept in the list without joining it (or its passwords updated)
+    func bookmark() {
+        let a = trimmed(address)
+        guard !a.isEmpty else { return }
+        settings.remember(game, address: a, password: password, rcon: rcon)
         save()
     }
 
-    func remove(_ id: Server.ID) {
-        settings.slots[game.rawValue].servers.removeAll { $0.id == id }
+    // a built-in server has neither
+    func beginRename(_ item: Listed) {
+        guard !item.builtin, let k = item.saved else { return }
+        renameText = item.server.label
+        renaming = k
+    }
+
+    func commitRename() {
+        defer { renaming = nil }
+        guard let k = renaming, settings.slots[game.rawValue].servers.indices.contains(k) else { return }
+        let label = trimmed(renameText)
+        let server = settings.slots[game.rawValue].servers[k]
+        settings.slots[game.rawValue].servers[k].label = label.isEmpty ? server.address : label
+        save()
+    }
+
+    func beginRemove(_ item: Listed) {
+        guard !item.builtin, let k = item.saved else { return }
+        removing = k
+    }
+
+    var removingLabel: String {
+        guard let k = removing, settings.slots[game.rawValue].servers.indices.contains(k) else { return "" }
+        return settings.slots[game.rawValue].servers[k].label
+    }
+
+    func commitRemove() {
+        defer { removing = nil }
+        guard let k = removing, settings.slots[game.rawValue].servers.indices.contains(k) else { return }
+        settings.slots[game.rawValue].servers.remove(at: k)
         save()
     }
 
     // MARK: The game's settings
 
+    /// The game's config: the game folder's (the game is started with its home there), else the one the Metal port
+    /// kept in Application Support when the game folder couldn't be written, which the next start copies over
+    private var configPath: URL? {
+        findConfig(homes: (folder.map { [$0] } ?? []) + [LauncherModel.supportFolder], game: game)
+    }
+
+    private func modified(_ url: URL?) -> Date? {
+        url.flatMap { try? FileManager.default.attributesOfItem(atPath: $0.path)[.modificationDate] as? Date }
+    }
+
     func reloadConfig() {
-        let url = findConfig(homes: configHomes, game: game)
-        edits.load(url.flatMap(readConfig) ?? [:])
+        let path = configPath
+        edits.load(path.flatMap(readConfig) ?? [:])
+        configSeen = (path, modified(path))
+    }
+
+    private var configChanged: Bool {
+        let path = configPath
+        return path != configSeen.0 || modified(path) != configSeen.1
+    }
+
+    /// The configs kept outside the game folder before, copied into it once (for the data folders it has), so that
+    /// the settings carry over; nothing is written outside the game folder
+    private func importConfigs(into folder: URL) {
+        let fm = FileManager.default
+        for g in Game.allCases {
+            guard let dir = dataFolder(folder, g.dataDir) else { continue }
+            let target = dir.appendingPathComponent("configs/omconfig.cfg")
+            let old = LauncherModel.supportFolder.appendingPathComponent("\(g.dataDir)/configs/omconfig.cfg")
+            guard !fm.fileExists(atPath: target.path), fm.fileExists(atPath: old.path) else { continue }
+            try? fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? fm.copyItem(at: old, to: target)
+        }
     }
 
     var name: Binding<String> {
         Binding(get: { self.edits.get("name") }, set: { self.edits.set("name", $0) })
+    }
+
+    var discordPresence: Bool {
+        get { (Int(edits.get("cl_discordPresence")) ?? 0) != 0 }
+        set { edits.set("cl_discordPresence", newValue ? "1" : "0") }
     }
 
     func number(_ cvar: String, _ range: ClosedRange<Int>) -> Binding<Int> {
@@ -342,7 +355,8 @@ final class LauncherModel: ObservableObject {
     }
 
     var resolutionEntries: [ResolutionEntry] {
-        var entries = [ResolutionEntry(mode: -2)] + displaySizes.map { ResolutionEntry(mode: -1, width: $0.width, height: $0.height) }
+        var entries = [ResolutionEntry(mode: -2)]
+            + displaySizes.map { ResolutionEntry(mode: -1, width: $0.width, height: $0.height) }
         let current = currentResolution
         if !entries.contains(current) {
             // the config's own size where it belongs in the list, or its numbered mode at the end
@@ -391,44 +405,56 @@ final class LauncherModel: ObservableObject {
 
     func start(connect: Bool) {
         guard !running, !starting else { return }
-        guard gameFound else {
-            alertMessage = "openmohaa.app isn't in \(gameFolder.path).\n\nCopy mohlauncher.app next to openmohaa.app, or choose the game folder."
+        findGame()
+        guard let folder else {
+            askForFolder = true
+            return
+        }
+        guard let appURL = gameAppURL else {
+            alertMessage = "openmohaa.app isn't beside the launcher or in \(folder.path): keep MoHAA Launcher with the files of the download it came in."
             return
         }
         storeFields()
-        if connect && trimmed(address).isEmpty { return }
+        let slot = settings.slots[game.rawValue]
+        if connect && slot.address.isEmpty { return }
 
         // one game at a time: one started some other way can't take these settings
-        let bundleID = Bundle(url: gameAppURL)?.bundleIdentifier ?? "io.github.pstngh.openmohaa-metal"
+        let bundleID = Bundle(url: appURL)?.bundleIdentifier ?? "io.github.pstngh.openmohaa-metal"
         if let other = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
             other.activate()
             alertMessage = "The game is already running. Quit it to start it from here with these settings."
             return
         }
 
-        // what the config holds now, so that only the changes made here are passed
+        // the settings kept outside the game folder before, carried over once; then what the config holds now, so
+        // that only the changes made here are passed
+        importConfigs(into: folder)
         reloadConfig()
         var launch = Launch()
         launch.game = game
-        launch.cvars = edits.changes.compactMap { (change: (String, String)) -> (String, String)? in
-            guard change.0 == "name" else { return change }
-            let name = trimmed(change.1)
-            return name.isEmpty ? nil : ("name", name)
+        // everything the game writes (configs, saves, screenshots, demos, logs) goes into the game folder
+        launch.homepath = folder.path
+        // the game finds its data beside itself; elsewhere it's told where
+        if appURL.deletingLastPathComponent().standardizedFileURL != folder.standardizedFileURL {
+            launch.basepath = folder.path
+        }
+        let changes = edits.changes
+        if !changes.contains(where: { $0.0 == "cl_discordPresence" }) {
+            launch.cvars.append(("cl_discordPresence", edits.get("cl_discordPresence")))
+        }
+        for change in changes {
+            if change.0 == "name" {
+                let name = trimmed(change.1)
+                if !name.isEmpty { launch.cvars.append(("name", name)) }
+            } else {
+                launch.cvars.append(change)
+            }
         }
         if connect {
-            let slot = settings.slots[game.rawValue]
             launch.address = slot.address
             launch.password = slot.password
             launch.rcon = slot.rcon
-            // keep the server in the list, with the passwords used
-            if let k = servers.firstIndex(where: { sameAddress($0.address, slot.address) }) {
-                settings.slots[game.rawValue].servers[k].address = slot.address
-                settings.slots[game.rawValue].servers[k].password = slot.password
-                settings.slots[game.rawValue].servers[k].rcon = slot.rcon
-            } else {
-                settings.slots[game.rawValue].servers.append(
-                    Server(label: slot.address, address: slot.address, password: slot.password, rcon: slot.rcon))
-            }
+            settings.remember(game, address: slot.address, password: slot.password, rcon: slot.rcon)
         }
         save()
 
@@ -437,7 +463,7 @@ final class LauncherModel: ObservableObject {
         configuration.activates = true
         starting = true
         // through Launch Services: the game is its own app, as when it's opened in the Finder
-        NSWorkspace.shared.openApplication(at: gameAppURL, configuration: configuration) { app, error in
+        NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { app, error in
             let message = error?.localizedDescription
             Task { @MainActor in
                 self.starting = false
@@ -458,28 +484,33 @@ final class LauncherModel: ObservableObject {
         reloadConfig()
     }
 
-    /// Back from the game or another app: the config or the game folder may have changed
-    func becameActive() {
-        if !running {
-            gameApp = nil
+    /// The game folder found again (its own settings if it changed), or its config read again if it changed
+    func tick() {
+        if running { return }
+        gameApp = nil
+        if findGame() {
+            loadSettings()
+            if folder != nil { askForFolder = false } // the question it asked is answered
+        } else if configChanged {
             reloadConfig()
         }
-        objectWillChange.send()
     }
 
+    /// mohlauncher.json in the game folder, and nowhere else (with no game folder, nowhere)
     func save() {
         storeFields()
+        guard let folder else { return }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(settings) else { return }
-        let fm = FileManager.default
-        for (k, url) in LauncherModel.settingsURLs.enumerated() {
-            if k > 0 { try? fm.createDirectory(at: LauncherModel.supportFolder, withIntermediateDirectories: true) }
-            if (try? data.write(to: url, options: .atomic)) != nil {
-                // it holds passwords
-                try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-                return
-            }
+        let url = folder.appendingPathComponent(LauncherModel.settingsFile)
+        do {
+            try data.write(to: url, options: .atomic)
+            // it holds passwords
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            unwritable = false
+        } catch {
+            unwritable = true
         }
     }
 }

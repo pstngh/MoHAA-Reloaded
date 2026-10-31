@@ -17,6 +17,8 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin/mohlauncher" "$app/Contents/MacOS/"
 cp "$here/Resources/Info.plist" "$app/Contents/"
 cp "$here/Resources/AppIcon.icns" "$app/Contents/Resources/"
+# the GitHub and Discord logos
+cp "$assets/github.svg" "$assets/discord.svg" "$app/Contents/Resources/"
 # the games' icons at 1x and 2x, for NSImage(named:)
 for game in aa sh bt; do
 	cp "$assets/game-$game-32.png" "$app/Contents/Resources/game-$game.png"
