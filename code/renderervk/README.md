@@ -6796,14 +6796,31 @@ recording about 12, the hand-off and waits the rest). So:
   clean exit and no error: `give all`, `r_textureMode` changed, a
   cinematic, windowed and fullscreen, a map change, bindless switched off
   and on with `vid_restart`.
-- what is left of the back end needs more of the shaders: the 60 push
-  constant calls and 60 vertex binds of the static models with their
-  matrices in a buffer read by the draw's index, and the 65 static draws
-  with `vkCmdDrawIndexedIndirect` over a buffer of their ranges. About 280
-  of the remaining 350 calls, and with them most of the driver's share.
-  The present and the submission (30 µs) stay (see Render thread above),
-  so the back end's floor is about 50 µs: the frame rate about 17,000
-  where the front end keeps up.
+- the static draws' matrices in a buffer, and indirect draws: measured and
+  dropped. A record per static draw in the frame data (the words of the
+  vertex stage push constants and the texture slots, 128 or 256 bytes,
+  named by `firstInstance` with its top bit, shared by the draws with the
+  same constants; `generic.vert` read it in place of the push constants)
+  took the push constant calls from 60 to 27 a frame, 56 records written,
+  and the frame rate from 11,234 to 10,948 and 10,710 in two pairs: the
+  record's computing, comparing and writing costs more than the pushes it
+  replaces (a push is a copy into the command buffer). What a draw call
+  itself costs the recording: four extra one-triangle draws after each
+  static draw (260 a frame) took the frame from 89 and 91 to 97 and 95
+  µs, about 25 ns a call, so the 65 static draws cost 1.6 µs and
+  `vkCmdDrawIndexedIndirect` over them could save at most that, under 2 %
+  of the frame, for a buffer of per-draw data the records just showed
+  costs more than it saves. Neither was kept. Where the render thread's
+  time goes, from the sampled profile (inclusive): `vk_end_frame` 43 %
+  (`vkQueueSubmit` and `vkQueuePresentKHR`: the submission, signal and
+  present calls into `win32u`, the driver's present), `RB_RenderDrawSurfList`
+  40 % (of it the driver's work under `vk_draw` about 11 %, under the
+  render pass begin, clears, barriers and binds 5 %, the renderer's own
+  tessellation, stage iteration and batching the rest), the 2D draws 5 %,
+  the wait for the next list 7 %. So the back end's floor is the present
+  and submission (about 40 µs) plus what the renderer's own recording
+  code can lose: a frame rate near 12,000 at the spot, not the 17,000 the
+  call count had suggested.
 
 ### Coordinate conventions
 
@@ -11095,7 +11112,14 @@ variable-length array, checked with clang's `-Wvla`).
     unused texture units keeping their set, the depth bias set when it
     changes, and bindless textures (`r_vkBindless`, the shaders built with
     glslang through `glslang_as_glslc.sh`): 67 descriptor set binds a frame
-    to 2, 10,729 to 10,948 frames a second. The frame rate is the back
-    end's (about 85 µs); the front end is at 47. Left: the static models'
-    matrices in a buffer (60 push constants, 60 vertex binds a frame) and
-    indirect draws over the static geometry (65 draws); then GPU culling.
+    to 2, 10,729 to 10,948 frames a second. Measured and dropped: the
+    static draws' matrices in a buffer (slower: the records cost more
+    than the pushes), and with a draw call measured at about 25 ns of
+    recording, indirect draws over the 65 static draws (at most 1.6 µs,
+    under 2 %). The frame rate is the back end's (about 85 µs: the
+    present and submission 40, the recording 37, of which the driver
+    about 15); the front end is at 47. What could still move it: the
+    renderer's own recording code (tessellation, stage iteration,
+    batching, about 20 µs) and sorting the opaque draws by pipeline (31
+    binds a frame, the costliest state change), which changes the draw
+    order and so needs the pixel comparison per view.
