@@ -5,6 +5,7 @@ on:
     branches:
       - '**'
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -66,3 +67,98 @@ jobs:
       with:
         tag_name: 'dev'
         files: ${{github.workspace}}/${{env.RELEASE_NAME}}.zip
+
+  ##########################
+  # MoHAA Reloaded's v1.0.0 release: each push to vulkan that changes code replaces its Linux and Windows downloads
+  # (misc/release/package.sh) and updates their SHA-256s and commit in the release notes; the rest of the notes is
+  # written by hand. Pushes that change only docs (docs/, *.md) don't. Run by hand (workflow_dispatch) on vulkan, it
+  # replaces them whatever changed. metal's .github/workflows/macos-metal.yml does the same for the Mac download.
+  ##########################
+  release-v1-changes:
+    if: github.ref == 'refs/heads/vulkan' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      release: ${{ steps.changes.outputs.release }}
+    steps:
+    - name: Code changed?
+      id: changes
+      env:
+        GH_TOKEN: ${{ github.token }}
+        BEFORE: ${{ github.event.before }}
+      run: |
+        release=1
+        if [ "$GITHUB_EVENT_NAME" = push ] && [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then
+          if files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BEFORE...$GITHUB_SHA" --jq '.files[].filename'); then
+            printf '%s\n' "$files"
+            if ! printf '%s\n' "$files" | grep -qvE '^docs/|\.md$'; then
+              release=0
+            fi
+          fi
+        fi
+        echo "release=$release" | tee -a "$GITHUB_OUTPUT"
+
+  release-v1:
+    needs: [build-all, release-v1-changes]
+    if: github.ref == 'refs/heads/vulkan' && needs.release-v1-changes.outputs.release == '1'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    # one release update at a time, with metal's
+    concurrency:
+      group: release-v1.0.0
+      cancel-in-progress: false
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/download-artifact@v4
+      with:
+        name: out-linux-amd64
+        path: ${{github.workspace}}/artifacts/linux-amd64
+
+    - uses: actions/download-artifact@v4
+      with:
+        name: out-windows-x64
+        path: ${{github.workspace}}/artifacts/windows-x64
+
+    - name: Package the downloads
+      run: |
+        set -euo pipefail
+        for p in linux-amd64 windows-x64; do
+          misc/release/package.sh "$p" "artifacts/$p" dist "$GITHUB_SHA"
+        done
+        (cd dist && sha256sum openmohaa-vulkan-1.0.0-*.tar.gz openmohaa-vulkan-1.0.0-*.zip) | tee -a "$GITHUB_STEP_SUMMARY"
+
+    - name: Replace them in v1.0.0, with their SHA-256s and commit in the notes
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+        files="dist/openmohaa-vulkan-1.0.0-linux-amd64.tar.gz dist/openmohaa-vulkan-1.0.0-windows-x64.zip"
+        assets=$(gh release view v1.0.0 --json assets --jq '.assets[].name')
+        for f in $files; do
+          printf '%s\n' "$assets" | grep -qxF "$(basename "$f")" || { echo "v1.0.0 has no $(basename "$f")" >&2; exit 1; }
+        done
+        gh release view v1.0.0 --json body --jq .body > notes.md
+        python3 - notes.md "$GITHUB_REPOSITORY" "$GITHUB_SHA" $files <<'EOF'
+        import hashlib, os, re, sys
+        notes, repo, commit, files = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
+        text = open(notes, encoding="utf-8").read()
+        def sub(pattern, repl):
+            global text
+            text, n = re.subn(pattern, repl, text)
+            if n != 1:
+                sys.exit(f"the notes match {pattern!r} {n} times, not once")
+        for f in files:
+            name = os.path.basename(f)
+            digest = hashlib.sha256(open(f, "rb").read()).hexdigest()
+            sub(r"(\| `" + re.escape(name) + r"` \| `)[0-9a-f]{64}(` \|)", r"\g<1>" + digest + r"\g<2>")
+        sub(r"(Built by this repository's CI from commit )\[`[0-9a-f]{8}`\]\(https://github\.com/[^/]+/[^/]+/commit/[0-9a-f]{40}\)( of the `vulkan` branch)",
+            r"\g<1>[`" + commit[:8] + "`](https://github.com/" + repo + "/commit/" + commit + r")\g<2>")
+        open(notes, "w", encoding="utf-8").write(text)
+        EOF
+        gh release upload v1.0.0 $files --clobber
+        gh release edit v1.0.0 --notes-file notes.md

@@ -1,0 +1,56 @@
+MoHAA Reloaded (Vulkan), version 1.0.0: OpenMoHAA with a native Vulkan renderer, for Windows
+===========================================================================================
+
+A Vulkan port of OpenMoHAA for 64-bit Windows (x64). It plays Medal of Honor: Allied Assault,
+Spearhead and Breakthrough on existing MOHAA and OpenMoHAA servers. The game data is not included:
+you need your own retail copy.
+
+https://github.com/pstngh/MoHAA-Reloaded/tree/vulkan
+
+Needs Windows 10 or 11 (64-bit), a GPU whose driver has Vulkan 1.1 (any current AMD, NVIDIA or Intel
+driver), and the Microsoft Visual C++ 2015-2022 Redistributable (x64), which most PCs with games
+already have: https://aka.ms/vs/17/release/vc_redist.x64.exe
+
+
+Install
+-------
+
+1. Extract the zip (right-click > Extract All). You get the folder this file is in.
+
+2. Find your MOHAA game folder: the folder that holds main\ (Pak0.pk3 to Pak6.pk3), plus mainta\ for
+   Spearhead and maintt\ for Breakthrough.
+
+3. Copy everything in this folder into the game folder, next to main\. This folder's main\ only holds
+   the headphone sound set (main\sound\prom\hrtf\): let it merge into the game's main\.
+
+4. Start mohlauncher.exe, MoHAA Launcher: it starts Allied Assault, Spearhead or Breakthrough, at the
+   main menu (Single player) or onto a server (Connect), with your name, the server's passwords, the
+   crosshair, and the resolution and display mode. The servers you join are kept in its list.
+   launch_openmohaa_base.exe (Allied Assault), launch_openmohaa_spearhead.exe and
+   launch_openmohaa_breakthrough.exe start the game directly too.
+
+Started from MoHAA Launcher, configs, saves, screenshots, demos and logs go into the game folder, the
+launcher's mohlauncher.json (your servers and their passwords) too: it writes nowhere else, and a
+config kept in %APPDATA%\openmohaa\ is copied over once. Started otherwise, configs, saves,
+screenshots and demos go to %APPDATA%\openmohaa\, as with upstream's OpenMoHAA. The settings that
+matter for this port (cl_movefps, cl_movesubgrid, com_maxfps, r_fastSync,
+r_vkSubmitThread, the crosshair, s_speaker_type for headphones) are described in the README:
+https://github.com/pstngh/MoHAA-Reloaded/tree/vulkan#settings-that-matter-here
+
+Without a Vulkan driver the game stops and says so. There is no OpenGL renderer any more.
+
+
+Licenses and source
+-------------------
+
+OpenMoHAA is free software under the GNU General Public License, version 2 (COPYING.txt). The
+libraries built into it or shipped with it keep their own licenses, in licenses\ (SDL 3, curl, libmad,
+the IJG JPEG library, libogg, libvorbis, opus, opusfile, zlib, Recast & Detour) and in
+OMAHA-SOUND-LICENSES.txt (miniaudio, libmysofa, PFFFT); the headphone sound set's license is in
+main\sound\prom\hrtf\. This software is based in part on the work of the Independent JPEG Group.
+MoHAA Launcher (mohlauncher.exe, built with Slint) is free software under the GNU General Public
+License, version 3 or later (licenses\mohlauncher\COPYING); its source is launcher\desktop.
+
+Built from commit @COMMIT@ of
+https://github.com/pstngh/MoHAA-Reloaded (the full source code of this build) by its CI, with SDL
+3.4.18 and curl 8.12.1 from their own repositories.
