@@ -3,8 +3,10 @@
 # The Metal port: macOS 26 on Apple Silicon
 #
 # Builds with README.md's commands as written (Xcode's Metal Toolchain component, Homebrew's CMake, Ninja and Bison),
-# checks the install, and uploads the ad-hoc-signed release zip (port/release.sh) as a workflow artifact. No release,
-# no tag, no secrets.
+# checks the install, and uploads the ad-hoc-signed release zip (port/release.sh) as a workflow artifact. A push that
+# changes code (not only docs/ or *.md files), or a run by hand on metal, then replaces the zip in MoHAA Reloaded's
+# v1.0.0 release, moves its tag to the commit and updates the zip's SHA-256 in the notes (job release-v1); the rest of
+# the notes is written by hand. No secrets: the job's own token.
 ##########################
 name: "macOS Metal build"
 
@@ -103,3 +105,89 @@ jobs:
         archive: false
         if-no-files-found: error
         retention-days: 30
+
+    # for release-v1, on Linux
+    - name: Hand the zip to the release job
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-v1-zip
+        path: dist/openmohaa-metal-1.0.0-macos-arm64.zip
+        if-no-files-found: error
+        retention-days: 1
+
+  release-v1-changes:
+    if: github.ref == 'refs/heads/metal'
+    runs-on: ubuntu-24.04
+    outputs:
+      release: ${{ steps.changes.outputs.release }}
+    steps:
+    - name: Code changed?
+      id: changes
+      env:
+        GH_TOKEN: ${{ github.token }}
+        BEFORE: ${{ github.event.before }}
+      run: |
+        release=1
+        if [ "$GITHUB_EVENT_NAME" = push ] && [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then
+          if files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BEFORE...$GITHUB_SHA" --jq '.files[].filename'); then
+            printf '%s\n' "$files"
+            if ! printf '%s\n' "$files" | grep -qvE '^docs/|\.md$'; then
+              release=0
+            fi
+          fi
+        fi
+        echo "release=$release" | tee -a "$GITHUB_OUTPUT"
+
+  release-v1:
+    name: "Replace the Mac download in v1.0.0"
+    needs: [build, release-v1-changes]
+    if: github.ref == 'refs/heads/metal' && needs.release-v1-changes.outputs.release == '1'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    # one release update at a time, with vulkan's
+    concurrency:
+      group: release-v1.0.0
+      cancel-in-progress: false
+
+    steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: release-v1-zip
+        path: dist
+
+    - name: Replace the zip, move the tag, update the SHA-256 in the notes
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+        zip=dist/openmohaa-metal-1.0.0-macos-arm64.zip
+        gh release view v1.0.0 --json assets --jq '.assets[].name' | grep -qxF "$(basename "$zip")" \
+          || { echo "v1.0.0 has no $(basename "$zip")" >&2; exit 1; }
+        sha=$(sha256sum "$zip" | cut -d' ' -f1)
+        echo "$sha  $(basename "$zip")" | tee -a "$GITHUB_STEP_SUMMARY"
+
+        gh release view v1.0.0 --json body --jq .body > notes.md
+        python3 - notes.md "$(basename "$zip")" "$sha" <<'EOF'
+        import re, sys
+        notes, name, digest = sys.argv[1:]
+        text = open(notes, encoding="utf-8").read()
+        text, n = re.subn(r"(\| `" + re.escape(name) + r"` \| `)[0-9a-f]{64}(` \|)", r"\g<1>" + digest + r"\g<2>", text)
+        if n != 1:
+            sys.exit(f"the notes have {n} SHA-256 rows for {name}, not one")
+        open(notes, "w", encoding="utf-8").write(text)
+        EOF
+
+        gh release upload v1.0.0 "$zip" --clobber
+
+        # the tag: annotated as before, with its message, on this commit
+        ref=$(gh api "repos/$GH_REPO/git/refs/tags/v1.0.0")
+        message="MoHAA Reloaded 1.0.0"
+        if [ "$(jq -r .object.type <<< "$ref")" = tag ]; then
+          message=$(gh api "repos/$GH_REPO/git/tags/$(jq -r .object.sha <<< "$ref")" --jq .message)
+        fi
+        tag=$(gh api "repos/$GH_REPO/git/tags" -f tag=v1.0.0 -f message="$message" -f object="$GITHUB_SHA" -f type=commit --jq .sha)
+        gh api -X PATCH "repos/$GH_REPO/git/refs/tags/v1.0.0" -f sha="$tag" -F force=true > /dev/null
+
+        gh release edit v1.0.0 --notes-file notes.md
