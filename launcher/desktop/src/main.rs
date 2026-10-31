@@ -270,6 +270,7 @@ fn show_status(ui: &LauncherWindow, st: &State) {
     let can_start = st.can_start();
     ui.set_can_start(can_start);
     ui.set_running(st.running);
+    ui.set_close_on_start(st.settings.close_on_start);
     ui.set_can_connect(can_start && !st.slot().address.trim().is_empty());
 }
 
@@ -501,6 +502,10 @@ fn start(ui: &LauncherWindow, state: &Shared, connect: bool) {
                 let _ = child.wait();
                 let _ = weak.upgrade_in_event_loop(|ui| ui.invoke_game_exited());
             });
+            // the settings are saved above; the game keeps running on its own
+            if st.settings.close_on_start {
+                let _ = slint::quit_event_loop();
+            }
         }
         Err(error) => {
             let text = format!("{}: {error}", exe.display());
@@ -585,6 +590,11 @@ fn main() -> Result<(), slint::PlatformError> {
 
     on!(on_select_game, |ui, st, game| { select_game(&ui, &mut st, game as usize) });
     on!(on_name_edited, |_ui, st, text| { st.edits.set("name", &text) });
+    on!(on_close_on_start_toggled, |ui, st| {
+        st.settings.close_on_start = !st.settings.close_on_start;
+        st.save();
+        show_status(&ui, &st);
+    });
     on!(on_discord_presence_toggled, |ui, st| {
         let on = int(st.edits.get("cl_discordPresence")) != 0;
         st.edits.set("cl_discordPresence", if on { "0" } else { "1" });

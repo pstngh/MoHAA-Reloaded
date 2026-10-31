@@ -350,6 +350,7 @@ export component LauncherWindow inherits Window {
     in property <bool> can-start;
     in property <bool> can-connect;
     in property <bool> running;
+    in property <bool> close-on-start;
 
     // the player and the servers
     in-out property <string> name;
@@ -407,6 +408,7 @@ export component LauncherWindow inherits Window {
     callback choose-folder();
     callback open-url(string);
     callback single-player();
+    callback close-on-start-toggled();
     callback connect();
     callback dialog-accepted();
     callback dialog-cancelled();
@@ -713,6 +715,18 @@ export component LauncherWindow inherits Window {
                     clicked => { root.choose-folder(); }
                 }
                 Tooltip { text: @markdown("The game folder: click to choose another"); }
+            }
+            Rectangle { width: Theme.gap / 2; }
+            VerticalLayout {
+                alignment: center;
+                LabelAction {
+                    icon: root.close-on-start ? @image-url("icons/checkbox-checked.svg")
+                        : @image-url("icons/checkbox.svg");
+                    text: "Close on start";
+                    active: root.close-on-start;
+                    tip: @markdown("Quit MoHAA Launcher once the game has started");
+                    clicked => { root.close-on-start-toggled(); }
+                }
             }
             Rectangle { width: Theme.gap / 2; }
             Button {

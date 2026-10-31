@@ -493,6 +493,8 @@ pub fn resolution_entries(
 pub struct Settings {
     pub game: usize,
     pub slots: Vec<GameSlot>,
+    /// Quit the launcher once the game has started (Single player or Connect)
+    pub close_on_start: bool,
 }
 
 /// Per game: the server fields and the servers played on
@@ -842,6 +844,9 @@ mod tests {
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"slots\"") && json.contains("\"label\"") && !json.contains("gameFolder"));
         assert!(!json.contains("\"name\"")); // a server has a label; the player's name is the game's
+        // Close on start: off unless turned on, kept as closeOnStart (the macOS launcher's name too)
+        assert!(!s.close_on_start && json.contains("\"closeOnStart\":false"));
+        assert!(Settings::from_json(r#"{"closeOnStart": true}"#).close_on_start);
     }
 
     #[test]
