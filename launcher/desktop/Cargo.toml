@@ -8,7 +8,7 @@ license = "GPL-3.0-or-later"
 publish = false
 
 [dependencies]
-slint = { version = "~1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "renderer-software", "accessibility", "raw-window-handle-06", "unstable-winit-030"] }
+slint = { version = "~1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-software", "raw-window-handle-06", "unstable-winit-030"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rfd = "0.17"
@@ -22,7 +22,10 @@ slint-build = "~1.18"
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "3"
 
+# small: the window is light work for any build
 [profile.release]
+opt-level = "s"
 lto = true
 codegen-units = 1
+panic = "abort"
 strip = true
