@@ -6,6 +6,8 @@ rust-version = "1.85"
 description = "MoHAA Launcher for Windows and Linux: starts MoHAA Reloaded's game for Allied Assault, Spearhead or Breakthrough"
 license = "GPL-3.0-or-later"
 publish = false
+# not build.rs: the port branches' .gitignore ignores build*
+build = "compile-ui.rs"
 
 [dependencies]
 slint = { version = "~1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-software", "raw-window-handle-06", "unstable-winit-030"] }

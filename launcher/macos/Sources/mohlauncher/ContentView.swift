@@ -11,7 +11,7 @@ enum Metrics {
     static let gap: CGFloat = 12
     static let labelGap: CGFloat = 4
     static let labelHeight: CGFloat = 16
-    static let control: CGFloat = 28 // a control's height, where rows must line up
+    static let control: CGFloat = 32 // a control's height, where rows must line up (as on Windows and Linux)
     static let row: CGFloat = 34
     // the crosshair preview spans two fields' controls: from the first's top to the second's bottom
     static let preview: CGFloat = 2 * control + gap + labelHeight + labelGap

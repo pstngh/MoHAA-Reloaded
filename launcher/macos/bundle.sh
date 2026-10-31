@@ -1,6 +1,7 @@
 #!/bin/sh
-# Builds "mohlauncher.app" (arm64, signed ad hoc) into the folder given, launcher/macos/build by default.
-#   launcher/macos/build.sh [out-folder]
+# Bundles "mohlauncher.app" (arm64, signed ad hoc) into the folder given, launcher/macos/build by default.
+#   launcher/macos/bundle.sh [out-folder]
+# MOHL_SCRATCH, if set, is the folder for Swift's build files (by default launcher/macos/.build).
 # Needs Xcode (or its command line tools) on macOS 14 or later. `swift test` here checks the logic.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
@@ -8,8 +9,12 @@ out=${1:-"$here/build"}
 assets="$here/../assets"
 
 cd "$here"
-swift build -c release --arch arm64
-bin=$(swift build -c release --arch arm64 --show-bin-path)
+set -- -c release --arch arm64
+if [ -n "${MOHL_SCRATCH:-}" ]; then
+	set -- "$@" --scratch-path "$MOHL_SCRATCH"
+fi
+swift build "$@"
+bin=$(swift build "$@" --show-bin-path)
 
 app="$out/mohlauncher.app"
 rm -rf "$app"

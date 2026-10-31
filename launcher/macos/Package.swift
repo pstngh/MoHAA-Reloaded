@@ -1,5 +1,5 @@
 // swift-tools-version:5.9
-// MoHAA Launcher for macOS: SwiftUI and AppKit. `./build.sh` makes the app; `swift test` checks LauncherCore.
+// MoHAA Launcher for macOS: SwiftUI and AppKit. `./bundle.sh` makes the app; `swift test` checks LauncherCore.
 import PackageDescription
 
 let package = Package(

@@ -54,7 +54,7 @@ jobs:
                       {"label": "78.141.207.18:12603", "address": "78.141.207.18:12603", "password": "abc"}]},
           {}, {}]}
         EOF
-        launcher/macos/build.sh "$game"
+        launcher/macos/bundle.sh "$game"
 
     - name: Screenshot
       continue-on-error: true
