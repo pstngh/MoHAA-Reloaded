@@ -58,6 +58,11 @@ struct State {
     own_folder: PathBuf,
     /// The game folder chosen with the folder dialog, for this session: it's kept nowhere outside the game folder
     chosen: Option<PathBuf>,
+    /// The game folder (see find_game) and the game, as last found
+    folder: Option<PathBuf>,
+    exe: Option<PathBuf>,
+    /// The last save failed: the game folder can't be written
+    unwritable: bool,
     game: usize,
     edits: CvarEdits,
     sizes: Vec<Resolution>,
@@ -80,6 +85,9 @@ impl State {
             settings: Settings::from_json("{}"),
             own_folder: platform::own_folder(),
             chosen: None,
+            folder: None,
+            exe: None,
+            unwritable: false,
             edits: CvarEdits::new(&CVAR_DEFAULTS),
             sizes: resolution_list(&modes, desktop),
             resolution_entries: Vec::new(),
@@ -87,14 +95,36 @@ impl State {
             config_seen: (None, None),
             dialog: Dialog::None,
         };
+        state.find_game();
         state.load_settings();
         state
     }
 
+    /// Looks for the game folder again: the first with the game's data (main/Pak0.pk3) of the one chosen in this
+    /// session, the launcher's own and the current folder; everything the launcher and the game write goes there.
+    /// The game is beside the launcher (the download's folder), else in the game folder. True if the folder changed.
+    fn find_game(&mut self) -> bool {
+        let current = std::env::current_dir().ok();
+        let folder = [self.chosen.clone(), Some(self.own_folder.clone()), current]
+            .into_iter()
+            .flatten()
+            .find(|f| platform::has_game_data(f));
+        self.exe = [Some(self.own_folder.clone()), folder.clone()]
+            .into_iter()
+            .flatten()
+            .map(|f| f.join(platform::GAME_EXE))
+            .find(|exe| exe.is_file());
+        let changed = folder != self.folder;
+        self.folder = folder;
+        changed
+    }
+
     /// The game folder's mohlauncher.json (none yet: the defaults), and its config
     fn load_settings(&mut self) {
+        self.unwritable = false;
         self.settings = self
-            .game_folder()
+            .folder
+            .as_ref()
             .and_then(|folder| std::fs::read_to_string(folder.join(SETTINGS_FILE)).ok())
             .map_or_else(|| Settings::from_json("{}"), |text| Settings::from_json(&text));
         self.game = self.settings.game;
@@ -105,38 +135,19 @@ impl State {
         self.reload_config();
     }
 
-    /// The game folder: the first with the game's data (main/Pak0.pk3) of the one chosen in this session, the
-    /// launcher's own and the current folder. Everything the launcher and the game write goes there.
-    fn game_folder(&self) -> Option<PathBuf> {
-        let current = std::env::current_dir().ok();
-        [self.chosen.clone(), Some(self.own_folder.clone()), current]
-            .into_iter()
-            .flatten()
-            .find(|f| platform::has_game_data(f))
-    }
-
-    /// The game: beside the launcher (the download's folder), else in the game folder
-    fn game_exe(&self) -> Option<PathBuf> {
-        [Some(self.own_folder.clone()), self.game_folder()]
-            .into_iter()
-            .flatten()
-            .map(|folder| folder.join(platform::GAME_EXE))
-            .find(|exe| exe.is_file())
-    }
-
     fn can_start(&self) -> bool {
-        !self.running && self.game_folder().is_some() && self.game_exe().is_some()
+        !self.running && self.folder.is_some() && self.exe.is_some()
     }
 
     /// An expansion without its data can't start
     fn available(&self, game: usize) -> bool {
-        game == 0 || self.game_folder().is_none_or(|folder| platform::has_subdir(&folder, GAME_DIRS[game]))
+        game == 0 || self.folder.as_ref().is_none_or(|folder| platform::has_subdir(folder, GAME_DIRS[game]))
     }
 
     /// The game's config: the game folder's (the game is started with its home there), else the one an earlier
     /// start without the launcher left where the game keeps it by default, which the next start copies over
     fn config_path(&self) -> Option<PathBuf> {
-        let mut homes: Vec<PathBuf> = self.game_folder().into_iter().collect();
+        let mut homes: Vec<PathBuf> = self.folder.iter().cloned().collect();
         homes.extend(platform::engine_homes());
         find_config(&homes, self.game)
     }
@@ -181,7 +192,7 @@ impl State {
     }
 
     fn status(&self) -> String {
-        let Some(folder) = self.game_folder() else {
+        let Some(folder) = &self.folder else {
             return "No game found: choose your MOHAA folder.".into();
         };
         let folder = folder.display().to_string();
@@ -191,8 +202,11 @@ impl State {
             Ok(home) if !home.is_empty() && folder.starts_with(&home) => format!("~{}", &folder[home.len()..]),
             _ => folder,
         };
-        if self.game_exe().is_none() {
-            format!("{} isn't beside the launcher or in {folder}.", platform::GAME_EXE)
+        // the problem first: the path may be cut off at the end
+        if self.exe.is_none() {
+            format!("No {} beside the launcher or in {folder}", platform::GAME_EXE)
+        } else if self.unwritable {
+            format!("Can't write to the game folder: {folder}")
         } else if self.running {
             format!("{} is running.", GAME_TITLES[self.game])
         } else {
@@ -203,21 +217,28 @@ impl State {
     /// mohlauncher.json in the game folder, and nowhere else (with no game folder, nowhere)
     fn save(&mut self) {
         self.settings.game = self.game;
-        let Some(folder) = self.game_folder() else { return };
+        let Some(folder) = &self.folder else { return };
         let Ok(json) = serde_json::to_string_pretty(&self.settings) else { return };
         // a new file in place of the old one, readable by the player only: it holds passwords
         let path = folder.join(SETTINGS_FILE);
         let tmp = folder.join(format!("{SETTINGS_FILE}.tmp"));
-        if std::fs::write(&tmp, json).is_ok() {
+        let written = std::fs::write(&tmp, json).is_ok() && {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
                 let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
             }
-            if std::fs::rename(&tmp, &path).is_err() {
-                let _ = std::fs::remove_file(&tmp);
-            }
+            std::fs::rename(&tmp, &path).is_ok()
+        };
+        if !written {
+            let _ = std::fs::remove_file(&tmp);
         }
+        self.unwritable = !written;
+    }
+
+    /// Something stands in the way: no game, or a game folder that can't be written
+    fn problem(&self) -> bool {
+        self.folder.is_none() || self.exe.is_none() || self.unwritable
     }
 
     fn crosshair_rgb(&self) -> u32 {
@@ -240,6 +261,7 @@ fn show_status(ui: &LauncherWindow, st: &State) {
     ui.set_sh_available(st.available(1));
     ui.set_bt_available(st.available(2));
     ui.set_status(st.status().into());
+    ui.set_status_warning(st.problem());
     let can_start = st.can_start();
     ui.set_can_start(can_start);
     ui.set_running(st.running);
@@ -321,7 +343,6 @@ fn show_display(ui: &LauncherWindow, st: &mut State) {
     ui.set_resolutions(strings(entries.iter().map(ResolutionEntry::label)));
     ui.set_resolution_index(index as i32);
     st.resolution_entries = entries;
-    ui.set_modes(strings(MODE_TITLES.iter().map(|s| s.to_string())));
     ui.set_mode_index(mode_from_cvars(st.edits.get("r_fullscreen"), st.edits.get("r_noborder")) as i32);
 }
 
@@ -383,7 +404,7 @@ fn ask_for_folder(ui: &LauncherWindow, st: &mut State, title: &str, text: &str) 
 fn choose_folder(ui: &LauncherWindow, state: &Shared) {
     let start_dir = {
         let st = state.borrow();
-        st.game_folder().unwrap_or_else(|| st.own_folder.clone())
+        st.folder.clone().unwrap_or_else(|| st.own_folder.clone())
     };
     let Some(folder) = rfd::FileDialog::new()
         .set_title("Choose your MOHAA folder: the one with main/")
@@ -401,6 +422,7 @@ fn choose_folder(ui: &LauncherWindow, state: &Shared) {
     }
     let same = folder.canonicalize().ok() == st.own_folder.canonicalize().ok();
     st.chosen = if same { None } else { Some(folder) };
+    st.find_game();
     st.load_settings();
     show_all(ui, &mut st);
 }
@@ -410,11 +432,12 @@ fn start(ui: &LauncherWindow, state: &Shared, connect: bool) {
     if st.running || st.dialog != Dialog::None {
         return;
     }
-    let Some(folder) = st.game_folder() else {
+    st.find_game();
+    let Some(folder) = st.folder.clone() else {
         ask_for_folder(ui, &mut st, "Where is MOHAA?", FIND_GAME_TEXT);
         return;
     };
-    let Some(exe) = st.game_exe() else {
+    let Some(exe) = st.exe.clone() else {
         let text = format!(
             "{} isn't beside the launcher or in {}: keep MoHAA Launcher with the files of the download it came in.",
             platform::GAME_EXE,
@@ -490,6 +513,7 @@ fn dialog_accepted(ui: &LauncherWindow, st: &mut State) {
             }
             st.save();
             show_servers(ui, st);
+            show_status(ui, st);
         }
         Dialog::Remove(i) => {
             if i < st.slot().servers.len() {
@@ -497,6 +521,7 @@ fn dialog_accepted(ui: &LauncherWindow, st: &mut State) {
             }
             st.save();
             show_servers(ui, st);
+            show_status(ui, st);
         }
         Dialog::CustomColor => match parse_color(&value) {
             Some(rgb) => {
@@ -514,17 +539,19 @@ fn dialog_accepted(ui: &LauncherWindow, st: &mut State) {
 
 fn main() -> Result<(), slint::PlatformError> {
     let ui = LauncherWindow::new()?;
+    ui.set_modes(strings(MODE_TITLES.iter().map(|s| s.to_string())));
     let state: Shared = Rc::new(RefCell::new(State::new()));
     {
         let mut st = state.borrow_mut();
         show_all(&ui, &mut st);
-        // no game data beside the launcher, in the current folder or where it was last: ask where it is
-        if st.game_folder().is_none() {
+        // no game data beside the launcher or in the current folder: ask where it is
+        if st.folder.is_none() {
             ask_for_folder(&ui, &mut st, "Where is MOHAA?", FIND_GAME_TEXT);
         }
     }
 
-    // Wires a callback to a closure that gets the window and the state
+    // Wires a callback to a closure that gets the window and the state, borrowed (`st`) or not (`shared`: for
+    // what opens a native dialog or starts the game, which borrow it themselves)
     macro_rules! on {
         ($setter:ident, |$ui:ident, $st:ident $(, $arg:ident)*| $body:block) => {{
             let weak = ui.as_weak();
@@ -533,6 +560,14 @@ fn main() -> Result<(), slint::PlatformError> {
                 let Some($ui) = weak.upgrade() else { return };
                 #[allow(unused_mut)]
                 let mut $st = state.borrow_mut();
+                $body
+            });
+        }};
+        ($setter:ident, shared |$ui:ident, $state:ident $(, $arg:ident)*| $body:block) => {{
+            let weak = ui.as_weak();
+            let $state = state.clone();
+            ui.$setter(move |$($arg),*| {
+                let Some($ui) = weak.upgrade() else { return };
                 $body
             });
         }};
@@ -558,24 +593,19 @@ fn main() -> Result<(), slint::PlatformError> {
             show_status(&ui, &st);
         }
     });
-    {
-        let weak = ui.as_weak();
-        let state = state.clone();
-        ui.on_server_connect(move |index| {
-            let Some(ui) = weak.upgrade() else { return };
-            {
-                let mut st = state.borrow_mut();
-                let listed = listed_servers(&st.settings, st.game);
-                let Some(server) = listed.get(index as usize).map(|l| l.server.clone()) else { return };
-                let slot = st.slot_mut();
-                slot.address = server.address;
-                slot.password = server.password;
-                slot.rcon = server.rcon;
-                show_fields(&ui, &st);
-            }
-            start(&ui, &state, true);
-        });
-    }
+    on!(on_server_connect, shared |ui, state, index| {
+        {
+            let mut st = state.borrow_mut();
+            let listed = listed_servers(&st.settings, st.game);
+            let Some(server) = listed.get(index as usize).map(|l| l.server.clone()) else { return };
+            let slot = st.slot_mut();
+            slot.address = server.address;
+            slot.password = server.password;
+            slot.rcon = server.rcon;
+            show_fields(&ui, &st);
+        }
+        start(&ui, &state, true);
+    });
     // the server in the fields, kept in the list without joining it (or its passwords updated)
     on!(on_bookmark, |ui, st| {
         let slot = st.slot().clone();
@@ -587,6 +617,7 @@ fn main() -> Result<(), slint::PlatformError> {
         st.settings.remember_server(game, address, &slot.password, &slot.rcon);
         st.save();
         show_servers(&ui, &st);
+        show_status(&ui, &st);
     });
     // a built-in server has neither
     on!(on_server_rename, |ui, st, index| {
@@ -647,33 +678,9 @@ fn main() -> Result<(), slint::PlatformError> {
         show_display(&ui, &mut st);
     });
     ui.on_open_url(|url| platform::open_url(&url));
-    {
-        let weak = ui.as_weak();
-        let state = state.clone();
-        ui.on_choose_folder(move || {
-            if let Some(ui) = weak.upgrade() {
-                choose_folder(&ui, &state);
-            }
-        });
-    }
-    {
-        let weak = ui.as_weak();
-        let state = state.clone();
-        ui.on_single_player(move || {
-            if let Some(ui) = weak.upgrade() {
-                start(&ui, &state, false);
-            }
-        });
-    }
-    {
-        let weak = ui.as_weak();
-        let state = state.clone();
-        ui.on_connect(move || {
-            if let Some(ui) = weak.upgrade() {
-                start(&ui, &state, true);
-            }
-        });
-    }
+    on!(on_choose_folder, shared |ui, state| { choose_folder(&ui, &state) });
+    on!(on_single_player, shared |ui, state| { start(&ui, &state, false) });
+    on!(on_connect, shared |ui, state| { start(&ui, &state, true) });
     on!(on_dialog_cancelled, |ui, st| {
         let dialog = st.dialog;
         close_dialog(&ui, &mut st);
@@ -681,20 +688,14 @@ fn main() -> Result<(), slint::PlatformError> {
             show_crosshair(&ui, &st); // the color menu shows the color it had
         }
     });
-    {
-        // choosing the folder opens a native dialog: not while the state is borrowed
-        let weak = ui.as_weak();
-        let state = state.clone();
-        ui.on_dialog_accepted(move || {
-            let Some(ui) = weak.upgrade() else { return };
-            if state.borrow().dialog == Dialog::ChooseFolder {
-                close_dialog(&ui, &mut state.borrow_mut());
-                choose_folder(&ui, &state);
-            } else {
-                dialog_accepted(&ui, &mut state.borrow_mut());
-            }
-        });
-    }
+    on!(on_dialog_accepted, shared |ui, state| {
+        if state.borrow().dialog == Dialog::ChooseFolder {
+            close_dialog(&ui, &mut state.borrow_mut());
+            choose_folder(&ui, &state);
+        } else {
+            dialog_accepted(&ui, &mut state.borrow_mut());
+        }
+    });
     on!(on_game_exited, |ui, st| {
         st.running = false;
         // the game saved its config: show what it holds now
@@ -703,7 +704,7 @@ fn main() -> Result<(), slint::PlatformError> {
         show_cvars(&ui, &mut st);
     });
 
-    // the config changed (the game saved it, or another program), the game folder's contents changed: show it
+    // the game folder or its contents changed, or its config (the game saved it, or another program): show it
     let timer = slint::Timer::default();
     {
         let weak = ui.as_weak();
@@ -711,7 +712,17 @@ fn main() -> Result<(), slint::PlatformError> {
         timer.start(slint::TimerMode::Repeated, Duration::from_millis(1500), move || {
             let Some(ui) = weak.upgrade() else { return };
             let Ok(mut st) = state.try_borrow_mut() else { return };
-            if !st.running && st.config_changed() {
+            if st.running {
+                return;
+            }
+            if st.find_game() {
+                // another game folder (the data appeared or went away): its own settings
+                st.load_settings();
+                show_all(&ui, &mut st);
+                if st.folder.is_some() && st.dialog == Dialog::ChooseFolder {
+                    close_dialog(&ui, &mut st); // the question it asked is answered
+                }
+            } else if st.config_changed() {
                 st.reload_config();
                 show_cvars(&ui, &mut st);
             }

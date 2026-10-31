@@ -168,7 +168,7 @@ impl CvarEdits {
         }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub fn changed(&self, name: &str) -> bool {
         self.find(name).is_some_and(|e| e.value != e.loaded)
     }
@@ -300,7 +300,7 @@ pub struct CrossArm {
 /// thickness, whose top left corner is (0, 0), and the width (and height) the arms span
 pub fn crosshair_boxes(length: f64, gap: f64, thickness: f64) -> ([CrossArm; 4], i32) {
     fn pixels(value: f64, maximum: f64) -> i32 {
-        let v = if !(value >= 1.0) { 1.0 } else { value.min(maximum) };
+        let v = if value.is_nan() || value < 1.0 { 1.0 } else { value.min(maximum) };
         (v + 0.5) as i32
     }
     let l = pixels(length, 128.0);
@@ -475,7 +475,7 @@ impl Settings {
         s
     }
 
-    pub fn normalize(&mut self) {
+    fn normalize(&mut self) {
         if self.game >= GAME_COUNT {
             self.game = 0;
         }

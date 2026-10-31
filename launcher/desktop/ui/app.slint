@@ -352,6 +352,7 @@ export component LauncherWindow inherits Window {
     in property <bool> sh-available: true;
     in property <bool> bt-available: true;
     in property <string> status;
+    in property <bool> status-warning; // the status says what stands in the way
     in property <bool> can-start;
     in property <bool> can-connect;
     in property <bool> running;
@@ -673,7 +674,7 @@ export component LauncherWindow inherits Window {
                             source: @image-url("icons/folder.svg");
                             width: 14px;
                             height: 14px;
-                            colorize: Theme.secondary;
+                            colorize: root.status-warning ? #fcc33d : Theme.secondary;
                         }
                         if root.running: Rectangle {
                             width: 14px;
@@ -689,7 +690,7 @@ export component LauncherWindow inherits Window {
                     Text {
                         text: root.status;
                         font-size: 12px;
-                        color: Theme.secondary;
+                        color: root.status-warning ? #fcc33d : Theme.secondary;
                         vertical-alignment: center;
                         overflow: elide;
                         min-width: 0px;
