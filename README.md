@@ -24,9 +24,20 @@ Needs a GPU with a Vulkan 1.1 driver (on Linux Mesa's RADV, ANV or NVK, or NVIDI
 
 1. Download `openmohaa-vulkan-1.0.0-linux-amd64.tar.gz` (64-bit Linux) or `openmohaa-vulkan-1.0.0-windows-x64.zip` (64-bit Windows) from [Releases](https://github.com/pstngh/MoHAA-Reloaded/releases/tag/v1.0.0) and extract it (`tar xf openmohaa-vulkan-1.0.0-linux-amd64.tar.gz`; on Windows, right-click and Extract All).
 2. Find your MOHAA game folder: the folder with `main/` (`Pak0.pk3` to `Pak6.pk3`; `mainta/` and `maintt/` for the expansions). Upstream's [installation guide](docs/markdown/01-intro/01-installation.md#linux-and-macos-users) shows how to get it from the GOG installer.
-3. Copy everything in the extracted folder into the game folder, next to `main/` (its own `main/` only holds the headphone sound set: let it merge), and start `launch_openmohaa_base` (or `launch_openmohaa_spearhead`, `launch_openmohaa_breakthrough`; `.exe` on Windows).
+3. Copy everything in the extracted folder into the game folder, next to `main/` (its own `main/` only holds the headphone sound set: let it merge), and start `mohlauncher` (`mohlauncher.exe` on Windows): [MoHAA Launcher](#mohaa-launcher). `launch_openmohaa_base` (or `launch_openmohaa_spearhead`, `launch_openmohaa_breakthrough`; `.exe` on Windows) start a game directly.
 
-On Linux you can also leave the game folder as it is and start the game from the extracted folder: `./openmohaa +set fs_basepath /path/to/mohaa`. `INSTALL.txt` in the download has the same steps. Configs go to `~/.config/openmohaa/` and saves and screenshots to `~/.local/share/openmohaa/` on Linux, all of them to `%APPDATA%\openmohaa\` on Windows, as with upstream's OpenMoHAA. Without a Vulkan driver the game stops and says so.
+On Linux you can also leave the game folder as it is and start the game from the extracted folder: `./openmohaa +set fs_basepath /path/to/mohaa`. `INSTALL.txt` in the download has the same steps. Started from MoHAA Launcher, the game keeps everything in the game folder (below). Started otherwise, configs go to `~/.config/openmohaa/` and saves and screenshots to `~/.local/share/openmohaa/` on Linux, all of them to `%APPDATA%\openmohaa\` on Windows, as with upstream's OpenMoHAA. Without a Vulkan driver the game stops and says so.
+
+### MoHAA Launcher
+
+`mohlauncher` (`mohlauncher.exe` on Windows) starts the game for Allied Assault, Spearhead or Breakthrough, at its main menu (**Single player**) or onto a server (**Connect**):
+
+- **Servers:** the address, the server's password and the RCON password. The servers you join are kept in a list (**Bookmark** keeps one without joining), Forte FFA built into Allied Assault's.
+- **Settings:** your name, the crosshair (with a preview), the resolution and the display mode, and Discord presence (`cl_discordPresence`, off unless you turn it on). Only what you change in the launcher goes to the game, so what you change in the game stays.
+- **Portable:** it writes only into the game folder. `mohlauncher.json` holds the servers and their passwords; the game is started with its home there (`fs_homepath`), so its configs, saves, screenshots, demos and logs go there too. A config an earlier start kept in `~/.config/openmohaa/` or `%APPDATA%\openmohaa\` is copied over once.
+- It finds the game folder by its `main/Pak0.pk3`, beside it or in the current folder, and asks for it otherwise. It needs nothing installed (on Linux, fontconfig and X11 or Wayland, as any desktop has).
+
+Its source is [`launcher/desktop`](launcher/desktop) (Rust and Slint: `cargo build --release` there); CI builds it with the game.
 
 Builds of newer commits come from [CI on this branch](https://github.com/pstngh/MoHAA-Reloaded/actions/workflows/branches-build.yml?query=branch%3Avulkan) (`out-linux-amd64`, `out-windows-x64`; needs a GitHub login, kept for a few days), or build it yourself (below).
 

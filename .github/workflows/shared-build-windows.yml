@@ -242,6 +242,26 @@ jobs:
         if (Test-Path ${{github.workspace}}/install/lib) { Copy-Item '${{github.workspace}}/install/lib/*' -Include '*.dll','*.exe' -Destination '${{github.workspace}}/package' }
 
     ###
+    # MoHAA Launcher (launcher/desktop: Rust and Slint), beside the game
+    ###
+    - name: Cache the launcher's build
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ${{github.workspace}}/source/launcher/desktop/target
+        key: ${{ runner.os }}-${{ matrix.architecture.name }}-launcher-${{ hashFiles('source/launcher/desktop/Cargo.lock') }}
+
+    - name: Build the launcher
+      working-directory: ${{github.workspace}}/source/launcher/desktop
+      # bash stops at the first command that fails
+      shell: bash
+      run: |
+        cargo test --locked
+        cargo build --release --locked
+        cp target/release/mohlauncher.exe '${{github.workspace}}/package/'
+
+    ###
     # Artifact: the game's files only (no symbols, no installer)
     ###
 
