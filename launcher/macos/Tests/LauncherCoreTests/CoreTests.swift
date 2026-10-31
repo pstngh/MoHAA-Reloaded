@@ -134,10 +134,24 @@ final class CoreTests: XCTestCase {
 
         let list = resolutionList(displayModes: [Resolution(1920, 1080), Resolution(1280, 720), Resolution(320, 200)],
                                   desktop: Resolution(1920, 1080))
-        XCTAssertEqual(list.first, Resolution(1920, 1080))
+        XCTAssertEqual(list.first, Resolution(2048, 1536)) // r_mode 10, larger than the desktop
         XCTAssertEqual(list.filter { $0 == Resolution(1920, 1080) }.count, 1)
         XCTAssertFalse(list.contains(Resolution(2560, 1440)))
         XCTAssertFalse(list.contains(Resolution(320, 200)))
+        // every numbered mode, below 640 x 480 and above the desktop too
+        XCTAssertTrue(rModeSizes.allSatisfy { list.contains($0) })
+        XCTAssertEqual(list.filter { $0 == Resolution(640, 480) }.count, 1)
+        XCTAssertEqual(list.last, Resolution(320, 240))
+
+        XCTAssertEqual(aspectRatio(1920, 1080), "16:9")
+        XCTAssertEqual(aspectRatio(1366, 768), "16:9")
+        XCTAssertEqual(aspectRatio(856, 480), "16:9")
+        XCTAssertEqual(aspectRatio(1920, 1200), "16:10")
+        XCTAssertEqual(aspectRatio(1280, 1024), "5:4")
+        XCTAssertEqual(aspectRatio(1024, 768), "4:3")
+        XCTAssertEqual(aspectRatio(3440, 1440), "21:9")
+        XCTAssertEqual(aspectRatio(5120, 1440), "32:9")
+        XCTAssertEqual(aspectRatio(1000, 1000), "1:1")
     }
 
     func testSettingsAndServers() throws {

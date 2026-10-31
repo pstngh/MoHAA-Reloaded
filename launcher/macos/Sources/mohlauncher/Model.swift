@@ -10,8 +10,8 @@ struct ColorPreset: Identifiable {
     var id: UInt32 { rgb }
 }
 
-/// An entry of the resolution menu: the desktop's (r_mode -2), a size (r_mode -1 with r_customwidth and
-/// r_customheight), or a numbered mode a config holds
+/// An entry of the resolution menu: the desktop's (r_mode -2) or a size (r_mode -1 with r_customwidth and
+/// r_customheight)
 struct ResolutionEntry: Hashable, Identifiable {
     var mode: Int
     var width = 0
@@ -19,11 +19,7 @@ struct ResolutionEntry: Hashable, Identifiable {
     var id: Self { self }
 
     var label: String {
-        switch mode {
-        case -2: return "Desktop resolution"
-        case -1: return "\(width) × \(height)"
-        default: return "r_mode \(mode)"
-        }
+        mode == -1 ? "\(width) × \(height) (\(aspectRatio(width, height)))" : "Desktop resolution"
     }
 }
 
@@ -352,25 +348,27 @@ final class LauncherModel: ObservableObject {
             + displaySizes.map { ResolutionEntry(mode: -1, width: $0.width, height: $0.height) }
         let current = currentResolution
         if !entries.contains(current) {
-            // the config's own size where it belongs in the list, or its numbered mode at the end
-            if current.mode == -1, let k = entries.dropFirst().firstIndex(where: {
+            // the config's own size, where it belongs in the list
+            let k = entries.dropFirst().firstIndex(where: {
                 $0.width < current.width || ($0.width == current.width && $0.height < current.height)
-            }) {
-                entries.insert(current, at: k)
-            } else {
-                entries.append(current)
-            }
+            }) ?? entries.endIndex
+            entries.insert(current, at: k)
         }
         return entries
     }
 
+    /// The config's: a numbered mode (r_mode 0 to 11) is its size, which the list always has (nothing is passed to the
+    /// game unless the player picks another entry); a number the game doesn't have is the desktop's resolution
     private var currentResolution: ResolutionEntry {
         let mode = Int(edits.get("r_mode")) ?? -2
         if mode == -1 {
             return ResolutionEntry(mode: -1, width: Int(edits.get("r_customwidth")) ?? 0,
                                    height: Int(edits.get("r_customheight")) ?? 0)
         }
-        return ResolutionEntry(mode: mode < -1 ? -2 : mode)
+        if rModeSizes.indices.contains(mode) {
+            return ResolutionEntry(mode: -1, width: rModeSizes[mode].width, height: rModeSizes[mode].height)
+        }
+        return ResolutionEntry(mode: -2)
     }
 
     var resolution: Binding<ResolutionEntry> {

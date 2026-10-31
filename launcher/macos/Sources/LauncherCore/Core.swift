@@ -297,7 +297,27 @@ public struct Resolution: Hashable {
     }
 }
 
-/// The sizes to offer: the display's, the common ones that fit it, largest first, without duplicates
+/// The game's numbered modes, r_mode 0 to 11 (the renderers' r_vidModes): a config can hold one
+public let rModeSizes: [Resolution] = [
+    (320, 240), (400, 300), (512, 384), (640, 480), (800, 600), (960, 720), (1024, 768), (1152, 864), (1280, 1024),
+    (1600, 1200), (2048, 1536), (856, 480),
+].map { Resolution($0.0, $0.1) }
+
+/// A size's aspect ratio, by the common name it's within 3% of (1366 x 768 is 16:9), else as a reduced fraction
+public func aspectRatio(_ width: Int, _ height: Int) -> String {
+    guard width > 0, height > 0 else { return "" }
+    let named = [(4, 3), (5, 4), (3, 2), (16, 10), (16, 9), (21, 9), (32, 9)]
+    let ratio = Double(width) / Double(height)
+    if let match = named.first(where: { abs(ratio / (Double($0.0) / Double($0.1)) - 1) < 0.03 }) {
+        return "\(match.0):\(match.1)"
+    }
+    var (a, b) = (width, height)
+    while b != 0 { (a, b) = (b, a % b) }
+    return "\(width / a):\(height / a)"
+}
+
+/// The sizes to offer: the display's, the common ones that fit it and every numbered mode (r_mode 0 to 11), largest
+/// first, without duplicates
 public func resolutionList(displayModes: [Resolution], desktop: Resolution) -> [Resolution] {
     let common = [
         (3840, 2160), (3440, 1440), (2560, 1600), (2560, 1440), (2560, 1080), (1920, 1200), (1920, 1080),
@@ -312,6 +332,10 @@ public func resolutionList(displayModes: [Resolution], desktop: Resolution) -> [
     displayModes.forEach(add)
     for r in common where desktop.width <= 0 || (r.width <= desktop.width && r.height <= desktop.height) {
         add(r)
+    }
+    // every numbered mode, as small or as large as it is: a config's r_mode is then always in the list
+    for r in rModeSizes where !list.contains(r) {
+        list.append(r)
     }
     return list.sorted { $0.width != $1.width ? $0.width > $1.width : $0.height > $1.height }
 }
