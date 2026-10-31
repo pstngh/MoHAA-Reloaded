@@ -427,20 +427,20 @@ export component LauncherWindow inherits Window {
         HorizontalLayout {
             spacing: Theme.gap / 2;
             GameTab {
-                icon: @image-url("../../assets/game-aa-64.png");
+                icon: @image-url("../../assets/game-aa.svg");
                 title: "Allied Assault";
                 selected: root.game == 0;
                 clicked => { root.select-game(0); }
             }
             GameTab {
-                icon: @image-url("../../assets/game-sh-64.png");
+                icon: @image-url("../../assets/game-sh.svg");
                 title: "Spearhead";
                 selected: root.game == 1;
                 available: root.sh-available;
                 clicked => { root.select-game(1); }
             }
             GameTab {
-                icon: @image-url("../../assets/game-bt-64.png");
+                icon: @image-url("../../assets/game-bt.svg");
                 title: "Breakthrough";
                 selected: root.game == 2;
                 available: root.bt-available;
