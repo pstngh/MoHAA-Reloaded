@@ -862,6 +862,7 @@ static qboolean		in_skipMotion;			// the next movement event is dropped (SDL's j
 static qboolean		in_gobbleMotion;		// the pump drops the movement (IN_GobbleMotionEvents)
 static qboolean		in_mouseInside;			// the cursor is over the window (SDL's mouse focus)
 static int			in_mouseX, in_mouseY;	// the UI's cursor over the window, in pixels (SDL's mouse->x/y)
+static CGFloat		in_pixelRestX, in_pixelRestY;	// a scaled fullscreen UI's movement below a pixel, kept for the next
 static int			in_lastX, in_lastY;		// the cursor's last position in points, for in_nograb's deltas
 static unsigned int	in_mouseButtons;		// SDL's button state: bit n - 1 is button n
 static float		in_wheelY;				// SDL's wheel movement not yet sent
@@ -1189,6 +1190,7 @@ void MacOS_MouseMotion( NSEvent *event )
 	if( in_skipMotion )
 	{
 		in_skipMotion = qfalse;
+		in_pixelRestX = in_pixelRestY = 0;
 		return;
 	}
 
@@ -1206,8 +1208,22 @@ void MacOS_MouseMotion( NSEvent *event )
 
 	IN_MotionTime( (long long)( event.timestamp * 1e6 ) );
 
-	dx = (int)(float)( event.deltaX * scaleX );
-	dy = (int)(float)( event.deltaY * scaleY );
+	if( scaleX != 1 || scaleY != 1 )
+	{
+		// exclusive fullscreen scaled to the screen (or a 2x display): the UI's cursor moves in the game's pixels,
+		// and cut per event, a point's movement at 0.75 pixels a point would be lost: the fractions are kept
+		CGFloat x = event.deltaX * scaleX + in_pixelRestX, y = event.deltaY * scaleY + in_pixelRestY;
+
+		dx = (int)x;
+		dy = (int)y;
+		in_pixelRestX = x - dx;
+		in_pixelRestY = y - dy;
+	}
+	else
+	{
+		dx = (int)(float)( event.deltaX * scaleX );
+		dy = (int)(float)( event.deltaY * scaleY );
+	}
 	if( !dx && !dy )
 		return;
 
