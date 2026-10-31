@@ -888,16 +888,21 @@ static void IN_SendMouseButton( int button, qboolean down );
 
 /*
 ===============
-IN_PixelScale
+IN_PixelMap
 
-The drawable's pixels per window point: the UI's coordinates are pixels.
+The game's pixels per window point, per axis, and where its image starts in the view (points from the top left):
+the UI's coordinates are pixels. The image is the whole view, but for exclusive fullscreen at another size than the
+display's, scaled to the screen (MacOS_GameRect).
 ===============
 */
-static CGFloat IN_PixelScale( void )
+static void IN_PixelMap( CGFloat *scaleX, CGFloat *scaleY, CGFloat *left, CGFloat *top )
 {
-	CGFloat width = in_window.contentView.bounds.size.width;
+	NSRect rect = MacOS_GameRect( );
 
-	return width > 0 && cls.glconfig.vidWidth > 0 ? cls.glconfig.vidWidth / width : 1;
+	*scaleX = rect.size.width > 0 && cls.glconfig.vidWidth > 0 ? cls.glconfig.vidWidth / rect.size.width : 1;
+	*scaleY = rect.size.height > 0 && cls.glconfig.vidHeight > 0 ? cls.glconfig.vidHeight / rect.size.height : 1;
+	*left = rect.origin.x;
+	*top = in_window.contentView.bounds.size.height - NSMaxY( rect );
 }
 
 /*
@@ -1174,7 +1179,7 @@ lost: in_mouseRaw 1 reads GCMouse instead.
 */
 void MacOS_MouseMotion( NSEvent *event )
 {
-	CGFloat scale = 1;
+	CGFloat scaleX = 1, scaleY = 1, left, top;
 	int dx, dy;
 
 	if( !in_window )
@@ -1195,14 +1200,14 @@ void MacOS_MouseMotion( NSEvent *event )
 		return;
 
 	if( in_guimouse )
-		scale = IN_PixelScale( );	// a fullscreen UI's cursor, in pixels
+		IN_PixelMap( &scaleX, &scaleY, &left, &top );	// a fullscreen UI's cursor, in pixels
 	else if( IN_RawMouseUsed( ) )
 		return;
 
 	IN_MotionTime( (long long)( event.timestamp * 1e6 ) );
 
-	dx = (int)(float)( event.deltaX * scale );
-	dy = (int)(float)( event.deltaY * scale );
+	dx = (int)(float)( event.deltaX * scaleX );
+	dy = (int)(float)( event.deltaY * scaleY );
 	if( !dx && !dy )
 		return;
 
@@ -1221,13 +1226,17 @@ mouse and follows it outside). With in_nograb in a window the game takes the mov
 static void IN_MouseAt( NSPoint point, long long usec )
 {
 	NSSize size = in_window.contentView.bounds.size;
-	CGFloat scale = IN_PixelScale( );
+	CGFloat scaleX, scaleY, left, top;
 	int width = (int)size.width, height = (int)size.height;
 	int x = (int)point.x, y = (int)( height - point.y );	// SDL's position: points cut toward zero, y down
-	int px = (int)( point.x * scale ), py = (int)( ( height - point.y ) * scale );
+	int px, py;
 	qboolean followed = in_mouseButtons != 0 && in_focused;
 	qboolean clamp = !followed;
 	int dx, dy;
+
+	IN_PixelMap( &scaleX, &scaleY, &left, &top );
+	px = (int)( ( point.x - left ) * scaleX );
+	py = (int)( ( height - point.y - top ) * scaleY );
 
 	if( !followed && ( x < 0 || y < 0 || x >= width || y >= height ) )
 	{
@@ -1541,7 +1550,7 @@ from the drawable's pixels as points: on a 2x display the cursor went to the win
 static void IN_WarpToCenter( void )
 {
 	NSSize size = in_window.contentView.bounds.size;
-	CGFloat scale = IN_PixelScale( );
+	CGFloat scaleX, scaleY, left, top;
 	int x = (int)size.width / 2, y = (int)size.height / 2;
 
 	@autoreleasepool
@@ -1551,8 +1560,9 @@ static void IN_WarpToCenter( void )
 			CGAssociateMouseAndMouseCursorPosition( true );
 	}
 
-	in_mouseX = (int)( x * scale );
-	in_mouseY = (int)( y * scale );
+	IN_PixelMap( &scaleX, &scaleY, &left, &top );
+	in_mouseX = (int)( ( x - left ) * scaleX );
+	in_mouseY = (int)( ( y - top ) * scaleY );
 	in_lastX = x;
 	in_lastY = y;
 	in_mouseInside = qtrue;

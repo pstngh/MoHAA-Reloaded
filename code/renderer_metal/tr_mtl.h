@@ -205,6 +205,7 @@ extern "C" {
 // clearing may happen at any point of a frame (the 2D exports draw outside the render-command queue).
 qboolean	mbInit( void *metalLayer );		// CAMetalLayer *; creates the device/queue once, binds the layer
 void		mbShutdown( void );					// waits for the GPU, releases the layer and per-window objects
+void		mbSetOutputRect( int x, int y, int width, int height );	// where the scene goes in the drawable (pixels, top left; width 0 = all of it at the scene's size), before mbInit
 void		mbSetGamma( const unsigned char red[256], const unsigned char green[256], const unsigned char blue[256] );	// applied in the final pass
 void		mbEndFrame( void );					// final pass into the drawable, present, commit, frame pacing
 const char	*mbRendererString( void );			// e.g. "Apple M4 (Metal)"

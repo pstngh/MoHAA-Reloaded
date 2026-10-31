@@ -47,6 +47,6 @@ NSCursor	*MacOS_Cursor( void );				// the cursor over the content view
 void		MacOS_ReleaseMouse( void );			// a dialog is coming: the cursor is the system's until IN_Frame
 
 // macos_window.m
-void		MacOS_SwitchKey( NSEvent *event );		// a key going down, from the pump: Cmd+Tab with the displays captured
+NSRect		MacOS_GameRect( void );				// the game's image in the content view, in points (the whole view but for scaled exclusive fullscreen)
 
 #endif

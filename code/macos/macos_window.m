@@ -32,9 +32,10 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // The display modes:
 // - a window: titled (borderless with r_noborder), resizable with r_allowResize, on r_displayIndex, centered (SDL
 //   centers windows whether r_centerWindow is set or not), at its old position after a vid_restart;
-// - exclusive fullscreen, r_fullscreen 1: a borderless window over the screen at the shielding level, at r_mode's
-//   size. The display mode changes only when that size isn't the current mode's (the displays captured as SDL
-//   captures them). Losing the focus minimizes the window and restores the desktop's mode, as SDL does;
+// - exclusive fullscreen, r_fullscreen 1: a borderless window over the screen at the shielding level. The display
+//   keeps its mode: the game renders at r_mode's size and the final pass scales that to the screen, each pixel from
+//   the nearest one, in its own shape or stretched (r_fullscreenStretch; docs/METAL_PORT_PLAN.md 3.1 #60). Losing
+//   the focus minimizes the window, as SDL does;
 // - borderless fullscreen, r_fullscreen 1 + r_noborder 1: a native fullscreen Space at the desktop resolution, or
 //   with r_borderlessWindow 1 a borderless window over the screen at the normal level, the dock and menu bar
 //   hidden while the game is in front (no Space animation when switching away or at vid_restart).
@@ -50,7 +51,6 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // and they come down when the game leaves fullscreen or the keyboard: Cmd+Tab, a dialog, minimize, vid_restart, quit.
 
 #import <AppKit/AppKit.h>
-#import <Carbon/Carbon.h>	// kVK_Tab
 #import <QuartzCore/CAMetalLayer.h>
 #include <IOKit/graphics/IOGraphicsTypes.h>
 
@@ -98,10 +98,8 @@ static MacOSWindowDelegate	*mac_windowDelegate;
 static macWindowMode_t		mac_windowMode;
 
 static CGDirectDisplayID	mac_display;			// the window's display
-static CGDisplayModeRef		mac_desktopMode;		// exclusive fullscreen: the display's own mode, restored
-static CGDisplayModeRef		mac_exclusiveMode;		// exclusive fullscreen: r_mode's mode, NULL if it is the desktop's
-static qboolean				mac_modeSwitched;		// mac_exclusiveMode is set on the display
 static qboolean				mac_exclusiveActive;	// the exclusive window is up (not minimized for a focus loss)
+static NSRect				mac_gameRect;			// the game's image in the content view, in points (MacOS_GameRect)
 static NSMutableArray<MacOSCoverWindow *>	*mac_covers;	// r_blackOutDisplays: one per other display, kept for reuse
 static qboolean				mac_inDialog;			// between MacOS_DialogBegin and MacOS_DialogEnd: no covers
 static int					mac_coversLogged = -1;	// the number of covered displays last logged
@@ -113,6 +111,7 @@ cvar_t *r_displayIndex; // display to open the window on (0 = main)
 cvar_t *r_metalDrawables; // CAMetalLayer.maximumDrawableCount (2 or 3; 0 = 3 for vsync in fullscreen, else 2)
 static cvar_t *r_borderlessWindow; // borderless fullscreen: 1 = a borderless window over the screen, 0 = a fullscreen Space
 static cvar_t *r_blackOutDisplays; // 1 = the other displays covered black while the game is in fullscreen in front
+static cvar_t *r_fullscreenStretch; // exclusive fullscreen at another size than the display's: 1 = stretched to the screen, 0 = its own shape
 
 static void MTLimp_EnterExclusive( void );
 static void MTLimp_LeaveExclusive( qboolean minimize );
@@ -404,7 +403,7 @@ static void MTLimp_HideCovers( void );
 		[mac_window deminiaturize:nil];
 }
 
-// displays added, removed or rearranged, or a mode changed (exclusive fullscreen's own too): the covers follow
+// displays added, removed or rearranged, or a mode changed: the covers follow
 - (void)applicationDidChangeScreenParameters:(NSNotification *)notification
 {
 	MTLimp_UpdateCovers();
@@ -534,16 +533,6 @@ static qboolean MTLimp_ModeUsable( CGDisplayModeRef mode )
 
 /*
 ===============
-MTLimp_ModeRefresh
-===============
-*/
-static int MTLimp_ModeRefresh( CGDisplayModeRef mode )
-{
-	return (int)( CGDisplayModeGetRefreshRate( mode ) + 0.5 );
-}
-
-/*
-===============
 MTLimp_CopyDisplayModes
 
 Every mode of the display, with the HiDPI ones (SDL's kCGDisplayShowDuplicateLowResolutionModes).
@@ -558,147 +547,9 @@ static CFArrayRef MTLimp_CopyDisplayModes( CGDirectDisplayID display )
 
 /*
 ===============
-MTLimp_FindDisplayMode
-
-The mode exclusive fullscreen uses for a size in points, chosen as SDL_GetClosestDisplayMode chooses: the smallest
-mode at least that large in the desktop's format, at the requested refresh rate (0: the desktop's) or the lowest
-above it, else the highest; a HiDPI mode before a 1x mode of the same size. NULL if there is none.
-===============
-*/
-static CGDisplayModeRef MTLimp_FindDisplayMode( CGDirectDisplayID display, CGDisplayModeRef desktop,
-	int width, int height, int refresh )
-{
-	CFArrayRef modes = MTLimp_CopyDisplayModes( display );
-	CGDisplayModeRef best = NULL;
-	int format = MTLimp_ModeFormat( desktop );
-	CFIndex i, count;
-
-	if( !refresh )
-		refresh = MTLimp_ModeRefresh( desktop );
-
-	count = modes ? CFArrayGetCount( modes ) : 0;
-	for( i = -1; i < count; i++ )
-	{
-		CGDisplayModeRef mode = i < 0 ? desktop : (CGDisplayModeRef)CFArrayGetValueAtIndex( modes, i );
-		int w = (int)CGDisplayModeGetWidth( mode ), h = (int)CGDisplayModeGetHeight( mode );
-		int bw, bh, r, br;
-		qboolean hidpi, bestHidpi;
-
-		if( w < width || h < height || MTLimp_ModeFormat( mode ) != format )
-			continue;
-		if( i >= 0 && !MTLimp_ModeUsable( mode ) )
-			continue;
-
-		if( !best )
-		{
-			best = mode;
-			continue;
-		}
-
-		bw = (int)CGDisplayModeGetWidth( best );
-		bh = (int)CGDisplayModeGetHeight( best );
-		if( w != bw || h != bh )
-		{
-			if( w < bw || ( w == bw && h < bh ) )
-				best = mode;
-			continue;
-		}
-
-		r = MTLimp_ModeRefresh( mode );
-		br = MTLimp_ModeRefresh( best );
-		if( r != br )
-		{
-			if( ( r >= refresh && ( br < refresh || r < br ) ) || ( br < refresh && r > br ) )
-				best = mode;
-			continue;
-		}
-
-		hidpi = CGDisplayModeGetPixelWidth( mode ) != (size_t)w;
-		bestHidpi = CGDisplayModeGetPixelWidth( best ) != (size_t)bw;
-		if( hidpi && !bestHidpi )
-			best = mode;
-	}
-
-	if( best )
-		CGDisplayModeRetain( best );
-	if( modes )
-		CFRelease( modes );
-
-	return best;
-}
-
-/*
-===============
-MTLimp_SameMode
-===============
-*/
-static qboolean MTLimp_SameMode( CGDisplayModeRef a, CGDisplayModeRef b )
-{
-	return CGDisplayModeGetWidth( a ) == CGDisplayModeGetWidth( b ) &&
-		CGDisplayModeGetHeight( a ) == CGDisplayModeGetHeight( b ) &&
-		CGDisplayModeGetPixelWidth( a ) == CGDisplayModeGetPixelWidth( b ) &&
-		CGDisplayModeGetPixelHeight( a ) == CGDisplayModeGetPixelHeight( b ) &&
-		MTLimp_ModeRefresh( a ) == MTLimp_ModeRefresh( b );
-}
-
-/*
-===============
-MTLimp_SetDisplayMode
-
-Switches the display to exclusive fullscreen's mode (on) or back to the desktop's (off), faded to black to hide
-the flicker. Like SDL: the displays are captured while the mode is switched, all of them when it is the main
-display (otherwise macOS rearranges the windows of other applications).
-===============
-*/
-static void MTLimp_SetDisplayMode( qboolean on )
-{
-	CGDisplayFadeReservationToken fade = kCGDisplayFadeReservationInvalidToken;
-	CGError err;
-
-	if( !mac_exclusiveMode || !!on == !!mac_modeSwitched )
-		return;
-
-	if( CGAcquireDisplayFadeReservation( 5, &fade ) == kCGErrorSuccess )
-		CGDisplayFade( fade, 0.3f, kCGDisplayBlendNormal, kCGDisplayBlendSolidColor, 0, 0, 0, TRUE );
-
-	if( on )
-	{
-		err = CGDisplayIsMain( mac_display ) ? CGCaptureAllDisplays() : CGDisplayCapture( mac_display );
-		if( err == kCGErrorSuccess )
-		{
-			err = CGDisplaySetDisplayMode( mac_display, mac_exclusiveMode, NULL );
-			if( err == kCGErrorSuccess )
-				mac_modeSwitched = qtrue;
-			else if( CGDisplayIsMain( mac_display ) )
-				CGReleaseAllDisplays();
-			else
-				CGDisplayRelease( mac_display );
-		}
-		if( err != kCGErrorSuccess )
-			ri.Printf( PRINT_WARNING, "Couldn't change the display mode (%d)\n", err );
-	}
-	else
-	{
-		CGDisplaySetDisplayMode( mac_display, mac_desktopMode, NULL );
-		if( CGDisplayIsMain( mac_display ) )
-			CGReleaseAllDisplays();
-		else
-			CGDisplayRelease( mac_display );
-		mac_modeSwitched = qfalse;
-	}
-
-	if( fade != kCGDisplayFadeReservationInvalidToken )
-	{
-		CGDisplayFade( fade, 0.5f, kCGDisplayBlendSolidColor, kCGDisplayBlendNormal, 0, 0, 0, FALSE );
-		CGReleaseDisplayFadeReservation( fade );
-	}
-}
-
-/*
-===============
 MTLimp_EnterExclusive
 
-Exclusive fullscreen up: the mode, the window over the screen above everything, the dock and menu bar hidden.
+Exclusive fullscreen up: the window over the screen above everything, the dock and menu bar hidden.
 ===============
 */
 static void MTLimp_EnterExclusive( void )
@@ -707,7 +558,6 @@ static void MTLimp_EnterExclusive( void )
 		return;
 
 	mac_exclusiveActive = qtrue;
-	MTLimp_SetDisplayMode( qtrue );
 	[mac_window setFrame:MTLimp_DisplayFrame( mac_display ) display:NO];
 	mac_window.level = CGShieldingWindowLevel();
 	NSApp.presentationOptions = NSApplicationPresentationHideDock | NSApplicationPresentationHideMenuBar;
@@ -719,9 +569,9 @@ static void MTLimp_EnterExclusive( void )
 ===============
 MTLimp_LeaveExclusive
 
-The focus went elsewhere: like SDL, give the desktop its mode back and minimize the window, which would otherwise
-cover everything (applicationDidBecomeActive brings it back). For a dialog the window stays, at the normal level
-under the dialog (MacOS_DialogBegin).
+The focus went elsewhere: like SDL, minimize the window, which would otherwise cover everything
+(applicationDidBecomeActive brings it back). For a dialog the window stays, at the normal level under the dialog
+(MacOS_DialogBegin).
 ===============
 */
 static void MTLimp_LeaveExclusive( qboolean minimize )
@@ -732,7 +582,6 @@ static void MTLimp_LeaveExclusive( qboolean minimize )
 	mac_exclusiveActive = qfalse;
 	MTLimp_HideCovers();
 	NSApp.presentationOptions = NSApplicationPresentationDefault;
-	MTLimp_SetDisplayMode( qfalse );
 	mac_window.level = NSNormalWindowLevel;
 	if( minimize )
 		[mac_window miniaturize:nil];
@@ -785,7 +634,7 @@ static qboolean MTLimp_WantCovers( void )
 MTLimp_NewCover
 
 A still black window for one display: opaque, no shadow, drawn once, at exclusive fullscreen's level (above every
-other application's windows, the Dock and the menu bar, and shown on displays a mode switch has captured), on every
+other application's windows, the Dock and the menu bar), on every
 Space and with other applications' fullscreen Spaces, out of Mission Control's way and of the window cycle. It never
 becomes key or main (MacOSCoverWindow) and lets clicks through: the captured cursor never reaches it (it stays at the
 game window's center), and a free one (in_mouse 0) clicks what is under it, as without the cover.
@@ -877,7 +726,7 @@ static void MTLimp_UpdateCovers( void )
 			}
 			used++;
 
-			// CGDisplayBounds: right after a mode switch NSScreen may still have the old frames
+			// CGDisplayBounds: right after a mode change NSScreen may still have the old frames
 			frame = MTLimp_DisplayFrame( displays[ i ] );
 			if( !NSEqualRects( cover.frame, frame ) )
 				[cover setFrame:frame display:NO];
@@ -920,26 +769,6 @@ static void MTLimp_DestroyCovers( void )
 
 /*
 ===============
-MacOS_SwitchKey
-
-A key going down, from the pump. Exclusive fullscreen in another mode than the desktop's has the displays captured
-(MTLimp_SetDisplayMode), and Cmd+Tab then reaches the game but never the application switcher (SDL's neither):
-leave as a focus loss does and hide, so the application before this one comes forward. Coming back (Cmd+Tab, the
-Dock) brings the window and the mode back (applicationDidBecomeActive).
-===============
-*/
-void MacOS_SwitchKey( NSEvent *event )
-{
-	if( event.keyCode == kVK_Tab && ( event.modifierFlags & NSEventModifierFlagCommand ) && mac_modeSwitched &&
-		mac_exclusiveActive )
-	{
-		MTLimp_LeaveExclusive( qtrue );
-		[NSApp hide:nil];
-	}
-}
-
-/*
-===============
 MTLimp_DestroyWindow
 ===============
 */
@@ -961,18 +790,8 @@ static void MTLimp_DestroyWindow( void )
 		mac_layer = nil;
 	}
 
-	MTLimp_SetDisplayMode( qfalse );
-	if( mac_exclusiveMode )
-	{
-		CGDisplayModeRelease( mac_exclusiveMode );
-		mac_exclusiveMode = NULL;
-	}
-	if( mac_desktopMode )
-	{
-		CGDisplayModeRelease( mac_desktopMode );
-		mac_desktopMode = NULL;
-	}
 	mac_exclusiveActive = qfalse;
+	mac_gameRect = NSZeroRect;
 	mac_windowMode = MAC_WINDOWED;
 }
 
@@ -1142,6 +961,70 @@ static void MTLimp_DetectAvailableModes(void)
 
 /*
 ===============
+MTLimp_SetGameRect
+
+Where the game's image goes in the drawable. Exclusive fullscreen at another size than the display's: the final pass
+scales the scene to the screen, each pixel from the nearest one (sharp, the user's choice): stretched to fill it with
+r_fullscreenStretch 1, else in its own shape, as large as it fits, centered between black bars. Everywhere else the
+scene has the drawable's size. The input layer maps the cursor through the same rectangle (MacOS_GameRect).
+===============
+*/
+static void MTLimp_SetGameRect( int drawableWidth, int drawableHeight, CGFloat scale )
+{
+	int x, y, width = glConfig.vidWidth, height = glConfig.vidHeight;
+
+	mac_gameRect = NSZeroRect;
+	if( width == drawableWidth && height == drawableHeight )
+	{
+		mbSetOutputRect( 0, 0, 0, 0 );
+		return;
+	}
+
+	if( r_fullscreenStretch->integer )
+	{
+		width = drawableWidth;
+		height = drawableHeight;
+	}
+	else if( (long long)width * drawableHeight > (long long)height * drawableWidth )
+	{
+		// wider than the screen: the bars above and below
+		height = (int)lround( (double)height * drawableWidth / width );
+		width = drawableWidth;
+	}
+	else
+	{
+		width = (int)lround( (double)width * drawableHeight / height );
+		height = drawableHeight;
+	}
+	x = ( drawableWidth - width ) / 2;
+	y = ( drawableHeight - height ) / 2;
+	mbSetOutputRect( x, y, width, height );
+
+	// in the view's points, y up
+	mac_gameRect = NSMakeRect( x / scale, ( drawableHeight - y - height ) / scale, width / scale, height / scale );
+
+	ri.Printf( PRINT_ALL, "Scaled to %dx%d of the %dx%d screen (%s)\n", width, height, drawableWidth, drawableHeight,
+		r_fullscreenStretch->integer ? "stretched" : "its own shape" );
+}
+
+/*
+===============
+MacOS_GameRect
+
+The game's image in the content view, in points (AppKit's, y up): the whole view, but for exclusive fullscreen at
+another size than the display's (MTLimp_SetGameRect).
+===============
+*/
+NSRect MacOS_GameRect( void )
+{
+	if( !NSIsEmptyRect( mac_gameRect ) )
+		return mac_gameRect;
+
+	return mac_view ? mac_view.bounds : NSZeroRect;
+}
+
+/*
+===============
 MTLimp_SetMode
 ===============
 */
@@ -1247,40 +1130,21 @@ static int MTLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 
 	screen = MTLimp_ScreenForDisplay( mac_display );
 	screenFrame = screen.frame;
-	scale = screen.backingScaleFactor;
 
 	switch( mac_windowMode )
 	{
 	case MAC_EXCLUSIVE:
-		glConfig.displayFrequency = ri.Cvar_VariableIntegerValue( "r_displayRefresh" );
-		mac_desktopMode = desktopMode;
-		desktopMode = NULL;
-		mac_exclusiveMode = mac_desktopMode ? MTLimp_FindDisplayMode( mac_display, mac_desktopMode,
-			windowWidth, windowHeight, glConfig.displayFrequency ) : NULL;
-		if( !mac_exclusiveMode )
+		// the display keeps its mode: the game renders at r_mode's size, scaled to the screen (MTLimp_SetGameRect)
+		contentRect = MTLimp_DisplayFrame( mac_display );
+		if( windowWidth > NSWidth( contentRect ) || windowHeight > NSHeight( contentRect ) )
 		{
-			ri.Printf( PRINT_DEVELOPER, "No display mode for %dx%d\n", windowWidth, windowHeight );
+			ri.Printf( PRINT_DEVELOPER, "%dx%d is larger than the display (%.0fx%.0f)\n", windowWidth, windowHeight,
+				NSWidth( contentRect ), NSHeight( contentRect ) );
+			if( desktopMode )
+				CGDisplayModeRelease( desktopMode );
 			MTLimp_DestroyWindow();
 			return RSERR_INVALID_FULLSCREEN;
 		}
-
-		// the mode changes only when it isn't the current one
-		if( MTLimp_SameMode( mac_exclusiveMode, mac_desktopMode ) )
-		{
-			CGDisplayModeRelease( mac_exclusiveMode );
-			mac_exclusiveMode = NULL;
-		}
-		else
-		{
-			ri.Printf( PRINT_ALL, "Display mode %dx%d (%dx%d pixels) at %d Hz\n",
-				(int)CGDisplayModeGetWidth( mac_exclusiveMode ), (int)CGDisplayModeGetHeight( mac_exclusiveMode ),
-				(int)CGDisplayModeGetPixelWidth( mac_exclusiveMode ), (int)CGDisplayModeGetPixelHeight( mac_exclusiveMode ),
-				MTLimp_ModeRefresh( mac_exclusiveMode ) );
-			MTLimp_SetDisplayMode( qtrue );
-			scale = (CGFloat)CGDisplayModeGetPixelWidth( mac_exclusiveMode ) / CGDisplayModeGetWidth( mac_exclusiveMode );
-		}
-
-		contentRect = MTLimp_DisplayFrame( mac_display );
 		style = NSWindowStyleMaskBorderless | NSWindowStyleMaskMiniaturizable;
 		break;
 
@@ -1335,7 +1199,7 @@ static int MTLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 	}
 	if( mac_windowMode == MAC_EXCLUSIVE )
 	{
-		// after a mode change NSScreen's frame may still be the old one
+		// right after a mode change (the user's) NSScreen's frame may still be the old one
 		[mac_window setFrame:contentRect display:NO];
 	}
 
@@ -1369,15 +1233,23 @@ static int MTLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 	mac_window.contentView = mac_view;
 	[mac_window makeFirstResponder:mac_view];
 
-	if( mac_windowMode != MAC_EXCLUSIVE || !mac_exclusiveMode )
-		scale = mac_window.backingScaleFactor;
+	scale = mac_window.backingScaleFactor;
 	mac_layer.contentsScale = scale;
 
-	// render at the drawable's full pixel size (Retina: 2x the window size in points)
+	// the drawable has the window's full pixel size (Retina: 2x the window size in points), and the game renders at
+	// that size, but for exclusive fullscreen: at r_mode's size in pixels, scaled to the screen in the final pass
 	drawableWidth = (int)lround( NSWidth( contentRect ) * scale );
 	drawableHeight = (int)lround( NSHeight( contentRect ) * scale );
-	glConfig.vidWidth = drawableWidth;
-	glConfig.vidHeight = drawableHeight;
+	if( mac_windowMode == MAC_EXCLUSIVE )
+	{
+		glConfig.vidWidth = (int)lround( windowWidth * scale );
+		glConfig.vidHeight = (int)lround( windowHeight * scale );
+	}
+	else
+	{
+		glConfig.vidWidth = drawableWidth;
+		glConfig.vidHeight = drawableHeight;
+	}
 
 	mac_layer.opaque = YES;
 	// Fullscreen goes direct to display, and there vsync with 2 drawables ran the game at half the refresh rate
@@ -1390,6 +1262,7 @@ static int MTLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder)
 	mac_layer.displaySyncEnabled = r_swapInterval->integer ? YES : NO;
 	mac_layer.presentsWithTransaction = NO;
 	mac_layer.drawableSize = CGSizeMake( drawableWidth, drawableHeight );
+	MTLimp_SetGameRect( drawableWidth, drawableHeight, scale );
 
 	if( !mbInit( (__bridge void *)mac_layer ) )
 	{
@@ -1533,6 +1406,7 @@ void MTLimp_Init( qboolean fixedFunction )
 	r_borderlessWindow = ri.Cvar_Get( "r_borderlessWindow", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	// not latched: MTLimp_EndFrame puts the covers up or down at once
 	r_blackOutDisplays = ri.Cvar_Get( "r_blackOutDisplays", "1", CVAR_ARCHIVE );
+	r_fullscreenStretch = ri.Cvar_Get( "r_fullscreenStretch", "0", CVAR_ARCHIVE | CVAR_LATCH );
 
 	// Create the window and its Metal layer
 	if(MTLimp_StartDriverAndSetMode(r_mode->integer, r_fullscreen->integer, r_noborder->integer))
@@ -1625,10 +1499,9 @@ void MTLimp_EndFrame( void )
 MacOS_DialogBegin
 
 A dialog is coming (Sys_Dialog, sys_osx.m: a modal NSAlert, mostly Sys_Error's last words). It must be seen and
-clicked: exclusive fullscreen's window at the shielding level and the displays captured for a mode switch would
-cover it, and a captured cursor couldn't reach it. So the cursor goes back to the system (where it was parked, the
-window's center) and exclusive fullscreen is left: the desktop's mode back, the displays released, the window at the
-normal level under the dialog, not minimized. The covers of the other displays come down in every mode (the alert
+clicked: exclusive fullscreen's window at the shielding level would cover it, and a captured cursor couldn't reach
+it. So the cursor goes back to the system (where it was parked, the window's center) and exclusive fullscreen is
+left: the window at the normal level under the dialog, not minimized. The covers of the other displays come down in every mode (the alert
 may open on any display). The alert takes the keyboard (windowDidResignKey then finds exclusive fullscreen left
 already).
 ===============

@@ -16,7 +16,7 @@
 #                                      covers the dialog, the cursor, the display; the logs side by side, no verdict
 #                                      (the layers differ on purpose). <mode>: win (a 1280x720 window), full
 #                                      (exclusive fullscreen at the desktop's 1920x1080), full720 (exclusive at
-#                                      1280x720: the display mode switched and the displays captured), space
+#                                      1280x720: a mode switch until session 80, now scaled to the screen), space
 #                                      (borderless fullscreen, a Space)
 # The runs set ui_console 1: without it MOHAA's console key opens nothing. Each run opens the game for ~15 s and
 # takes the keyboard focus: don't type meanwhile. The mouse runs capture the real cursor (warped to the window's

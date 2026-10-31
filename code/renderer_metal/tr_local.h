@@ -1508,7 +1508,6 @@ extern cvar_t	*r_vidmode1024;
 extern cvar_t	*r_vidmodemax;
 extern cvar_t	*r_fullscreen;
 extern cvar_t	*r_gamma;
-extern cvar_t	*r_displayRefresh;		// optional display refresh option
 extern cvar_t	*r_ignorehwgamma;		// overrides hardware gamma capabilities
 
 extern cvar_t	*r_ext_compressed_textures;		// these control use of specific extensions
