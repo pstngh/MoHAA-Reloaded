@@ -155,13 +155,13 @@ final class CoreTests: XCTestCase {
             raiseSmallResolution(&e)
             return e
         }
-        var e = raised(["r_mode": "1"])
-        XCTAssertEqual([e.get("r_mode"), e.get("r_customwidth"), e.get("r_customheight")], ["-1", "640", "480"])
-        XCTAssertEqual(e.changes.count, 3)
+        var small = raised(["r_mode": "1"])
+        XCTAssertEqual([small.get("r_mode"), small.get("r_customwidth"), small.get("r_customheight")], ["-1", "640", "480"])
+        XCTAssertEqual(small.changes.count, 3)
         XCTAssertTrue(raised(["r_mode": "11"]).changes.isEmpty)
         XCTAssertTrue(raised(["r_mode": "-2"]).changes.isEmpty)
-        e = raised(["r_mode": "-1", "r_customwidth": "320", "r_customheight": "200"])
-        XCTAssertEqual([e.get("r_customwidth"), e.get("r_customheight")], ["640", "480"])
+        small = raised(["r_mode": "-1", "r_customwidth": "320", "r_customheight": "200"])
+        XCTAssertEqual([small.get("r_customwidth"), small.get("r_customheight")], ["640", "480"])
 
         XCTAssertEqual(aspectRatio(1920, 1080), "16:9")
         XCTAssertEqual(aspectRatio(1366, 768), "16:9")
