@@ -254,12 +254,14 @@ jobs:
 
     - name: Build the launcher
       working-directory: ${{github.workspace}}/source/launcher/desktop
-      # bash stops at the first command that fails
-      shell: bash
+      # PowerShell, as the rest of the job: Git's bash would find its own link.exe before Visual Studio's. It
+      # doesn't stop at a command that fails, so each one's exit code is checked.
       run: |
         cargo test --locked
+        if ($LASTEXITCODE) { exit $LASTEXITCODE }
         cargo build --release --locked
-        cp target/release/mohlauncher.exe '${{github.workspace}}/package/'
+        if ($LASTEXITCODE) { exit $LASTEXITCODE }
+        Copy-Item target/release/mohlauncher.exe -Destination '${{github.workspace}}/package'
 
     ###
     # Artifact: the game's files only (no symbols, no installer)
