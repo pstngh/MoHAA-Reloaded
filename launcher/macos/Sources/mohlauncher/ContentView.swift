@@ -512,14 +512,23 @@ struct CrosshairPreview: View {
     }
 }
 
-/// r_mode with r_customwidth and r_customheight; r_fullscreen, r_noborder and r_borderlessWindow
+/// r_mode with r_customwidth and r_customheight, r_fullscreenStretch; r_fullscreen, r_noborder and r_borderlessWindow
 struct DisplaySection: View {
     @EnvironmentObject var model: LauncherModel
 
     var body: some View {
         let mode = model.displayMode.wrappedValue
         VStack(alignment: .leading, spacing: Metrics.gap) {
-            Field("Resolution") {
+            Field("Resolution", accessory: {
+                LabelAction(systemImage: model.stretch ? "checkmark.square.fill" : "square", title: "Stretch",
+                            active: model.stretch, enabled: model.stretchApplies) {
+                    model.stretch.toggle()
+                }
+                .help(model.stretchApplies
+                      ? "Fill the screen with this size, stretched. Off: its own shape, with black bars at the sides."
+                      : mode == .exclusive ? "This size has the screen's shape: it fills the screen either way"
+                      : "Only exclusive fullscreen scales the game to the screen")
+            }) {
                 Picker("Resolution", selection: model.resolution) {
                     ForEach(model.resolutionEntries) { entry in
                         Text(entry.label).tag(entry)

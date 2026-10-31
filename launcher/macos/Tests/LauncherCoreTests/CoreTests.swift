@@ -147,6 +147,9 @@ final class CoreTests: XCTestCase {
             XCTAssertFalse(list.contains(Resolution(w, h)))
         }
         XCTAssertEqual(list.last, Resolution(640, 480))
+        // 4:3 at the screen's height, where it fits
+        XCTAssertTrue(list.contains(Resolution(1440, 1080)))
+        XCTAssertFalse(resolutionList(displayModes: [], desktop: Resolution(1366, 768)).contains(Resolution(1440, 1080)))
 
         // below 640 x 480: 640 x 480, passed as a change
         func raised(_ config: Cvars) -> CvarEdits {
@@ -172,6 +175,14 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(aspectRatio(3440, 1440), "21:9")
         XCTAssertEqual(aspectRatio(5120, 1440), "32:9")
         XCTAssertEqual(aspectRatio(1000, 1000), "1:1")
+
+        // r_fullscreenStretch only changes a size of another shape than the screen's
+        let screen = Resolution(1920, 1080)
+        XCTAssertTrue(stretchMatters(Resolution(1440, 1080), desktop: screen))
+        XCTAssertTrue(stretchMatters(Resolution(1280, 1024), desktop: screen))
+        XCTAssertFalse(stretchMatters(Resolution(1280, 720), desktop: screen))
+        XCTAssertFalse(stretchMatters(Resolution(1920, 1080), desktop: screen))
+        XCTAssertTrue(stretchMatters(Resolution(1280, 720), desktop: Resolution(0, 0)))
     }
 
     func testSettingsAndServers() throws {

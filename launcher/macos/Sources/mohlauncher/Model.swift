@@ -36,6 +36,7 @@ final class LauncherModel: ObservableObject {
         ("r_fullscreen", "1"),
         ("r_noborder", "0"),
         ("r_borderlessWindow", "0"),
+        ("r_fullscreenStretch", "0"),
     ]
 
     nonisolated static let colorPresets = [
@@ -353,6 +354,19 @@ final class LauncherModel: ObservableObject {
             DisplayMode(fullscreen: self.edits.get("r_fullscreen"), noborder: self.edits.get("r_noborder"),
                         borderlessWindow: self.edits.get("r_borderlessWindow"))
         }, set: { $0.apply(to: &self.edits) })
+    }
+
+    /// r_fullscreenStretch: exclusive fullscreen at a size of another shape than the screen's fills it, stretched
+    var stretch: Bool {
+        get { (Int(edits.get("r_fullscreenStretch")) ?? 0) != 0 }
+        set { edits.set("r_fullscreenStretch", newValue ? "1" : "0") }
+    }
+
+    /// Only exclusive fullscreen scales the game to the screen, and only another shape than the screen's has bars
+    var stretchApplies: Bool {
+        let size = currentResolution
+        return displayMode.wrappedValue == .exclusive
+            && stretchMatters(Resolution(size.width, size.height), desktop: desktop)
     }
 
     var resolutionEntries: [ResolutionEntry] {

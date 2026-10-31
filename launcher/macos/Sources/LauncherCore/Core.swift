@@ -342,7 +342,8 @@ public func aspectRatio(_ width: Int, _ height: Int) -> String {
 public func resolutionList(displayModes: [Resolution], desktop: Resolution) -> [Resolution] {
     let common = [
         (3840, 2160), (3440, 1440), (2560, 1600), (2560, 1440), (2560, 1080), (1920, 1200), (1920, 1080),
-        (1680, 1050), (1600, 900), (1440, 900), (1366, 768), (1280, 1024), (1280, 960), (1280, 800), (1280, 720),
+        (1680, 1050), (1600, 900), (1440, 1080), (1440, 900), (1366, 768), (1280, 1024), (1280, 960), (1280, 800),
+        (1280, 720),
         (1024, 768), (800, 600), (640, 480),
     ].map { Resolution($0.0, $0.1) }
     var list: [Resolution] = []
@@ -355,6 +356,13 @@ public func resolutionList(displayModes: [Resolution], desktop: Resolution) -> [
         add(r)
     }
     return list.sorted { $0.width != $1.width ? $0.width > $1.width : $0.height > $1.height }
+}
+
+/// Exclusive fullscreen scales a size to the screen: one of another shape than the screen's keeps its shape between
+/// black bars, or with r_fullscreenStretch 1 fills the screen stretched; one of the screen's shape fills it either way
+/// (an unknown screen: it may matter)
+public func stretchMatters(_ size: Resolution, desktop: Resolution) -> Bool {
+    desktop.width <= 0 || desktop.height <= 0 || size.width * desktop.height != size.height * desktop.width
 }
 
 /// A data folder (main, mainta, maintt), in any case: retail folders sometimes come as MAIN or MainTA
