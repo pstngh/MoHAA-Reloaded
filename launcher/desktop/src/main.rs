@@ -99,30 +99,35 @@ impl State {
         state
     }
 
-    fn game_folder(&self) -> PathBuf {
-        self.settings.game_folder.as_ref().map_or_else(|| self.own_folder.clone(), PathBuf::from)
+    /// The game folder: the first with the game's data (main/Pak0.pk3) of the one chosen last, the launcher's own
+    /// and the current folder
+    fn game_folder(&self) -> Option<PathBuf> {
+        let chosen = self.settings.game_folder.as_ref().map(PathBuf::from);
+        let current = std::env::current_dir().ok();
+        [chosen, Some(self.own_folder.clone()), current].into_iter().flatten().find(|f| platform::has_game_data(f))
     }
 
-    fn game_exe(&self) -> PathBuf {
-        self.game_folder().join(platform::GAME_EXE)
+    /// The game: beside the launcher (the download's folder), else in the game folder
+    fn game_exe(&self) -> Option<PathBuf> {
+        [Some(self.own_folder.clone()), self.game_folder()]
+            .into_iter()
+            .flatten()
+            .map(|folder| folder.join(platform::GAME_EXE))
+            .find(|exe| exe.is_file())
     }
 
-    fn game_found(&self) -> bool {
-        self.game_exe().is_file()
+    fn can_start(&self) -> bool {
+        !self.running && self.game_folder().is_some() && self.game_exe().is_some()
     }
 
-    /// An expansion without its data can't start; without main/ nobody knows, so all stay open
+    /// An expansion without its data can't start
     fn available(&self, game: usize) -> bool {
-        let folder = self.game_folder();
-        game == 0
-            || !self.game_found()
-            || !platform::has_subdir(&folder, GAME_DIRS[0])
-            || platform::has_subdir(&folder, GAME_DIRS[game])
+        game == 0 || self.game_folder().is_none_or(|folder| platform::has_subdir(&folder, GAME_DIRS[game]))
     }
 
     fn config_path(&self) -> Option<PathBuf> {
         let mut homes = platform::engine_homes();
-        homes.push(self.game_folder());
+        homes.extend(self.game_folder());
         find_config(&homes, self.game)
     }
 
@@ -148,17 +153,18 @@ impl State {
     }
 
     fn status(&self) -> String {
-        let folder = self.game_folder().display().to_string();
+        let Some(folder) = self.game_folder() else {
+            return "No game found: choose your MOHAA folder.".into();
+        };
+        let folder = folder.display().to_string();
         // the home folder as ~ on Linux
         #[cfg(not(windows))]
         let folder = match std::env::var("HOME") {
             Ok(home) if !home.is_empty() && folder.starts_with(&home) => format!("~{}", &folder[home.len()..]),
             _ => folder,
         };
-        if !self.game_found() {
-            format!("{} isn't in {folder}: choose the game folder.", platform::GAME_EXE)
-        } else if !platform::has_subdir(&self.game_folder(), GAME_DIRS[0]) {
-            format!("No game data (main/ with Pak0.pk3 to Pak6.pk3) in {folder}.")
+        if self.game_exe().is_none() {
+            format!("{} isn't beside the launcher or in {folder}.", platform::GAME_EXE)
         } else if self.running {
             format!("{} is running.", GAME_TITLES[self.game])
         } else {
@@ -204,7 +210,7 @@ fn show_status(ui: &LauncherWindow, st: &State) {
     ui.set_sh_available(st.available(1));
     ui.set_bt_available(st.available(2));
     ui.set_status(st.status().into());
-    let can_start = st.game_found() && !st.running;
+    let can_start = st.can_start();
     ui.set_can_start(can_start);
     ui.set_can_connect(can_start && !st.slot().address.trim().is_empty());
 }
@@ -331,11 +337,22 @@ fn select_game(ui: &LauncherWindow, st: &mut State, game: usize) {
     show_all(ui, st);
 }
 
+const FIND_GAME_TEXT: &str = "Choose the folder Medal of Honor: Allied Assault is installed in: the one with main/ \
+     (Pak0.pk3 to Pak6.pk3), and mainta/ and maintt/ for the expansions.";
+
+/// The prompt for the game folder, over the window
+fn ask_for_folder(ui: &LauncherWindow, st: &mut State, title: &str, text: &str) {
+    show_dialog(ui, st, Dialog::ChooseFolder, title, text, "Choose folder\u{2026}", "Not now");
+}
+
 /// The native folder dialog, modal to the window; the state isn't borrowed while it is open
 fn choose_folder(ui: &LauncherWindow, state: &Shared) {
-    let start_dir = state.borrow().game_folder();
+    let start_dir = {
+        let st = state.borrow();
+        st.game_folder().unwrap_or_else(|| st.own_folder.clone())
+    };
     let Some(folder) = rfd::FileDialog::new()
-        .set_title("Choose your MOHAA folder: the one with the game and main/")
+        .set_title("Choose your MOHAA folder: the one with main/")
         .set_directory(start_dir)
         .set_parent(&ui.window().window_handle())
         .pick_folder()
@@ -343,6 +360,11 @@ fn choose_folder(ui: &LauncherWindow, state: &Shared) {
         return;
     };
     let mut st = state.borrow_mut();
+    if !platform::has_game_data(&folder) {
+        let text = format!("{} has no main/ with Pak0.pk3.\n\n{FIND_GAME_TEXT}", folder.display());
+        ask_for_folder(ui, &mut st, "No game there", &text);
+        return;
+    }
     let same = folder.canonicalize().ok() == st.own_folder.canonicalize().ok();
     st.settings.game_folder = if same { None } else { Some(folder.display().to_string()) };
     if !st.available(st.game) {
@@ -351,10 +373,6 @@ fn choose_folder(ui: &LauncherWindow, state: &Shared) {
     st.reload_config();
     st.save();
     show_all(ui, &mut st);
-    if !st.game_found() {
-        let text = format!("{} isn't in {}.", platform::GAME_EXE, folder.display());
-        show_dialog(ui, &mut st, Dialog::Message, "No game there", &text, "OK", "");
-    }
 }
 
 fn start(ui: &LauncherWindow, state: &Shared, connect: bool) {
@@ -362,15 +380,19 @@ fn start(ui: &LauncherWindow, state: &Shared, connect: bool) {
     if st.running || st.dialog != Dialog::None {
         return;
     }
-    if !st.game_found() {
-        let text = format!(
-            "{} isn't in {}.\n\nPut MoHAA Launcher in your MOHAA folder, beside the game, or choose that folder.",
-            platform::GAME_EXE,
-            st.game_folder().display()
-        );
-        show_dialog(ui, &mut st, Dialog::ChooseFolder, "Game not found", &text, "Choose folder\u{2026}", "Cancel");
+    let Some(folder) = st.game_folder() else {
+        ask_for_folder(ui, &mut st, "Where is MOHAA?", FIND_GAME_TEXT);
         return;
-    }
+    };
+    let Some(exe) = st.game_exe() else {
+        let text = format!(
+            "{} isn't beside the launcher or in {}: keep MoHAA Launcher with the files of the download it came in.",
+            platform::GAME_EXE,
+            folder.display()
+        );
+        show_dialog(ui, &mut st, Dialog::Message, "The game isn't here", &text, "OK", "");
+        return;
+    };
     let slot = st.slot().clone();
     let address = slot.address.trim().to_string();
     if connect && address.is_empty() {
@@ -380,6 +402,10 @@ fn start(ui: &LauncherWindow, state: &Shared, connect: bool) {
     // what the config holds now, so that only the changes made here are passed
     st.reload_config();
     let mut launch = Launch { game: st.game, ..Default::default() };
+    // the game finds its data beside itself; elsewhere it's told where
+    if exe.parent().and_then(|p| p.canonicalize().ok()) != folder.canonicalize().ok() {
+        launch.basepath = folder.display().to_string();
+    }
     for (name, value) in st.edits.changes() {
         if name == "name" {
             let name_value = value.trim();
@@ -399,10 +425,7 @@ fn start(ui: &LauncherWindow, state: &Shared, connect: bool) {
     }
     st.save();
 
-    let child = std::process::Command::new(st.game_exe())
-        .args(build_args(&launch))
-        .current_dir(st.game_folder())
-        .spawn();
+    let child = std::process::Command::new(&exe).args(build_args(&launch)).current_dir(&folder).spawn();
     match child {
         Ok(mut child) => {
             st.running = true;
@@ -414,7 +437,7 @@ fn start(ui: &LauncherWindow, state: &Shared, connect: bool) {
             });
         }
         Err(error) => {
-            let text = format!("{}: {error}", st.game_exe().display());
+            let text = format!("{}: {error}", exe.display());
             show_dialog(ui, &mut st, Dialog::Message, "The game didn't start", &text, "OK", "");
         }
     }
@@ -459,7 +482,14 @@ fn dialog_accepted(ui: &LauncherWindow, st: &mut State) {
 fn main() -> Result<(), slint::PlatformError> {
     let ui = LauncherWindow::new()?;
     let state: Shared = Rc::new(RefCell::new(State::new()));
-    show_all(&ui, &mut state.borrow_mut());
+    {
+        let mut st = state.borrow_mut();
+        show_all(&ui, &mut st);
+        // no game data beside the launcher, in the current folder or where it was last: ask where it is
+        if st.game_folder().is_none() {
+            ask_for_folder(&ui, &mut st, "Where is MOHAA?", FIND_GAME_TEXT);
+        }
+    }
 
     // Wires a callback to a closure that gets the window and the state
     macro_rules! on {

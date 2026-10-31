@@ -221,6 +221,8 @@ pub fn engine_arg(value: &str) -> String {
 
 #[derive(Clone, Debug, Default)]
 pub struct Launch {
+    /// fs_basepath: the game folder when the game isn't in it, else empty
+    pub basepath: String,
     pub game: usize,
     pub cvars: Vec<(String, String)>,
     pub address: String,
@@ -228,12 +230,16 @@ pub struct Launch {
     pub rcon: String,
 }
 
-/// The game's arguments: +set com_target_game N, the cvars, the passwords, +connect
+/// The game's arguments: +set fs_basepath, +set com_target_game N, the cvars, the passwords, +connect
 pub fn build_args(launch: &Launch) -> Vec<String> {
-    let mut args: Vec<String> = vec!["+set".into(), "com_target_game".into(), launch.game.to_string()];
+    let mut args: Vec<String> = Vec::new();
     let mut set = |name: &str, value: &str| {
         args.extend(["+set".to_string(), name.to_string(), engine_arg(value)]);
     };
+    if !launch.basepath.is_empty() {
+        set("fs_basepath", &launch.basepath);
+    }
+    set("com_target_game", &launch.game.to_string());
     for (name, value) in &launch.cvars {
         set(name, value);
     }
@@ -610,6 +616,7 @@ mod tests {
         assert_eq!(engine_arg("\u{00FC}n\u{00EF}"), "\u{00FC}n\u{00EF}");
 
         let launch = Launch {
+            basepath: String::new(),
             game: 1,
             cvars: vec![("name".into(), "A B".into()), ("cg_crosshair_color".into(), "00FF00".into())],
             address: "1.2.3.4:12203".into(),
@@ -622,6 +629,8 @@ mod tests {
         ];
         assert_eq!(build_args(&launch), want);
         assert_eq!(build_args(&Launch::default()), ["+set", "com_target_game", "0"]);
+        let elsewhere = Launch { basepath: "/games/MOH AA".into(), ..Default::default() };
+        assert_eq!(build_args(&elsewhere), ["+set", "fs_basepath", "/games/MOH AA", "+set", "com_target_game", "0"]);
     }
 
     #[test]

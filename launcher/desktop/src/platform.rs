@@ -64,6 +64,22 @@ pub fn has_subdir(folder: &Path, name: &str) -> bool {
     })
 }
 
+/// The retail game's data: main/Pak0.pk3, in any case
+pub fn has_game_data(folder: &Path) -> bool {
+    let find = |dir: &Path, name: &str| -> Option<PathBuf> {
+        let exact = dir.join(name);
+        if exact.exists() {
+            return Some(exact);
+        }
+        std::fs::read_dir(dir)
+            .ok()?
+            .flatten()
+            .find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(name))
+            .map(|e| e.path())
+    };
+    find(folder, "main").filter(|m| m.is_dir()).and_then(|main| find(&main, "Pak0.pk3")).is_some_and(|p| p.is_file())
+}
+
 /// The display's own sizes and the desktop's
 #[cfg(windows)]
 pub fn display_sizes() -> (Vec<Resolution>, Option<Resolution>) {
