@@ -26,9 +26,9 @@ struct ResolutionEntry: Hashable, Identifiable {
 final class LauncherModel: ObservableObject {
     nonisolated static let cvarDefaults: [(String, String)] = [
         ("name", ""),
-        ("cg_crosshair_length", "4"),
-        ("cg_crosshair_gap", "3"),
-        ("cg_crosshair_thickness", "1"),
+        ("cg_crosshair_length", "8"),
+        ("cg_crosshair_gap", "4"),
+        ("cg_crosshair_thickness", "2"),
         ("cg_crosshair_color", "FFFFFF"),
         ("r_mode", "-2"),
         ("r_customwidth", "1600"),

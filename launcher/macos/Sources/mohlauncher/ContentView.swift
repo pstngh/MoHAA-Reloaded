@@ -410,7 +410,7 @@ struct CrosshairSection: View {
                     FieldLabel(text: "Crosshair")
                     Spacer(minLength: 4)
                     LabelAction(systemImage: nil, title: "Reset") { model.resetCrosshair() }
-                        .help("The stock crosshair: length 4, gap 3, thickness 1, white")
+                        .help("CS2's default crosshair, white: length 8, gap 4, thickness 2")
                 }
                 .frame(height: Metrics.labelHeight)
                 CrosshairPreview(length: Double(model.number("cg_crosshair_length", 1...128).wrappedValue),
