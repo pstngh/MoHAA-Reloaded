@@ -1794,6 +1794,9 @@ void R_RenderView (viewParms_t *parms) {
 
 	R_GenerateDrawSurfs();
 
+	// the lens flares' traces for this view, for the back end
+	R_FlareTraces();
+
     R_SortDrawSurfs(
 		tr.refdef.drawSurfs + firstDrawSurf, tr.refdef.numDrawSurfs - firstDrawSurf,
 		tr.refdef.spriteSurfs + firstSpriteSurf, tr.refdef.numSpriteSurfs - firstSpriteSurf

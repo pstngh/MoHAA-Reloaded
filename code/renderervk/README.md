@@ -7572,6 +7572,14 @@ selects the sample count (see Implementation notes).
     flare code reads `backEnd.viewParms.world` and `backEnd.refdef` now.
     A back-end function with a front-end name hid it from a search of
     `RB_*` for the front end's view setup: search by what is written.
+    The flares' line-of-sight traces (`CM_BoxTrace`, whose check counters
+    live in the clipmap the game traces with on the main thread) moved to
+    the front end too: `R_FlareTraces` (called by `R_RenderView`) tests
+    the flares in view with the view's matrices, traces them and keeps a
+    bit per entity and dynamic light, and the sun's, in `viewParms_t`;
+    the thread's `CheckRay` returns the bit. The sun's flare is loaded
+    there as well (shaders are the front end's). Outside at mohdm6 the
+    frame rate is unchanged (5,273 against 5,268 fps).
   - A shader made during play (an effect's first spawn, a model first
     seen) moves the shaders above it in `tr.sortedShaders`, which the
     sort keys name shaders by (`R_DecomposeSort`): the thread decoding

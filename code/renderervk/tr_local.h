@@ -770,6 +770,14 @@ typedef struct {
 	// frame being built by then)
 	qboolean	skyRendered, portalRendered;
 	int			farclip;
+	// the lens flares' lines of sight, traced by the front end for the
+	// view (R_FlareTraces, tr_sun_flare.cpp): a bit per entity and per
+	// dynamic light whose flare is in view, and the sun's. The thread's
+	// R_DrawLensFlares reads them: CM_BoxTrace keeps its counters in the
+	// clipmap, which the game traces with on the main thread
+	uint32_t	flareEntsVisible[( MAX_REFENTITIES + 31 ) / 32];
+	uint32_t	flareDlightsVisible;
+	qboolean	sunFlareVisible;
 } viewParms_t;
 
 
@@ -2526,6 +2534,7 @@ SUN FLARE
 =============================================================
 */
 void R_InitLensFlare();
+void R_FlareTraces();
 void R_DrawLensFlares();
 
 /*

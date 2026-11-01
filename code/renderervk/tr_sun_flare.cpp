@@ -72,6 +72,9 @@ public:
     qboolean initted;
 
 public:
+    // the front end's trace for the flare being tried (R_FlareTraces),
+    // what CheckRay returns on the render thread
+    bool rayVisible;
     lens_flare()
     {
         color[0] = 1.0;
@@ -79,8 +82,13 @@ public:
         color[2] = 1.0;
         alpha    = 1.0;
         initted  = false;
+        rayVisible = false;
     }
 
+    // the front end's test of a flare at vect for the view being built
+    // (ScreenCalc and CheckRange with the view's matrices), with the end
+    // of its line of sight (SetVect's trace_v)
+    bool         InView(const viewParms_t *vp, trRefdef_t *rd, const float *vect, bool portalSky, vec3_t traceEnd) const;
     bool         CheckRange();
     bool         CheckRay();
     bool         ScreenCalc();
@@ -119,6 +127,8 @@ public:
     bool SunCheckRay();
     void SunScreenCalc();
     void SunTry();
+    // the front end's line of sight to the sun for the view being built
+    static bool SunLineOfSight(const viewParms_t *vp, trRefdef_t *rd);
 };
 
 lens_flare        torches;
@@ -167,14 +177,80 @@ bool lens_flare::CheckRange()
 
 bool lens_flare::CheckRay()
 {
-    trace_t trace;
+    // traced by the front end for the view (R_FlareTraces)
+    return rayVisible;
+}
 
-    ri.CM_BoxTrace(&trace, backEnd.viewParms.ori.origin, trace_v, vec3_origin, vec3_origin, 0, CONTENTS_SOLID, qfalse);
-    if (inportalsky) {
+/*
+=================
+R_FlareLineOfSight
+
+The trace of lens_flare::CheckRay, on the main thread: CM_BoxTrace keeps
+its check counters in the clipmap, which the game's traces share
+=================
+*/
+static bool R_FlareLineOfSight(const viewParms_t *vp, const vec3_t end, bool portalSky)
+{
+    trace_t trace;
+    vec3_t  start, stop;
+
+    VectorCopy(vp->ori.origin, start);
+    VectorCopy(end, stop);
+    ri.CM_BoxTrace(&trace, start, stop, vec3_origin, vec3_origin, 0, CONTENTS_SOLID, qfalse);
+    if (portalSky) {
         return (trace.surfaceFlags & 4) != 0;
     }
 
     return trace.fraction == 1.0;
+}
+
+bool lens_flare::InView(const viewParms_t *vp, trRefdef_t *rd, const float *vect, bool portalSky, vec3_t traceEnd) const
+{
+    vec3_t at, diff;
+    vec4_t eye, clip, point;
+    float  d;
+    int    i, j;
+
+    // SetVect
+    if (portalSky) {
+        vec3_t offset, rot_offset;
+
+        VectorSubtract(vect, rd->sky_origin, offset);
+        VectorRotate(offset, rd->sky_axis, rot_offset);
+        VectorAdd(rd->vieworg, rot_offset, at);
+        VectorNormalize(offset);
+        VectorMA(rd->vieworg, 16384, offset, traceEnd);
+    } else {
+        VectorCopy(vect, at);
+        VectorCopy(vect, traceEnd);
+    }
+
+    // ScreenCalc
+    VectorCopy(at, point);
+    point[3] = 1.0;
+    VectorClear4(eye);
+    for (i = 0; i < 4; i++) {
+        for (j = 0; j < 4; j++) {
+            eye[i] += point[j] * vp->world.modelMatrix[i + j * 4];
+        }
+    }
+    VectorClear4(clip);
+    for (i = 0; i < 4; i++) {
+        for (j = 0; j < 4; j++) {
+            clip[i] += eye[j] * vp->projectionMatrix[i + j * 4];
+        }
+    }
+    for (i = 0; i < 3; i++) {
+        if (clip[i] >= clip[3] || clip[i] <= -clip[3]) {
+            return false;
+        }
+    }
+
+    // CheckRange (and dlight_lens_flare::Try's dot > 0)
+    VectorSubtract(at, vp->ori.origin, diff);
+    VectorNormalizeFast(diff);
+    d = DotProduct(vp->ori.axis[0], diff);
+    return d > dot_min && d > 0;
 }
 
 bool lens_flare::ScreenCalc()
@@ -477,7 +553,7 @@ void lens_flare::Init(const char *which)
     if (!num_flares) {
         ri.Printf(PRINT_WARNING, "WARNING: no lensflares defined!\n");
     }
-    lasttime = backEnd.refdef.time - fullfade;
+    lasttime = tr.refdef.time - fullfade;
 }
 
 static void R_DrawSunFlare()
@@ -485,17 +561,8 @@ static void R_DrawSunFlare()
     if (!s_sun.exists) {
         return;
     }
+    // loaded by the front end (R_FlareTraces)
     if (!sunFlare.initted) {
-        if (!s_sun.szFlareName[0]) {
-            return;
-        }
-        if (Q_stricmp(s_sun.szFlareName, "none")) {
-            sunFlare.Init(s_sun.szFlareName);
-        }
-    }
-
-    if (!sunFlare.initted) {
-        s_sun.szFlareName[0] = 0;
         return;
     }
 
@@ -568,6 +635,7 @@ void R_DrawLensFlares()
             rgb[1] = backEnd.refdef.entities[i].e.shaderRGBA[1] / 255.0;
             rgb[2] = backEnd.refdef.entities[i].e.shaderRGBA[2] / 255.0;
             dlights.SetColor(rgb);
+            dlights.rayVisible = (backEnd.viewParms.flareEntsVisible[i >> 5] >> (i & 31)) & 1;
 
             dlights.Try();
         }
@@ -587,6 +655,7 @@ void R_DrawLensFlares()
             rgb[1] = backEnd.refdef.entities[i].e.shaderRGBA[1] / 255.0;
             rgb[2] = backEnd.refdef.entities[i].e.shaderRGBA[2] / 255.0;
             torches.SetColor(rgb);
+            torches.rayVisible = (backEnd.viewParms.flareEntsVisible[i >> 5] >> (i & 31)) & 1;
 
             torches.Try();
         }
@@ -598,6 +667,7 @@ void R_DrawLensFlares()
             dlights.NotInPortalSky();
             dlights.SetVect(backEnd.refdef.dlights[i].origin);
             dlights.SetColor(backEnd.refdef.dlights[i].color);
+            dlights.rayVisible = (backEnd.viewParms.flareDlightsVisible >> i) & 1;
 
             dlights.Try();
         }
@@ -610,6 +680,71 @@ void R_DrawLensFlares()
     RB_SetModelview(savedModelview);
 }
 
+/*
+=================
+R_FlareTraces
+
+The front end's part of R_DrawLensFlares for the view being built
+(R_RenderView): the lines of sight of the flares in view, traced here
+since CM_BoxTrace keeps its counters in the clipmap, the main thread's,
+and kept in the view for the render thread; the sun's flare is loaded
+here too (shaders are the front end's)
+=================
+*/
+void R_FlareTraces()
+{
+    viewParms_t *vp = &tr.viewParms;
+    trRefdef_t  *rd = &tr.refdef;
+    int          i;
+
+    Com_Memset(vp->flareEntsVisible, 0, sizeof(vp->flareEntsVisible));
+    vp->flareDlightsVisible = 0;
+    vp->sunFlareVisible     = qfalse;
+    if (rd->rdflags & RDF_HUD) {
+        return;
+    }
+
+    if (s_sun.exists) {
+        if (!sunFlare.initted && s_sun.szFlareName[0]) {
+            if (Q_stricmp(s_sun.szFlareName, "none")) {
+                sunFlare.Init(s_sun.szFlareName);
+            }
+            if (!sunFlare.initted) {
+                s_sun.szFlareName[0] = 0;
+            }
+        }
+        if (sunFlare.initted && sunFlare.num_flares) {
+            vp->sunFlareVisible = sun_flare_class::SunLineOfSight(vp, rd);
+        }
+    }
+
+    for (i = 0; i < rd->num_entities && i < MAX_REFENTITIES; i++) {
+        const refEntity_t *e      = &rd->entities[i].e;
+        bool               skyEnt = (e->renderfx & RF_SKYENTITY) != 0;
+        vec3_t             end;
+
+        if (vp->isPortalSky ? !skyEnt : skyEnt) {
+            continue;
+        }
+        if (((e->renderfx & RF_LENSFLARE) && dlights.InView(vp, rd, e->origin, skyEnt, end))
+            || ((e->renderfx & RF_VIEWLENSFLARE) && torches.InView(vp, rd, e->origin, skyEnt, end))) {
+            if (R_FlareLineOfSight(vp, end, skyEnt)) {
+                vp->flareEntsVisible[i >> 5] |= 1u << (i & 31);
+            }
+        }
+    }
+
+    for (i = 0; i < rd->num_dlights && i < MAX_DLIGHTS; i++) {
+        const dlight_t *dl = &rd->dlights[i];
+        vec3_t          end;
+
+        if (((dl->type & dlighttype_t::lensflare) || (dl->type & dlighttype_t::additive))
+            && dlights.InView(vp, rd, dl->origin, false, end) && R_FlareLineOfSight(vp, end, false)) {
+            vp->flareDlightsVisible |= 1u << i;
+        }
+    }
+}
+
 void R_InitLensFlare()
 {
     torches.Init("entity");
@@ -619,16 +754,23 @@ void R_InitLensFlare()
 
 bool sun_flare_class::SunCheckRay()
 {
+    // traced by the front end for the view (R_FlareTraces)
+    return backEnd.viewParms.sunFlareVisible != qfalse;
+}
+
+bool sun_flare_class::SunLineOfSight(const viewParms_t *vp, trRefdef_t *rd)
+{
     mnode_t *pViewLeaf;
     trace_t  trace;
+    vec3_t   start, end;
 
-    pViewLeaf = R_PointInLeaf(backEnd.refdef.vieworg);
+    pViewLeaf = R_PointInLeaf(rd->vieworg);
 
     if (pViewLeaf->area == -1 || !tr.world->vis || tr.sSunLight.leaf != (mnode_s *)-1
         || pViewLeaf->numlights && pViewLeaf->lights[0] == &tr.sSunLight) {
-        ri.CM_BoxTrace(
-            &trace, backEnd.viewParms.ori.origin, trace_v, vec3_origin, vec3_origin, 0, CONTENTS_SOLID, qfalse
-        );
+        VectorCopy(vp->ori.origin, start);
+        VectorMA(start, 16384, s_sun.flaredirection, end);
+        ri.CM_BoxTrace(&trace, start, end, vec3_origin, vec3_origin, 0, CONTENTS_SOLID, qfalse);
 
         if (trace.surfaceFlags & SURF_SKY) {
             return true;
