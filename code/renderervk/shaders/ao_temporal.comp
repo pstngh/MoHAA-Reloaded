@@ -87,27 +87,17 @@ vec2 Blend( ivec2 q, ivec2 r, ivec2 lo, ivec2 hi ) {
 		return vec2( cur, 1.0 );
 	}
 
+	// the texel's motion, baked by the prefilter (o_gridMotion), so this
+	// pass reads nothing of the scene
 	vec2 pixel = AoGridPixel( q );
-	ivec2 fp = AO_HALF ? ivec2( pixel ) : q;		// the texel's pixel
-	bool moves = ( TemporalFlags( texelFetch( u_normal, fp, 0 ) ) & TEMPORAL_FLAG_MOTION ) != 0u;
-	vec2 motion;
-	float expected;		// the last frame's view distance of the surface
+	vec4 gm = texelFetch( u_gridMotion, q, 0 );
+	bool moves = gm.w > 1.5;	// AO_MOTION_DRAW
+	vec2 motion = gm.xy;
+	float expected = gm.z;		// the last frame's view distance of the surface
 
-	if ( moves ) {
-		motion = texelFetch( u_velocity, fp, 0 ).rg;
-		expected = d;
-	} else if ( weapon ) {
-		// a weapon without motion vectors moves with the camera
-		motion = vec2( 0.0 );
-		expected = d;
-	} else {
-		vec4 prevClip = pc.view.reproject * vec4( TemporalViewPosition( pc.view, pixel, d ), 1.0 );
-
-		if ( prevClip.w <= 1e-6 ) {
-			return vec2( cur, 1.0 );
-		}
-		motion = ( TemporalPixelNdc( pc.view, pixel ) - prevClip.xy / prevClip.w ) * vec2( 0.5, -0.5 );
-		expected = prevClip.w;
+	if ( gm.w < 0.5 ) {
+		// AO_MOTION_NONE: behind the camera
+		return vec2( cur, 1.0 );
 	}
 	vec2 prevPixel = pixel - motion * vec2( pc.view.rect.zw );
 

@@ -191,8 +191,8 @@ typedef struct {
 #define VK_TEMPORAL_TAA_BINDINGS		8	// color, motion vectors, normals, depth, history, last pyramid (sampled), result, this pyramid's level 0 (storage)
 #define VK_TEMPORAL_TAA_HISTORY_BINDING	4	// read with the bilinear sampler
 #define VK_TEMPORAL_TAA_GROUP			16	// the workgroup's width and height (taa_resolve.comp, GROUP)
-#define VK_TEMPORAL_AO_BINDINGS		21	// ao_common.glsl: 10 sampled, 11 storage
-#define VK_TEMPORAL_AO_SAMPLED			10
+#define VK_TEMPORAL_AO_BINDINGS		23	// ao_common.glsl: 11 sampled, 12 storage
+#define VK_TEMPORAL_AO_SAMPLED			11
 #define VK_TEMPORAL_MB_BINDINGS		7	// depth, normals, motion vectors (sampled), mbVelocity, mbTile, mbNeighbor, mbSample (storage)
 #define VK_TEMPORAL_MB_SAMPLED			3
 #define VK_TEMPORAL_MB_NEIGHBOR_GROUP	8	// the neighbour pass's workgroup's width and height (motion_blur.comp)
@@ -642,6 +642,9 @@ static void VK_TemporalCreateGroup( int group, VkCommandBuffer cmd ) {
 			VK_TemporalClearImage( cmd, vkt.aoHistory[i].image, VK_IMAGE_LAYOUT_GENERAL, zero );
 			VK_TemporalCreateImage( &vkt.aoGrid[i], VK_FORMAT_R32_SFLOAT, storage, gridWidth, gridHeight, 1 );
 			VK_TemporalClearImage( cmd, vkt.aoGrid[i].image, VK_IMAGE_LAYOUT_GENERAL, zero );
+			// cleared to class 0: no history until the prefilter writes it
+			VK_TemporalCreateImage( &vkt.aoGridMotion[i], VK_FORMAT_R16G16B16A16_SFLOAT, storage, gridWidth, gridHeight, 1 );
+			VK_TemporalClearImage( cmd, vkt.aoGridMotion[i].image, VK_IMAGE_LAYOUT_GENERAL, zero );
 		}
 		VK_TemporalCreateImage( &vkt.aoRaw, VK_FORMAT_R8_UNORM, storage, gridWidth, gridHeight, 1 );
 		VK_TemporalCreateImage( &vkt.aoBlur, VK_FORMAT_R16G16_SFLOAT, storage, gridWidth, gridHeight, 1 );
@@ -722,6 +725,7 @@ static void VK_TemporalDestroyGroup( int group ) {
 			VK_TemporalDestroyImage( &vkt.aoDepth[i] );
 			VK_TemporalDestroyImage( &vkt.aoHistory[i] );
 			VK_TemporalDestroyImage( &vkt.aoGrid[i] );
+			VK_TemporalDestroyImage( &vkt.aoGridMotion[i] );
 		}
 		VK_TemporalDestroyImage( &vkt.aoRaw );
 		VK_TemporalDestroyImage( &vkt.aoBlur );
@@ -1265,7 +1269,8 @@ static const VkDescriptorType vk_aoTypes[VK_TEMPORAL_AO_BINDINGS] = {
 	VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 	VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-	VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
+	VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
 };
 static const VkDescriptorType vk_aoApplyTypes[3] = {
 	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
@@ -1958,6 +1963,7 @@ void VK_TemporalAo( VkCommandBuffer cmd, const float *fog ) {
 	views[17] = vkt.aoBlur.view;
 	views[18] = views[19] = vkt.aoBlur2.view;
 	views[20] = vkt.aoGrid[cur].view;
+	views[21] = views[22] = vkt.aoGridMotion[cur].view;
 	for ( i = 0; i < VK_TEMPORAL_AO_BINDINGS; i++ ) {
 		layouts[i] = VK_IMAGE_LAYOUT_GENERAL;
 	}

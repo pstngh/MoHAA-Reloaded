@@ -928,7 +928,7 @@ with shaders/temporal_common.glsl. Its readers: temporal anti-aliasing
 #define VK_TEMPORAL_MAX_PASSES	12		// dispatches of the pyramid after its levels 0 and 1
 #define VK_TEMPORAL_TAIL_SIZE	128		// a level no larger: the rest in one dispatch (hiz_build.comp, TAIL); 256 was slower: one workgroup
 #define VK_TEMPORAL_TAIL_IMAGES	8		// bindings of that dispatch: that level and up to 7 more
-#define VK_TEMPORAL_MAX_BINDINGS	21	// of a pass's descriptor set (the ambient occlusion's)
+#define VK_TEMPORAL_MAX_BINDINGS	23	// of a pass's descriptor set (the ambient occlusion's)
 #define VK_TEMPORAL_AO_LEVELS	5		// of the ambient occlusion's view distances (ao_common.glsl, AO_LEVELS)
 #define VK_SKIN_RING			( VK_MAX_FRAMES + 1 )	// frame data of the skinned draws with the temporal path: see vk_alloc_skin_frame
 
@@ -1057,6 +1057,7 @@ typedef struct {
 	qboolean		aoRan;			// this frame's scene has it
 	vkTemporalImage_t	aoDepth[VK_TEMPORAL_HISTORY];	// R32F view distances (the weapon's negative), VK_TEMPORAL_AO_LEVELS levels; the other one the last frame's
 	vkTemporalImage_t	aoGrid[VK_TEMPORAL_HISTORY];	// R32F, a texel a 2 x 2 pixels: the top-left one's view distance
+	vkTemporalImage_t	aoGridMotion[VK_TEMPORAL_HISTORY];	// RGBA16F, a texel a 2 x 2 pixels: its motion, its last view distance, its class (ao_prefilter.comp)
 	vkTemporalImage_t	aoBlur2;		// RG16F, the last blur, which the upsampling reads
 	VkImageView		aoDepthLevel[VK_TEMPORAL_HISTORY][VK_TEMPORAL_AO_LEVELS];
 	uint64_t		aoDepthSerial[VK_TEMPORAL_HISTORY];	// the frame each was made in, 0 for none
