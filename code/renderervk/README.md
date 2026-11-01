@@ -777,7 +777,16 @@ below are done.
   pass upsamples the grid's blurred visibility itself instead of reading
   back a result image a pass wrote: 0.31 to 0.26 ms, the frames one level
   off where the factor is no longer rounded to 8 bits on the way.
-  See Implementation notes, Ambient occlusion
+  Since Plans 51 and 52 (the same request) the occlusion, the blend over
+  frames and the blur run on a compute queue beside the next frame's
+  rendering where the device has one (`r_aoAsync`, on by default; the
+  prefilter bakes what they read, so they touch nothing of the scene),
+  and the apply pass blends the result two frames later: with the
+  anti-aliasing and the motion blur 0.78 to 0.71 ms a frame (1280 to
+  1400 fps) in the user's view. Still frames are the synchronous path's
+  within a level; in motion the occlusion trails the camera by the two
+  frames (at 60 fps a fast turn shifts it by a few dozen pixels, at a few
+  hundred fps by a few). See Implementation notes, Ambient occlusion
 - motion blur (2026-10-27, Plan 46, the renderer; the user's request: a
   velocity motion blur from the motion vectors and the depth): with
   `r_temporal 1`, `r_motionBlur 1` (archived, off by default, switched
@@ -1023,6 +1032,7 @@ Cvars of the backend:
 | `r_aoTemporal` (archived, default 16, 1 to 64) | with `r_ao 1`: the most frames blended (a quarter of it for what moves); 1: none, the noise stays put and the blur works alone |
 | `r_aoNormals` (archived, default 0) | with `r_ao 1`: 0 the normals of the depth; 1 the draws' where they are within about 25 degrees of those (smoother curved models) |
 | `r_aoMultiBounce` (archived, default 0.4, 0 to 0.9) | with `r_ao 1`: the albedo of Jimenez's multi-bounce fit: the light occluders bounce back lightens the occlusion; 0 none |
+| `r_aoAsync` (default 1) | with `r_ao 1` and a compute queue beside the graphics one: the occlusion is computed while the next frame renders and blended in two frames later (the occlusion trails fast motion a little); 0: in its own frame, which waits for it (see Implementation notes, Ambient occlusion) |
 | `r_taa` (archived, default 0) | with `r_temporal 1`: temporal anti-aliasing; the projection is jittered with it whatever `r_temporalJitter` says (see Implementation notes, Temporal anti-aliasing) |
 | `r_taaFeedback` (archived, default 0.75, 0.5 to 0.98) | with `r_taa 1`: the weight of the history in the blend; more is smoother and blurs more in motion, less is sharper and shimmers more (it is lowered by up to a quarter for pixels that move fast). Of the pixels of a still view, with `r_taaSharpen` 0.8, 1.25 % change between frames at 0.75, 2.3 % at 0.5; 0.39 % at 0.9 with sharpening 0.3 |
 | `r_taaSharpen` (archived, default 0.8, 0 to 1) | with `r_taa 1`: sharpens the anti-aliased image when it is shown (the history stays unsharpened), within the colors of the pixel's 4 neighbours |
@@ -8701,8 +8711,9 @@ selects the sample count (see Implementation notes).
     visibility, its frames), `aoBlur` (RG16F), `aoResult` (RGBA8: the
     factor and the fog's part, written only for `r_temporalShow 9`'s view
     since Plan 50: the apply pass upsamples itself). Since Plan 49 `aoRaw`, `aoHistory` and
-    `aoBlur` are at half the size, with `aoGrid[2]` (R32F) and `aoBlur2`
-    (RG16F) beside them (about 75 MB at 2560x1440). One descriptor set and push constant block
+    `aoBlur` are at half the size, with `aoGrid[3]` (R32F, a ring of
+    three since Plan 52), `aoGridMotion[2]` (RGBA16F, Plan 51) and
+    `aoBlur2[2]` (RG16F) beside them (about 90 MB at 2560x1440). One descriptor set and push constant block
     (`vkAoPush_t`, 208 bytes) for the compute passes, written each frame.
   - *Barriers.* One call before: the depth image to
     `DEPTH_STENCIL_READ_ONLY`, the normals and the motion vectors to
@@ -8743,7 +8754,9 @@ selects the sample count (see Implementation notes).
     workgroups too), then the blur from there: the same values as a pass
     each, 0.1 ms less than the two passes). The blend: the motion of the
     pixel (the draw's motion vector where it moves, a weapon without one
-    none, else the camera's); the last result read bilinear among the 2 x
+    none, else the camera's; baked by the prefilter into `aoGridMotion`
+    with the surface's last view distance since Plan 51, so this pass
+    reads nothing of the scene); the last result read bilinear among the 2 x
     2 texels whose last view distance is the surface's (3 %, 10 % for
     what moves, and 1 unit), the texels picked by the shader and fetched
     one by one (a gather's are picked from the coordinate with 8 bits
@@ -8851,6 +8864,59 @@ selects the sample count (see Implementation notes).
     flat ceiling went blotchy), then the main pass's nearest samples from
     the grid (snapped up to a pixel off their slice: a wall or a floor at
     a grazing angle occluded itself in streaks).
+  - *Async compute* (Plans 51 and 52, `r_aoAsync`, on by default; the
+    user's request: the temporal path's cost). Where the device has a
+    compute-only queue family and timeline semaphores (`vk.asyncCompute`,
+    vk_instance.c; NVIDIA, RADV and most desktops), the occlusion, the
+    blend over frames and the blur of a frame run on that queue once the
+    frame's graphics is done, beside the next frame's rendering, and the
+    apply pass blends the result two frames later (one frame in flight:
+    the compute runs during frame N + 1, frame N + 2 reads it). For that
+    the prefilter, which stays in the frame (it reads the depth and the
+    normals), bakes everything the later passes read: beside the view
+    distances the grid's motion (`aoGridMotion`, RGBA16F, half size: the
+    texel's motion, the view distance its surface had in the last frame,
+    and whether there is history, Plan 51), so they touch nothing of the
+    scene. Two timeline semaphores order it (`vkt.gfxTimeline`,
+    `vkt.aoTimeline`): every frame whose compute was submitted signals
+    gfxTimeline with its serial from its graphics submission (once, also
+    from a flush in the middle of the frame, `VK_TemporalTakeAoSubmitInfo`
+    in every submit path, the submit thread's too), the compute submission
+    waits for it (the prefilter's writes, and the apply pass has read what
+    it overwrites) and signals aoTimeline, and a frame's graphics
+    submission waits for the newest compute two or more frames old before
+    its compute and fragment stages (the apply pass's read, and the
+    prefilter writing over what the queue may still read). The grid is a
+    ring of three (a frame writes one while the queue still reads the two
+    before), `aoBlur2` and the rest alternate; the images are
+    `VK_SHARING_MODE_CONCURRENT` between the two families (storage images,
+    nothing to lose; the layout is `GENERAL` always, so no transitions
+    cross the queues). The apply pass sits out the two frames after `r_ao`
+    goes on, a load or a `vid_restart`. `vk_finish` drains the compute
+    queue too; vk_shutdown host-signals a pending wait first, or a frame
+    being recorded but never submitted would hang the device wait. The
+    synchronous path stays for devices without the queue, `r_aoAsync 0`,
+    `r_temporalShow` 9 and 10 (the composite reads what the queue would
+    still be writing) and `r_aoNormals` (the occlusion then reads the
+    scene's normals, the graphics queue's); switching drains first.
+    `vkinfo`'s gpu frame no longer sees the occlusion (it times the
+    graphics command buffers): compare wall time. Still frames match the
+    synchronous path's within a level (the converged occlusion of two
+    frames ago is today's); in motion the occlusion trails by two frames
+    of camera motion, which the blend's reprojection does not undo (a
+    fast turn at `fixedtime 16` moves 42 % of the pixels, most by 1 to 3
+    levels, some edges by up to 15; at the frame rates the effects run at
+    here the shift is a few pixels). Checked under the validation layer
+    (clean, also with the submit thread and through live toggles of
+    `r_ao`, `r_aoAsync`, the show views, `r_aoQuality` and a
+    `vid_restart`). Cost (the user's view, 2560x1440, wall time a frame,
+    `r_aoAsync` 0 against 1 of the same build): the ambient occlusion
+    alone 0.457 to 0.407 ms (2190 to 2455 fps), with the anti-aliasing
+    and the motion blur 0.780 to 0.714 (1280 to 1400); baking the motion
+    costs 0.015 ms of prefilter time, bought back here. Not done:
+    reprojecting the two frames in the apply pass (`aoGridMotion` and the
+    ring hold what it would need) would cut the trailing, for more edge
+    cases where the reprojection misses.
 - **Motion blur (Plan 46).** `r_motionBlur 1` with the temporal path
   (`VK_TemporalMotionBlur`, `shaders/motion_blur.comp`, the gather in
   `shaders/temporal_composite.frag`). McGuire, Hennessy, Bukowski and

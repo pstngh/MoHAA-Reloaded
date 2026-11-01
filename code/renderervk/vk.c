@@ -889,6 +889,8 @@ static void VK_SubmitFrameCommands( VkFence fence, VkSemaphore signal, qboolean 
 	VkCommandBuffer cmds[2];
 	VkPipelineStageFlags waitStage;
 	VkSubmitInfo submit;
+	vkAoSubmitChain_t aoChain;
+	uint64_t aoSignal, aoWait;
 	uint32_t numCmds;
 	uint64_t start;
 
@@ -907,6 +909,9 @@ static void VK_SubmitFrameCommands( VkFence fence, VkSemaphore signal, qboolean 
 		submit.signalSemaphoreCount = 1;
 		submit.pSignalSemaphores = &signal;
 	}
+	// the compute queue's ambient occlusion (r_aoAsync, vk_temporal.c)
+	VK_TemporalTakeAoSubmitInfo( &aoSignal, &aoWait );
+	VK_TemporalAoChainSubmit( &aoChain, &submit, aoSignal, aoWait );
 
 	if ( fence ) {
 		VK_CHECK( qvkResetFences( vk.device, 1, &fence ) );
@@ -1357,9 +1362,13 @@ VK_CreateImage
 A 2D image with memory of its own and a view of all its levels (aspect)
 ===============
 */
-void VK_CreateImage( VkFormat format, VkSampleCountFlagBits samples, VkImageUsageFlags usage, VkImageAspectFlags aspect,
-	int width, int height, int mipLevels, VkImage *image, VkDeviceMemory *memory, VkImageView *view )
+// computeShared with vk.asyncCompute: the graphics and the compute queue
+// both touch the image (VK_SHARING_MODE_CONCURRENT: no ownership transfers;
+// the timeline semaphores order the accesses, vk_temporal.c)
+void VK_CreateImageShared( VkFormat format, VkSampleCountFlagBits samples, VkImageUsageFlags usage, VkImageAspectFlags aspect,
+	int width, int height, int mipLevels, qboolean computeShared, VkImage *image, VkDeviceMemory *memory, VkImageView *view )
 {
+	uint32_t families[2];
 	VkImageCreateInfo imageInfo;
 	VkImageViewCreateInfo viewInfo;
 	VkMemoryRequirements memReqs;
@@ -1377,6 +1386,13 @@ void VK_CreateImage( VkFormat format, VkSampleCountFlagBits samples, VkImageUsag
 	imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
 	imageInfo.usage = usage;
 	imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	if ( computeShared && vk.asyncCompute ) {
+		families[0] = vk.queueFamily;
+		families[1] = vk.computeFamily;
+		imageInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
+		imageInfo.queueFamilyIndexCount = 2;
+		imageInfo.pQueueFamilyIndices = families;
+	}
 	imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	VK_CHECK( qvkCreateImage( vk.device, &imageInfo, NULL, image ) );
 
@@ -1393,6 +1409,12 @@ void VK_CreateImage( VkFormat format, VkSampleCountFlagBits samples, VkImageUsag
 	viewInfo.subresourceRange.levelCount = mipLevels;
 	viewInfo.subresourceRange.layerCount = 1;
 	VK_CHECK( qvkCreateImageView( vk.device, &viewInfo, NULL, view ) );
+}
+
+void VK_CreateImage( VkFormat format, VkSampleCountFlagBits samples, VkImageUsageFlags usage, VkImageAspectFlags aspect,
+	int width, int height, int mipLevels, VkImage *image, VkDeviceMemory *memory, VkImageView *view )
+{
+	VK_CreateImageShared( format, samples, usage, aspect, width, height, mipLevels, qfalse, image, memory, view );
 }
 
 static void VK_CreateTargetImage( VkFormat format, VkSampleCountFlagBits samples, VkImageUsageFlags usage, VkImageAspectFlags aspect,
@@ -2083,9 +2105,10 @@ static void VK_ReportCapabilities( void ) {
 	glConfig.stencilBits = ( vk.depthAspect & VK_IMAGE_ASPECT_STENCIL_BIT ) ? 8 : 0;
 
 	ri.Printf( PRINT_ALL, "Vulkan device: %s (%s)\n", glConfig.renderer_string, glConfig.version_string );
-	ri.Printf( PRINT_ALL, "Vulkan present mode: %s, render target %dx%d, %u swapchain images, %d frames in flight%s\n",
+	ri.Printf( PRINT_ALL, "Vulkan present mode: %s, render target %dx%d, %u swapchain images, %d frames in flight%s%s\n",
 		VK_SwapchainPresentModeName(), vk.width, vk.height, vk.swapchainImageCount, VK_MAX_FRAMES,
-		vk.submitThread ? ", submit thread (r_vkSubmitThread)" : "" );
+		vk.submitThread ? ", submit thread (r_vkSubmitThread)" : "",
+		vk.asyncCompute ? ", compute queue (r_aoAsync)" : "" );
 	// what the fallbacks replace (see README, Known risks); r_vkFallbacks forces them
 	ri.Printf( PRINT_ALL, "Vulkan present fences %s, view swizzle %s, stride 0 bindings %s, Bresenham lines %s, line stipple %s%s\n",
 		vk.presentFences ? "yes" : "no", vk.viewSwizzle ? "yes" : "no", vk.strideZero ? "yes" : "no",
@@ -2220,6 +2243,9 @@ void vk_shutdown( void ) {
 		// this thread's
 		VK_StopSubmitThread();
 		vk.submitThread = qfalse;
+		// a frame being recorded won't be: its compute submission would
+		// wait forever (r_aoAsync)
+		VK_TemporalAbortAoCompute();
 		qvkDeviceWaitIdle( vk.device );
 		// first: the held image's acquire semaphore is waited for, and the
 		// swapchains and their present semaphores go once their presents
@@ -2389,6 +2415,10 @@ void vk_finish( void ) {
 	VK_DrainSubmitThread();
 	if ( vk.device && vk.lastSubmitFence ) {
 		VK_CHECK( qvkWaitForFences( vk.device, 1, &vk.lastSubmitFence, VK_TRUE, UINT64_MAX ) );
+	}
+	// and for the compute queue's ambient occlusion (r_aoAsync)
+	if ( vk.device ) {
+		VK_TemporalFinishAoCompute();
 	}
 }
 

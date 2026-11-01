@@ -485,15 +485,25 @@ static void VK_SelectPhysicalDevice( void ) {
 	qvkGetPhysicalDeviceProperties( vk.physicalDevice, &vk.deviceProperties );
 	qvkGetPhysicalDeviceMemoryProperties( vk.physicalDevice, &vk.memoryProperties );
 
-	// GPU timestamps (vkinfo)
+	// GPU timestamps (vkinfo), and a compute-only family for the ambient
+	// occlusion's passes (vk_temporal.c): one without graphics, so its queue
+	// runs beside the graphics one
 	{
 		VkQueueFamilyProperties *families;
-		uint32_t numFamilies;
+		uint32_t numFamilies, i;
 
 		qvkGetPhysicalDeviceQueueFamilyProperties( vk.physicalDevice, &numFamilies, NULL );
 		families = ri.Hunk_AllocateTempMemory( sizeof( *families ) * ( numFamilies + 1 ) );
 		qvkGetPhysicalDeviceQueueFamilyProperties( vk.physicalDevice, &numFamilies, families );
 		vk.timestampValidBits = vk.deviceProperties.limits.timestampPeriod > 0 ? families[vk.queueFamily].timestampValidBits : 0;
+		vk.computeFamily = VK_QUEUE_FAMILY_IGNORED;
+		for ( i = 0; i < numFamilies; i++ ) {
+			if ( ( families[i].queueFlags & VK_QUEUE_COMPUTE_BIT ) && !( families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT )
+				&& families[i].queueCount && i != vk.queueFamily ) {
+				vk.computeFamily = i;
+				break;
+			}
+		}
 		ri.Hunk_FreeTempMemory( families );
 	}
 }
@@ -515,9 +525,10 @@ static void VK_CreateLogicalDevice( void ) {
 	VkPhysicalDeviceLineRasterizationFeaturesEXT lineFeatures;
 	VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT swapchainFeatures;
 	VkPhysicalDevicePortabilitySubsetFeaturesKHR portabilityFeatures;
+	VkPhysicalDeviceTimelineSemaphoreFeaturesKHR timelineFeatures;
 	qboolean portability;
 	const char *lineExtension, *swapchainExtension;
-	VkDeviceQueueCreateInfo queueInfo;
+	VkDeviceQueueCreateInfo queueInfos[2];
 	VkDeviceCreateInfo createInfo;
 	VkExtensionProperties *available;
 	const char *extensions[VK_MAX_EXTENSIONS];
@@ -676,18 +687,36 @@ static void VK_CreateLogicalDevice( void ) {
 		VK_AddExtension( extensions, &numExtensions, VK_EXT_HDR_METADATA_EXTENSION_NAME );
 		vko.metadata = qtrue;
 	}
+
+	// a compute queue and timeline semaphores for the ambient occlusion's
+	// passes beside the next frame's rendering (r_aoAsync, vk_temporal.c)
+	Com_Memset( &timelineFeatures, 0, sizeof( timelineFeatures ) );
+	timelineFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES_KHR;
+	vk.asyncCompute = qfalse;
+	if ( vk.computeFamily != VK_QUEUE_FAMILY_IGNORED && qvkGetPhysicalDeviceFeatures2
+		&& VK_HasExtension( available, numAvailable, VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME ) ) {
+		VK_GetExtensionFeatures( &timelineFeatures );
+		if ( timelineFeatures.timelineSemaphore ) {
+			VK_AddExtension( extensions, &numExtensions, VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME );
+			vk.asyncCompute = qtrue;
+		}
+	}
 	ri.Hunk_FreeTempMemory( available );
 
-	Com_Memset( &queueInfo, 0, sizeof( queueInfo ) );
-	queueInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-	queueInfo.queueFamilyIndex = vk.queueFamily;
-	queueInfo.queueCount = 1;
-	queueInfo.pQueuePriorities = &priority;
+	Com_Memset( queueInfos, 0, sizeof( queueInfos ) );
+	queueInfos[0].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+	queueInfos[0].queueFamilyIndex = vk.queueFamily;
+	queueInfos[0].queueCount = 1;
+	queueInfos[0].pQueuePriorities = &priority;
+	queueInfos[1].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+	queueInfos[1].queueFamilyIndex = vk.computeFamily;
+	queueInfos[1].queueCount = 1;
+	queueInfos[1].pQueuePriorities = &priority;
 
 	Com_Memset( &createInfo, 0, sizeof( createInfo ) );
 	createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-	createInfo.queueCreateInfoCount = 1;
-	createInfo.pQueueCreateInfos = &queueInfo;
+	createInfo.queueCreateInfoCount = vk.asyncCompute ? 2 : 1;
+	createInfo.pQueueCreateInfos = queueInfos;
 	createInfo.enabledExtensionCount = numExtensions;
 	createInfo.ppEnabledExtensionNames = extensions;
 	createInfo.pEnabledFeatures = &vk.enabledFeatures;
@@ -702,6 +731,11 @@ static void VK_CreateLogicalDevice( void ) {
 	if ( vk.presentFences ) {
 		swapchainFeatures.pNext = (void *)createInfo.pNext;
 		createInfo.pNext = &swapchainFeatures;
+	}
+	if ( vk.asyncCompute ) {
+		timelineFeatures.timelineSemaphore = VK_TRUE;
+		timelineFeatures.pNext = (void *)createInfo.pNext;
+		createInfo.pNext = &timelineFeatures;
 	}
 	if ( portability ) {
 		portabilityFeatures.pNext = (void *)createInfo.pNext;
@@ -740,6 +774,21 @@ static void VK_CreateLogicalDevice( void ) {
 	}
 
 	qvkGetDeviceQueue( vk.device, vk.queueFamily, 0, &vk.queue );
+
+	qvkWaitSemaphoresKHR = NULL;
+	qvkSignalSemaphoreKHR = NULL;
+	qvkGetSemaphoreCounterValueKHR = NULL;
+	vk.computeQueue = VK_NULL_HANDLE;
+	if ( vk.asyncCompute ) {
+		qvkWaitSemaphoresKHR = (PFN_vkWaitSemaphoresKHR)qvkGetDeviceProcAddr( vk.device, "vkWaitSemaphoresKHR" );
+		qvkSignalSemaphoreKHR = (PFN_vkSignalSemaphoreKHR)qvkGetDeviceProcAddr( vk.device, "vkSignalSemaphoreKHR" );
+		qvkGetSemaphoreCounterValueKHR = (PFN_vkGetSemaphoreCounterValueKHR)qvkGetDeviceProcAddr( vk.device, "vkGetSemaphoreCounterValueKHR" );
+		if ( qvkWaitSemaphoresKHR && qvkSignalSemaphoreKHR && qvkGetSemaphoreCounterValueKHR ) {
+			qvkGetDeviceQueue( vk.device, vk.computeFamily, 0, &vk.computeQueue );
+		} else {
+			vk.asyncCompute = qfalse;
+		}
+	}
 
 	// reported by gfxinfo
 	s = glConfig.extensions_string;
