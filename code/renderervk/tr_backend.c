@@ -25,7 +25,6 @@ backEndData_t	*backEndData;
 backEndData_t	*backEndDataArray[2];	// r_smp: the render thread reads one, the front end fills the other
 backEndState_t	backEnd;
 
-
 static float	s_flipMatrix[16] = {
 	// convert from our coordinate system (looking down X)
 	// to the eye space of the projection (looking down -Z)
@@ -670,7 +669,7 @@ void RB_BeginDrawingView (void) {
 
 	if (!( backEnd.refdef.rdflags & RDF_NOWORLDMODEL))
 	{
-		if ((backEnd.viewParms.farplane_distance && !tr.skyRendered && !tr.portalRendered) || tr.farclip)
+		if ((backEnd.viewParms.farplane_distance && !backEnd.viewParms.skyRendered && !backEnd.viewParms.portalRendered) || backEnd.viewParms.farclip)
 		{
 			clearBits |= CLEAR_COLOR;
 			Vector4Copy(glState.fFogColor, clearColor);

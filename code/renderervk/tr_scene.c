@@ -62,9 +62,18 @@ void R_InitNextFrame( void ) {
 	backEndData->firstTerrainChange = 0;
 	backEndData->terrainChangesAll = qfalse;
 	backEndData->syncAfterIssue = qfalse;
+	backEndData->numStaticSurfaces = 0;
+	backEndData->numTerrainSurfs = 0;
+	backEndData->numTerrainIndexes = 0;
+	backEndData->numSkelBones = 0;
+	backEndData->numSkelMorphs = 0;
 
 	r_firstSceneDrawSurf = 0;
 	r_firstSceneSpriteSurf = 0;
+	// nothing of this frame's yet (FixRenderCommandList fixes the frame's
+	// surfaces when a shader is made)
+	tr.refdef.numDrawSurfs = 0;
+	tr.refdef.numSpriteSurfs = 0;
 
 	r_numdlights = 0;
 	r_firstSceneDlight = 0;
@@ -518,7 +527,9 @@ void RE_RenderScene( const refdef_t *fd ) {
 	}
 
 	R_VisDebug();
-	TIKI_Reset_Caches();
+	// the bone and morph pools are the frame's (backEndData, R_InitNextFrame),
+	// not reset per scene: the scenes of a frame are drawn after all of
+	// them are built (and TIKI_Skel_Bones was shared with the render thread)
 
 	if ( !glConfig.smpActive ) {
 		backEnd.in2D = qfalse;	// RB_DrawSurfs does it on the render thread
@@ -573,6 +584,8 @@ void RE_RenderScene( const refdef_t *fd ) {
 
 	tr.refdef.numDrawSurfs = r_firstSceneDrawSurf;
 	tr.refdef.drawSurfs = backEndData->drawSurfs;
+	tr.refdef.skelBones = backEndData->skelBones;
+	tr.refdef.skelMorphs = backEndData->skelMorphs;
 
     tr.refdef.numSpriteSurfs = r_firstSceneSpriteSurf;
     tr.refdef.spriteSurfs = backEndData->spriteSurfs;

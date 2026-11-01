@@ -237,6 +237,9 @@ void	R_AddDrawSurfCmd( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 
 	cmd->refdef = tr.refdef;
 	cmd->viewParms = tr.viewParms;
+	cmd->viewParms.skyRendered = tr.skyRendered;
+	cmd->viewParms.portalRendered = tr.portalRendered;
+	cmd->viewParms.farclip = tr.farclip;
 	// r_smp: the terrain slots this scene changed, for the thread's pool copy
 	cmd->terrainChanges = backEndData->terrainChanges + backEndData->firstTerrainChange;
 	cmd->numTerrainChanges = backEndData->numTerrainChanges - backEndData->firstTerrainChange;
@@ -412,7 +415,6 @@ void RE_BeginFrame( stereoFrame_t stereoFrame ) {
 
 	tr.frameCount++;
 	tr.frameSceneNum = 0;
-	g_nStaticSurfaces = 0;
 
 	//
 	// do overdraw measurement

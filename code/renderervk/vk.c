@@ -4025,6 +4025,10 @@ void vk_terrain_shadow_all( const float *xyz, const float *st, int stride, int n
 	}
 }
 
+const float *vk_terrain_shadow_slots( void ) {
+	return vk_terrain.shadow;
+}
+
 /*
 ===============
 vk_sync_terrain_pool_smp
@@ -4165,6 +4169,7 @@ qboolean vk_sync_terrain_pool( int numSlots, const float *xyz, const float *st, 
 vk_skin_available
 ===============
 */
+
 qboolean vk_skin_available( void ) {
 	return vk.device && vk_skin.buffer.buffer && vk.skinVertexShader;
 }

@@ -1618,6 +1618,64 @@ void R_TerrainSnapshotChanges(void)
     g_bVertChanged = qfalse;
 }
 
+/*
+================
+R_TerrainFrameSurface
+
+The frame's copy of what the back end draws of a patch (terrainPatchFrame_t):
+the render thread draws the frame while the next frame's tessellation
+changes the patch's lists, so the slots of its drawn triangles are taken
+now, into the frame's data (the patch's cached list when there is one,
+RB_TerrainPatchIndexes). With the frame's pools full the patch's own lists
+are drawn, as before
+================
+*/
+static surfaceType_t *R_TerrainFrameSurface(cTerraPatchUnpacked_t *patch)
+{
+    terrainPatchFrame_t *f;
+    const glIndex_t     *kept;
+    glIndex_t           *out;
+    int                  n = 0, i;
+
+    if (backEndData->numTerrainSurfs >= MAX_TERRAIN_FRAME_PATCHES) {
+        return (surfaceType_t *)&patch->drawinfo;
+    }
+    f              = &backEndData->terrainSurfs[backEndData->numTerrainSurfs++];
+    f->surfaceType = SF_TERRAIN_PATCH;
+    f->live        = &patch->drawinfo;
+    f->nVerts      = patch->drawinfo.nVerts;
+    f->nTris       = patch->drawinfo.nTris;
+    f->dlightBits  = patch->drawinfo.dlightBits;
+    f->dlightMap   = patch->drawinfo.dlightMap;
+    f->indexes     = NULL;
+    f->numIndexes  = 0;
+
+    out  = backEndData->terrainIndexes + backEndData->numTerrainIndexes;
+    kept = RB_TerrainPatchIndexes(&patch->drawinfo, &n);
+    if (kept) {
+        if (backEndData->numTerrainIndexes + n > MAX_TERRAIN_FRAME_INDEXES) {
+            return (surfaceType_t *)f;
+        }
+        Com_Memcpy(out, kept, n * sizeof(glIndex_t));
+    } else {
+        for (i = patch->drawinfo.iTriHead; i; i = g_pTris[i].iNext) {
+            if (g_pTris[i].byConstChecks & 4) {
+                if (backEndData->numTerrainIndexes + n + 3 > MAX_TERRAIN_FRAME_INDEXES) {
+                    return (surfaceType_t *)f;
+                }
+                out[n]     = g_pTris[i].iPt[0];
+                out[n + 1] = g_pTris[i].iPt[1];
+                out[n + 2] = g_pTris[i].iPt[2];
+                n += 3;
+            }
+        }
+    }
+    f->indexes    = out;
+    f->numIndexes = n;
+    backEndData->numTerrainIndexes += n;
+    return (surfaceType_t *)f;
+}
+
 void R_AddTerrainSurfaces()
 {
     int                    i;
@@ -1641,7 +1699,7 @@ void R_AddTerrainSurfaces()
                 assert(patch->shader);
 
                 dlight = R_CheckDlightTerrain(patch, DLIGHTS_ALL(tr.refdef.num_dlights));
-                R_AddDrawSurf((surfaceType_t *)&patch->drawinfo, patch->shader, R_DlightSortKey(dlight));
+                R_AddDrawSurf(R_TerrainFrameSurface(patch), patch->shader, R_DlightSortKey(dlight));
             }
 
             if (ter_count->integer && (g_nSplit || g_nMerge)) {
@@ -1665,7 +1723,7 @@ void R_AddTerrainSurfaces()
             assert(patch->shader);
 
             dlight = R_CheckDlightTerrain(patch, DLIGHTS_ALL(tr.refdef.num_dlights));
-            R_AddDrawSurf((surfaceType_t *)&patch->drawinfo, patch->shader, R_DlightSortKey(dlight));
+            R_AddDrawSurf(R_TerrainFrameSurface(patch), patch->shader, R_DlightSortKey(dlight));
         }
     }
 }

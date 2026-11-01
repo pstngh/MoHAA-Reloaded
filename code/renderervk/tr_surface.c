@@ -889,13 +889,13 @@ void RB_SurfaceDisplayList( srfDisplayList_t *surf ) {
 void RB_SurfaceSkip( void *surf ) {
 }
 
-void RB_DrawTerrainTris(srfTerrain_t* p) {
+void RB_DrawTerrainTris(terrainPatchFrame_t* f) {
+	const srfTerrain_t *p = f->live;
 	int i;
-	terraInt numv;
 
-	RB_CHECKOVERFLOW(p->nVerts, p->nTris * 3);
+	RB_CHECKOVERFLOW(f->nVerts, f->nTris * 3);
 
-	tess.lightmapDlights |= p->dlightMap;
+	tess.lightmapDlights |= f->dlightMap;
 
 	// a batch that starts with a terrain patch draws from the terrain pool
 	// (tr_staticgeom.c), whose slots are the vertexes: only the indexes are
@@ -904,14 +904,14 @@ void RB_DrawTerrainTris(srfTerrain_t* p) {
 		tess.staticTerrain = qtrue;
 	}
 	if (RB_StaticBatch()) {
-		if (RB_StaticAddSurface((surfaceType_t *)p, p->dlightBits, qtrue)) {
+		if (RB_StaticAddSurface((surfaceType_t *)f, f->dlightBits, qtrue)) {
 			glIndex_t *out = RB_StaticCopyIndexes();
-			const glIndex_t *kept;
 			int n = 0;
 
-			kept = RB_TerrainPatchIndexes(p, &n);
-			if (kept) {
-				Com_Memcpy(out, kept, n * sizeof(glIndex_t));
+			if (f->indexes) {
+				// the frame's copy of the slots (R_TerrainFrameSurface)
+				Com_Memcpy(out, f->indexes, f->numIndexes * sizeof(glIndex_t));
+				n = f->numIndexes;
 			} else {
 				for (i = p->iTriHead; i; i = g_pTris[i].iNext) {
 					if (g_pTris[i].byConstChecks & 4) {
@@ -923,17 +923,57 @@ void RB_DrawTerrainTris(srfTerrain_t* p) {
 				}
 			}
 			RB_StaticIndexesAdded(n);
-			tess.numVertexes += p->nVerts;
+			tess.numVertexes += f->nVerts;
 			return;
 		}
 		RB_StaticBatchToCPU();
 	}
 
-	tess.dlightBits |= p->dlightBits;
+	tess.dlightBits |= f->dlightBits;
 
+	// drawn from tess: the vertexes of the frame's slots from the render
+	// thread's copy of the pool (vk_terrain_shadow_slots, brought up to date
+	// by RB_TerrainPool), which the next frame's tessellation doesn't touch
+	if (f->indexes && RB_TerrainPool()) {
+		const float *shadow = vk_terrain_shadow_slots();
+
+		if (shadow) {
+			static unsigned short slotTess[65536];	// terraInt slots
+			static unsigned int slotStamp[65536];
+			static unsigned int stamp;
+
+			stamp++;
+			for (i = 0; i < f->numIndexes; i++) {
+				glIndex_t slot = f->indexes[i];
+
+				if (slotStamp[slot] != stamp) {
+					const float *v = shadow + slot * 7;
+
+					slotStamp[slot] = stamp;
+					slotTess[slot] = (unsigned short)tess.numVertexes;
+					VectorCopy(v, tess.xyz[tess.numVertexes]);
+					tess.texCoords[tess.numVertexes][0][0] = v[3];
+					tess.texCoords[tess.numVertexes][0][1] = v[4];
+					tess.texCoords[tess.numVertexes][1][0] = v[5];
+					tess.texCoords[tess.numVertexes][1][1] = v[6];
+					tess.normal[tess.numVertexes][0] = 0;
+					tess.normal[tess.numVertexes][1] = 0;
+					tess.normal[tess.numVertexes][2] = 1.0;
+					tess.vertexColors[tess.numVertexes][0] = -1;
+					tess.vertexColors[tess.numVertexes][1] = -1;
+					tess.vertexColors[tess.numVertexes][2] = -1;
+					tess.vertexColors[tess.numVertexes][3] = -1;
+					tess.numVertexes++;
+				}
+				tess.indexes[tess.numIndexes++] = slotTess[slot];
+			}
+			return;
+		}
+	}
+
+	// the patch's own lists (no copy, or no pool)
 	for (i = p->iVertHead; i; i = g_pVert[i].iNext) {
 		assert(tess.numVertexes < SHADER_MAX_VERTEXES);
-
 		VectorCopy(g_pVert[i].xyz, tess.xyz[tess.numVertexes]);
 		tess.texCoords[tess.numVertexes][0][0] = g_pVert[i].texCoords[0][0];
 		tess.texCoords[tess.numVertexes][0][1] = g_pVert[i].texCoords[0][1];
@@ -946,7 +986,6 @@ void RB_DrawTerrainTris(srfTerrain_t* p) {
 		tess.vertexColors[tess.numVertexes][1] = -1;
 		tess.vertexColors[tess.numVertexes][2] = -1;
 		tess.vertexColors[tess.numVertexes][3] = -1;
-
 		g_pVert[i].iVertArray = tess.numVertexes;
 		tess.numVertexes++;
 	}

@@ -1896,7 +1896,9 @@ void R_Init( void ) {
 	// fills the other (R_InitNextFrame)
 	for (i = 0; i < (r_smp->integer ? 2 : 1); i++) {
 		size_t size = sizeof(*backEndData) + sizeof(srfPoly_t) * max_polys + sizeof(polyVert_t) * max_polyverts
-			+ sizeof(srfMarkFragment_t) * max_termarks + sizeof(terrainSlotChange_t) * MAX_TERRAIN_CHANGES;
+			+ sizeof(srfMarkFragment_t) * max_termarks + sizeof(terrainSlotChange_t) * MAX_TERRAIN_CHANGES
+			+ sizeof(glIndex_t) * MAX_TERRAIN_FRAME_INDEXES
+			+ sizeof(skelBoneCache_t) * MAX_SKELBONES + sizeof(int) * MAX_SKELMORPH;
 		backEndData_t *data;
 
 		ptr = ri.Malloc(size);
@@ -1905,6 +1907,9 @@ void R_Init( void ) {
 		data->polyVerts = (polyVert_t*)((char*)ptr + sizeof(*backEndData) + sizeof(srfPoly_t) * max_polys);
 		data->terMarks = (srfMarkFragment_t*)((char*)ptr + sizeof(*backEndData) + sizeof(srfPoly_t) * max_polys + sizeof(polyVert_t) * max_polyverts);
 		data->terrainChanges = (terrainSlotChange_t*)((char*)data->terMarks + sizeof(srfMarkFragment_t) * max_termarks);
+		data->terrainIndexes = (glIndex_t*)((char*)data->terrainChanges + sizeof(terrainSlotChange_t) * MAX_TERRAIN_CHANGES);
+		data->skelBones = (skelBoneCache_t*)((char*)data->terrainIndexes + sizeof(glIndex_t) * MAX_TERRAIN_FRAME_INDEXES);
+		data->skelMorphs = (int*)((char*)data->skelBones + sizeof(skelBoneCache_t) * MAX_SKELBONES);
 		data->staticModels = NULL;
 		data->staticModelData = NULL;
 		backEndDataArray[i] = data;

@@ -27,6 +27,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "../qcommon/qcommon.h"
 #include "tr_public.h"
 #include "../renderercommon/tr_common.h"
+#include "../tiki/tiki_shared.h"	// skelBoneCache_t (the frame's bone pool)
+#include "../tiki/tiki_mesh.h"		// MAX_SKELBONES, MAX_SKELMORPH
 
 #ifdef __cplusplus
 extern "C" {
@@ -682,6 +684,10 @@ typedef struct {
 
     int			numStaticModelData;
     unsigned char		*staticModelData;
+	// the frame's bone and morph pools (backEndData's): the skeletal
+	// surfaces are drawn from them (RB_SkelMesh, tr_skin.c)
+	skelBoneCache_t		*skelBones;
+	int					*skelMorphs;
     qboolean sky_portal;
     float sky_alpha;
     vec3_t sky_origin;
@@ -759,6 +765,11 @@ typedef struct {
 	float		farplane_color[3];
     int			farplane_cull;
     qboolean	renderTerrain; // added in 2.0
+	// the frame's tr.skyRendered, tr.portalRendered and tr.farclip when the
+	// view's draw command was made, for the back end (r_smp: tr's are the
+	// frame being built by then)
+	qboolean	skyRendered, portalRendered;
+	int			farclip;
 } viewParms_t;
 
 
@@ -974,6 +985,21 @@ typedef struct srfTerrain_s {
     dlightMask_t dlightBits;
     dlightMask_t dlightMap;	// as in srfGridMesh_t (R_RealDlightTerrain)
 } srfTerrain_t;
+
+// a terrain patch as the frame draws it (R_TerrainFrameSurface, tr_terrain.c):
+// what RB_DrawTerrainTris needs of its srfTerrain_t, and the slots of its
+// drawn triangles copied into the frame's data, since the render thread
+// draws the frame while the next frame's tessellation changes the lists
+typedef struct {
+	surfaceType_t		surfaceType;	// SF_TERRAIN_PATCH
+	const srfTerrain_t	*live;			// the patch's own lists (the fallback without a copy)
+	int					nVerts, nTris;
+	dlightMask_t		dlightBits, dlightMap;
+	const glIndex_t		*indexes;		// NULL: no copy (the frame's pool was full)
+	int					numIndexes;
+} terrainPatchFrame_t;
+#define MAX_TERRAIN_FRAME_PATCHES	4096
+#define MAX_TERRAIN_FRAME_INDEXES	( 256 * 1024 )
 
 typedef struct cTerraPatchUnpacked_s {
     srfTerrain_t drawinfo;
@@ -2574,7 +2600,6 @@ void R_InfoWorldTris_f(void);
 void R_PrintInfoWorldtris(void);
 void R_DebugSkeleton(void);
 
-extern int g_nStaticSurfaces;
 extern qboolean g_bInfostaticmodels;
 extern qboolean g_bInfoworldtris;
 
@@ -2905,6 +2930,15 @@ typedef enum {
 #define	MAX_POLYVERTS	16384
 #define	MAX_TERMARKS	1024
 
+// a static model's surface as the frame adds it (tr_staticmodels.c): the
+// surface the draw surface points to, first, and the model's level of
+// detail at the time (RB_StaticMesh reads it through the surface pointer)
+#define MAX_STATIC_MODELS_SURFS		8192
+typedef struct {
+	staticSurface_t	surf;
+	float			lod;
+} staticSurfaceFrame_t;
+
 // all of the information needed by the back end must be
 // contained in a backEndData_t.  This entire structure is
 // duplicated so the front and back end can run in parallel
@@ -2931,6 +2965,27 @@ typedef struct {
 	// r_smp: the front end waits for this list (a screenshot, a video frame,
 	// the overdraw readback: the engine's temporary memory and files)
 	qboolean	syncAfterIssue;
+	// the static models' surfaces of the frame (R_AddStaticModelSurfaces),
+	// pointed to by its draw surfaces, and the level of detail each was
+	// added with: the frame's own, since the render thread reads them while
+	// the next frame fills its own
+	staticSurfaceFrame_t staticSurfaces[MAX_STATIC_MODELS_SURFS];
+	int			numStaticSurfaces;
+	// the terrain patches of the frame and the slots of their triangles
+	// (R_TerrainFrameSurface), the frame's own for the same reason
+	terrainPatchFrame_t	terrainSurfs[MAX_TERRAIN_FRAME_PATCHES];
+	int			numTerrainSurfs;
+	glIndex_t	*terrainIndexes;	// MAX_TERRAIN_FRAME_INDEXES
+	int			numTerrainIndexes;
+	// the bones and morph weights of the frame's skeletal models
+	// (R_AddSkelSurfaces), which RB_SkelMesh and the skin upload read: the
+	// frame's own instead of TIKI_Skel_Bones, which every scene reset
+	// (TIKI_Reset_Caches) while the render thread still read the frame
+	// before's
+	skelBoneCache_t	*skelBones;		// MAX_SKELBONES
+	int			numSkelBones;
+	int			*skelMorphs;		// MAX_SKELMORPH
+	int			numSkelMorphs;
 } backEndData_t;
 
 extern	int		max_polys;
@@ -2972,6 +3027,7 @@ void		RB_SetRenderTime( int t, int refdefTime );
 void		RB_Draw_String( fontheader_t *font, const char *text, float x, float y, int maxlen, const float *pvVirtualScreen );
 void		R_TerrainSnapshotChanges( void );
 void		vk_terrain_shadow_all( const float *xyz, const float *st, int stride, int numSlots );
+const float	*vk_terrain_shadow_slots( void );					// the render thread's copy of every slot (7 floats: xyz, 2 st), NULL without a pool
 qboolean	vk_sync_terrain_pool_smp( const terrainSlotChange_t *changes, int count, qboolean all );
 
 void R_AddDrawSurfCmd( drawSurf_t *drawSurfs, int numDrawSurfs );

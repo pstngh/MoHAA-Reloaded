@@ -2853,71 +2853,44 @@ static void CollapseMultitexture(int *stagecounter) {
 =============
 
 FixRenderCommandList
+
 https://zerowing.idsoftware.com/bugzilla/show_bug.cgi?id=493
 Arnout: this is a nasty issue. Shaders can be registered after drawsurfaces are generated
 but before the frame is rendered. This will, for the duration of one frame, cause drawsurfaces
 to be rendered with bad shaders. To fix this, need to go through all render commands and fix
 sortedIndex.
+
+Here the frame's draw surfaces are those of backEndData (every scene's,
+tr_scene.c), so they are fixed there instead of through the command list
 ==============
 */
 static void FixRenderCommandList( int newShader ) {
-	renderCommandList_t	*cmdList = &backEndData->commands;
+	int i, n;
 
-	if( cmdList ) {
-		const void *curCmd = cmdList->cmds;
+	// the frame's draw surfaces so far, of all its scenes (backEndData's:
+	// tr.refdef.drawSurfs points at the thread's between frames with r_smp)
+	n = tr.refdef.numDrawSurfs < MAX_DRAWSURFS ? tr.refdef.numDrawSurfs : MAX_DRAWSURFS;
+	for ( i = 0; i < n; i++ ) {
+		drawSurf_t *ds = &backEndData->drawSurfs[i];
+		unsigned int sortedIndex = ( ds->sort >> QSORT_SHADERNUM_SHIFT ) & ( MAX_SHADERS - 1 );
 
-		while ( 1 ) {
-			switch ( *(const int *)curCmd ) {
-			case RC_SET_COLOR:
-				{
-				const setColorCommand_t *sc_cmd = (const setColorCommand_t *)curCmd;
-				curCmd = (const void *)(sc_cmd + 1);
-				break;
-				}
-			case RC_STRETCH_PIC:
-				{
-				const stretchPicCommand_t *sp_cmd = (const stretchPicCommand_t *)curCmd;
-				curCmd = (const void *)(sp_cmd + 1);
-				break;
-				}
-			case RC_DRAW_SURFS:
-				{
-				int i;
-				drawSurf_t	*drawSurf;
-				shader_t	*pShader;
-				int			fogNum;
-				int			entityNum;
-				int			dlightMap;
-				int			sortedIndex;
-				const drawSurfsCommand_t *ds_cmd =  (const drawSurfsCommand_t *)curCmd;
+		if ( sortedIndex >= (unsigned int)newShader ) {
+			ds->sort = ( ds->sort & ~( (unsigned int)( MAX_SHADERS - 1 ) << QSORT_SHADERNUM_SHIFT ) ) | ( ( sortedIndex + 1 ) << QSORT_SHADERNUM_SHIFT );
+		}
+	}
+	// the sprites' too (R_AddSpriteSurf, and refSprite_t::shaderNum that
+	// the back end reads)
+	n = tr.refdef.numSpriteSurfs < MAX_SPRITESURFS ? tr.refdef.numSpriteSurfs : MAX_SPRITESURFS;
+	for ( i = 0; i < n; i++ ) {
+		drawSurf_t *ds = &backEndData->spriteSurfs[i];
+		refSprite_t *sprite = (refSprite_t *)ds->surface;
+		unsigned int sortedIndex = ( ds->sort >> QSORT_SHADERNUM_SHIFT ) & ( MAX_SHADERS - 1 );
 
-				for( i = 0, drawSurf = ds_cmd->drawSurfs; i < ds_cmd->numDrawSurfs; i++, drawSurf++ ) {
-					R_DecomposeSort( drawSurf->sort, &entityNum, &pShader, &fogNum, &dlightMap );
-                    sortedIndex = (( drawSurf->sort >> QSORT_SHADERNUM_SHIFT ) & (MAX_SHADERS-1));
-					if( sortedIndex >= newShader ) {
-						sortedIndex++;
-						drawSurf->sort = (sortedIndex << QSORT_SHADERNUM_SHIFT) | entityNum | ( fogNum << QSORT_FOGNUM_SHIFT ) | (int)dlightMap;
-					}
-				}
-				curCmd = (const void *)(ds_cmd + 1);
-				break;
-				}
-			case RC_DRAW_BUFFER:
-				{
-				const drawBufferCommand_t *db_cmd = (const drawBufferCommand_t *)curCmd;
-				curCmd = (const void *)(db_cmd + 1);
-				break;
-				}
-			case RC_SWAP_BUFFERS:
-				{
-				const swapBuffersCommand_t *sb_cmd = (const swapBuffersCommand_t *)curCmd;
-				curCmd = (const void *)(sb_cmd + 1);
-				break;
-				}
-			case RC_END_OF_LIST:
-			default:
-				return;
-			}
+		if ( sortedIndex >= (unsigned int)newShader ) {
+			ds->sort = ( ds->sort & ~( (unsigned int)( MAX_SHADERS - 1 ) << QSORT_SHADERNUM_SHIFT ) ) | ( ( sortedIndex + 1 ) << QSORT_SHADERNUM_SHIFT );
+		}
+		if ( sprite->shaderNum >= newShader ) {
+			sprite->shaderNum++;
 		}
 	}
 }
@@ -3007,7 +2980,14 @@ static shader_t *GeneratePermanentShader( void ) {
 		}
 	}
 
+	// the sort keys of the draw surfaces made so far name the shaders by
+	// their place in tr.sortedShaders (R_AddDrawSurf, R_DecomposeSort), which
+	// SortNewShader moves: those of this frame are fixed, and with r_smp the
+	// thread, which decodes its frame's keys with the same table, is done
+	// with its frame first
+	R_FrontEndSync();
 	SortNewShader();
+	FixRenderCommandList( newShader->sortedIndex );
 
 	currentShader = NULL;
 

@@ -545,8 +545,8 @@ static qboolean RB_SkinEntity( unsigned int serial ) {
 	}
 	Com_Memcpy( data, backEnd.ori.viewOrigin, sizeof( vec3_t ) );
 	data[3] = 0;
-	Com_Memcpy( data + 4, &TIKI_Skel_Bones[ent->e.bonestart], sizeof( skelBoneCache_t ) * numBones );
-	Com_Memcpy( data + 4 + numBones * 16, &skeletorMorphCache[ent->e.morphstart], sizeof( int ) * numMorphs );
+	Com_Memcpy( data + 4, &backEnd.refdef.skelBones[ent->e.bonestart], sizeof( skelBoneCache_t ) * numBones );
+	Com_Memcpy( data + 4 + numBones * 16, &backEnd.refdef.skelMorphs[ent->e.morphstart], sizeof( int ) * numMorphs );
 
 	ent->skinSerial = serial;
 	ent->skinBonestart = ent->e.bonestart;

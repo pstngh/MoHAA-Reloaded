@@ -7551,6 +7551,42 @@ selects the sample count (see Implementation notes).
     the leftover `glConfig.smpActive` early return of `SurfIsOffscreen`
     (Quake 3 tessellated there; this one reads the surface's points) is
     gone, so both modes cull the same.
+  - Per-frame pools (2026-11-01). Everything the thread reads that the
+    front end makes per frame is the frame's own, in `backEndData`:
+    the static models' surfaces with their LOD (`staticSurfaceFrame_t`,
+    was the global `g_staticSurfaces`), the terrain patches with the
+    slots of their triangles (`terrainPatchFrame_t`, was a walk of
+    `g_pTris`), the skeletal models' bones and morph weights
+    (`skelBones`, `skelMorphs`, were `TIKI_Skel_Bones` and
+    `skeletorMorphCache`, which `TIKI_Reset_Caches` reset every scene: the
+    menu's player models flickered). The sky and far-clip flags that
+    decide the colour clear travel with the view (`viewParms_t`), the
+    static models' lighting reads `backEnd.refdef`.
+  - Flickering brushes (2026-11-01): `R_DrawLensFlares`, on the thread,
+    began with `R_RotateForViewer`, which zeroes and rewrites `tr.ori`
+    and `tr.viewParms.world` for the front end; `R_CullWorldFace` culls
+    every brush against `tr.ori.viewOrigin`, so while the thread drew the
+    flares the front end culled the next frame's world against a view
+    origin of 0: faces missing for a frame, the sky through them, worst
+    outside (the sky portal is a second view, with the flares again). The
+    flare code reads `backEnd.viewParms.world` and `backEnd.refdef` now.
+    A back-end function with a front-end name hid it from a search of
+    `RB_*` for the front end's view setup: search by what is written.
+  - A shader made during play (an effect's first spawn, a model first
+    seen) moves the shaders above it in `tr.sortedShaders`, which the
+    sort keys name shaders by (`R_DecomposeSort`): the thread decoding
+    its frame's keys drew surfaces under the neighbouring shader for a
+    frame. `GeneratePermanentShader` waits for the thread first and
+    `FixRenderCommandList` (dead code since the command list changed)
+    fixes the frame's draw surfaces and sprites in `backEndData`.
+  - How the last two were found, since screenshots can't catch them (a
+    screenshot's list is waited for): a trace of every world draw on the
+    thread (pipeline key, textures, counts, the state struct's hash, the
+    batch's surfaces) compared with the frame before's when the view
+    stands still; a difference named the field (a batch with one more
+    face, a world batch with a model's modelview). Serialising the
+    hand-over (a test cvar that waited right after it) showed no
+    differences, so the race was in the overlap.
 - **Mid-frame flush.** `vk_read_pixels`, and uploads that don't fit in the
   staging buffer, submit what the frame recorded so far, wait for it and
   continue in the same command buffers (a new main-buffer "segment").

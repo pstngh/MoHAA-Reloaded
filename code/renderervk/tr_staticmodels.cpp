@@ -25,11 +25,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "tr_local.h"
 #include "../corepp/tiki.h"
 
-#define MAX_STATIC_MODELS_SURFS    8192
+// MAX_STATIC_MODELS_SURFS: tr_local.h (the frame's pool of them, backEndData_t)
 #define MAX_DISTINCT_STATIC_MODELS 1000
 
-int             g_nStaticSurfaces;
-staticSurface_t g_staticSurfaces[MAX_STATIC_MODELS_SURFS];
 qboolean        g_bInfostaticmodels = qfalse;
 
 // The sphere each static model is first culled with, computed once per map
@@ -425,7 +423,7 @@ void R_AddStaticModelSurfaces(void)
                 surface = skelmodel->pSurfaces;
                 for (j = 0; j < skelmodel->numSurfaces;
                      j++, ofsStaticData += surface->numVerts, surface = surface->pNext, dsurf++) {
-                    if (g_nStaticSurfaces >= MAX_STATIC_MODELS_SURFS) {
+                    if (backEndData->numStaticSurfaces >= MAX_STATIC_MODELS_SURFS) {
                         ri.Printf(
                             PRINT_DEVELOPER,
                             "^~^~^ ERROR: MAX_STATIC_MODELS_SURFS exceeded - surface of '%s' skipped\n",
@@ -434,7 +432,11 @@ void R_AddStaticModelSurfaces(void)
                         continue;
                     }
 
-                    s_surface                = &g_staticSurfaces[g_nStaticSurfaces++];
+                    // the frame's own pool (backEndData_t), with the level of detail the
+                    // back end draws it at: the render thread reads it while the next
+                    // frame fills its own
+                    backEndData->staticSurfaces[backEndData->numStaticSurfaces].lod = SM->lodpercentage[0];
+                    s_surface                = &backEndData->staticSurfaces[backEndData->numStaticSurfaces++].surf;
                     s_surface->ident         = SF_TIKI_STATIC;
                     s_surface->ofsStaticData = ofsStaticData;
                     s_surface->surface       = surface;
