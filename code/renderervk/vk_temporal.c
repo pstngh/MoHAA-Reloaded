@@ -207,6 +207,11 @@ typedef struct {
 #define VK_DOF_REFERENCE_FOCUS		128.0f
 #define VK_DOF_PROJ_FOV80			1.5890f
 
+// the ambient occlusion's apply pass's push constants, saved by
+// VK_TemporalAo for VK_TemporalAoApply (it draws in the scene's render pass
+// right after, recorded on the same thread)
+static vkAoPush_t vk_aoApplyPush;
+
 // pairs of samples of the motion blur's gather at r_motionBlurQuality 0, 1, 2
 static const int vk_mbPairs[3] = { 4, 6, 8 };
 // samples of each of the depth of field's gathers at r_dofQuality 0, 1, 2
@@ -1107,8 +1112,9 @@ static VkPipeline VK_TemporalCompositePipeline( VkBool32 motionBlur, VkBool32 do
 VK_TemporalAoApplyPipeline
 
 The ambient occlusion into the scene: a triangle over the framebuffer in the
-scene's render pass (vkt.renderPass), no depth test; the color blended ONE,
-SRC_ALPHA (dst a + rgb, ao_denoise.comp), its alpha kept, the motion vectors
+scene's render pass (vkt.renderPass), no depth test; ao_apply.frag upsamples
+the grid's blurred visibility itself; the color blended ONE,
+SRC_ALPHA (dst a + rgb), its alpha kept, the motion vectors
 and the normals not written
 ===============
 */
@@ -1261,7 +1267,9 @@ static const VkDescriptorType vk_aoTypes[VK_TEMPORAL_AO_BINDINGS] = {
 	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 	VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
 };
-static const VkDescriptorType vk_aoApplyTypes[1] = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER };
+static const VkDescriptorType vk_aoApplyTypes[3] = {
+	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+};
 static const VkDescriptorType vk_mbTypes[VK_TEMPORAL_MB_BINDINGS] = {
 	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 	VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
@@ -1342,10 +1350,15 @@ static void VK_TemporalWriteStaticSets( void ) {
 		VK_TemporalWriteSet( vkt.compositeTaaSets[cur], vk_compositeTypes, views, layouts, VK_TEMPORAL_COMPOSITE_BINDINGS, 0 );
 	}
 
-	// the ambient occlusion's apply pass
-	views[0] = ao ? vkt.aoResult.view : placeholder;
-	layouts[0] = VK_IMAGE_LAYOUT_GENERAL;
-	VK_TemporalWriteSet( vkt.aoApplySet, vk_aoApplyTypes, views, layouts, 1, 0 );
+	// the ambient occlusion's apply pass: the pixels' view distances (the
+	// prefilter's level 0), the grid's, and the grid's blurred visibility
+	for ( cur = 0; cur < VK_TEMPORAL_HISTORY; cur++ ) {
+		views[0] = ao ? vkt.aoDepthLevel[cur][0] : placeholder;
+		views[1] = ao ? vkt.aoGrid[cur].view : placeholder;
+		views[2] = ao ? vkt.aoBlur2.view : placeholder;
+		layouts[0] = layouts[1] = layouts[2] = VK_IMAGE_LAYOUT_GENERAL;
+		VK_TemporalWriteSet( vkt.aoApplySets[cur], vk_aoApplyTypes, views, layouts, 3, 0 );
+	}
 }
 
 /*
@@ -1436,8 +1449,8 @@ void VK_TemporalInitPipelines( void ) {
 	// the ambient occlusion: one set and layout for its compute passes
 	vkt.aoSetLayout = VK_TemporalSetLayout( vk_aoTypes, VK_TEMPORAL_AO_BINDINGS, VK_SHADER_STAGE_COMPUTE_BIT );
 	vkt.aoLayout = VK_TemporalSimpleLayout( vkt.aoSetLayout, VK_SHADER_STAGE_COMPUTE_BIT, sizeof( vkAoPush_t ) );
-	vkt.aoApplySetLayout = VK_TemporalSetLayout( vk_aoApplyTypes, 1, VK_SHADER_STAGE_FRAGMENT_BIT );
-	vkt.aoApplyLayout = VK_TemporalPipelineLayout( &vkt.aoApplySetLayout, 1, NULL, 0 );
+	vkt.aoApplySetLayout = VK_TemporalSetLayout( vk_aoApplyTypes, 3, VK_SHADER_STAGE_FRAGMENT_BIT );
+	vkt.aoApplyLayout = VK_TemporalSimpleLayout( vkt.aoApplySetLayout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof( vkAoPush_t ) );
 	vkt.aoPrefilterShader = VK_CreateShaderModule( vk_spirv_ao_prefilter_comp, vk_spirv_ao_prefilter_comp_size );
 	vkt.aoMainShader = VK_CreateShaderModule( vk_spirv_gtao_main_comp, vk_spirv_gtao_main_comp_size );
 	vkt.aoTemporalShader = VK_CreateShaderModule( vk_spirv_ao_temporal_comp, vk_spirv_ao_temporal_comp_size );
@@ -1483,14 +1496,14 @@ void VK_TemporalInitPipelines( void ) {
 	poolSizes[0].descriptorCount = VK_MAX_FRAMES * 4;
 	poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	poolSizes[1].descriptorCount = VK_MAX_FRAMES * ( 2 + VK_TEMPORAL_TAA_BINDINGS - 2 + VK_TEMPORAL_AO_SAMPLED + VK_TEMPORAL_MB_SAMPLED + VK_TEMPORAL_DOF_SAMPLED + VK_TEMPORAL_DOF_FILTERED )
-		+ VK_TEMPORAL_HISTORY * 2 * VK_TEMPORAL_COMPOSITE_BINDINGS + 1;
+		+ VK_TEMPORAL_HISTORY * ( 2 * VK_TEMPORAL_COMPOSITE_BINDINGS + 3 );
 	poolSizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	poolSizes[2].descriptorCount = VK_MAX_FRAMES * ( 4 + VK_TEMPORAL_AO_BINDINGS - VK_TEMPORAL_AO_SAMPLED + VK_TEMPORAL_MB_BINDINGS - VK_TEMPORAL_MB_SAMPLED
 		+ VK_TEMPORAL_DOF_BINDINGS - VK_TEMPORAL_DOF_SAMPLED - VK_TEMPORAL_DOF_FILTERED )
 		+ VK_TEMPORAL_HISTORY * VK_TEMPORAL_MAX_PASSES * VK_TEMPORAL_TAIL_IMAGES;
 	Com_Memset( &poolInfo, 0, sizeof( poolInfo ) );
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	poolInfo.maxSets = VK_MAX_FRAMES * 6 + VK_TEMPORAL_HISTORY * ( VK_TEMPORAL_MAX_PASSES + 2 ) + 1;
+	poolInfo.maxSets = VK_MAX_FRAMES * 6 + VK_TEMPORAL_HISTORY * ( VK_TEMPORAL_MAX_PASSES + 3 );
 	poolInfo.poolSizeCount = ARRAY_LEN( poolSizes );
 	poolInfo.pPoolSizes = poolSizes;
 	VK_CHECK( qvkCreateDescriptorPool( vk.device, &poolInfo, NULL, &vkt.pool ) );
@@ -1501,7 +1514,7 @@ void VK_TemporalInitPipelines( void ) {
 	VK_TemporalAllocateSets( vkt.compositeSetLayout, vkt.compositeTaaSets, VK_TEMPORAL_HISTORY );
 	VK_TemporalAllocateSets( vkt.taaSetLayout, vkt.taaSets, VK_MAX_FRAMES );
 	VK_TemporalAllocateSets( vkt.aoSetLayout, vkt.aoSets, VK_MAX_FRAMES );
-	VK_TemporalAllocateSets( vkt.aoApplySetLayout, &vkt.aoApplySet, 1 );
+	VK_TemporalAllocateSets( vkt.aoApplySetLayout, vkt.aoApplySets, VK_TEMPORAL_HISTORY );
 	VK_TemporalAllocateSets( vkt.mbSetLayout, vkt.mbSets, VK_MAX_FRAMES );
 	VK_TemporalAllocateSets( vkt.dofSetLayout, vkt.dofSets, VK_MAX_FRAMES );
 	for ( i = 0; i < VK_TEMPORAL_HISTORY; i++ ) {
@@ -1587,7 +1600,7 @@ void VK_TemporalShutdownPipelines( void ) {
 	Com_Memset( vkt.aoSets, 0, sizeof( vkt.aoSets ) );
 	Com_Memset( vkt.mbSets, 0, sizeof( vkt.mbSets ) );
 	Com_Memset( vkt.dofSets, 0, sizeof( vkt.dofSets ) );
-	vkt.aoApplySet = VK_NULL_HANDLE;
+	Com_Memset( vkt.aoApplySets, 0, sizeof( vkt.aoApplySets ) );
 }
 
 /*
@@ -1900,8 +1913,8 @@ Ground truth ambient occlusion of the primary view, outside of a render
 pass, after the view's opaque surfaces (vk_ao_scene; the scene's images are
 in their attachment layouts): the depth buffer to view distances
 (ao_prefilter.comp), the occlusion (gtao_main.comp), blended with the last
-frames' (ao_temporal.comp), blurred into what the apply pass blends
-(ao_denoise.comp, once or twice). The depth, normal and motion images are
+frames' (ao_temporal.comp), blurred into what the apply pass upsamples and
+blends (ao_denoise.comp, once or twice). The depth, normal and motion images are
 the passes' to read in between, then attachments again. fog: the view's
 draws' (start, end, r, g, b), NULL for none. Sets vkt.aoRan when it ran
 ===============
@@ -1983,6 +1996,9 @@ void VK_TemporalAo( VkCommandBuffer cmd, const float *fog ) {
 	push.ints[2] = r_aoTemporal->integer > 1 ? (int)( vk.frameSerial & 63 ) : 0;
 	twoBlurs = q == 3 || !history;
 	push.ints[3] = twoBlurs ? 0 : 1;	// AO_PASS_HISTORY_TO_BLUR, AO_PASS_HISTORY_TO_RESULT
+	// the apply pass pushes the same block (it upsamples and blends,
+	// ao_apply.frag); it draws right after, in the scene's render pass
+	vk_aoApplyPush = push;
 
 	// what the scene drew so far, to the passes; the ambient occlusion's
 	// images were last read by the last frame's passes and composite
@@ -2031,10 +2047,15 @@ void VK_TemporalAo( VkCommandBuffer cmd, const float *fog ) {
 		qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoDenoisePipeline );
 		qvkCmdDispatch( cmd, groupsX, groupsY, 1 );
 	}
-	// the grid's last blur to the views' pixels, into the result
-	VK_TemporalComputeBarrier( cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT );
-	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoUpsamplePipeline );
-	qvkCmdDispatch( cmd, ( rect[2] + 7 ) / 8, ( rect[3] + 7 ) / 8, 1 );
+	// the grid's last blur to the views' pixels, into the result, only for
+	// r_temporalShow 9 (its view of the result): the apply pass upsamples
+	// itself (ao_apply.frag), which cost less than writing the result out
+	// and reading it back
+	if ( vkt.showMode == 9 ) {
+		VK_TemporalComputeBarrier( cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT );
+		qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoUpsamplePipeline );
+		qvkCmdDispatch( cmd, ( rect[2] + 7 ) / 8, ( rect[3] + 7 ) / 8, 1 );
+	}
 
 	// the scene's images back to the draws; the result to the apply pass
 	// (and the composite's r_temporalShow views)
@@ -2060,9 +2081,10 @@ void VK_TemporalAo( VkCommandBuffer cmd, const float *fog ) {
 ===============
 VK_TemporalAoApply
 
-In the scene's render pass, after VK_TemporalAo: its result blended into
-the scene's color over the primary view (ao_apply.frag). The caller rebinds
-what it draws with next
+In the scene's render pass, after VK_TemporalAo: the grid's blurred
+visibility upsampled and blended into the scene's color over the primary
+view (ao_apply.frag, with the push constants VK_TemporalAo saved). The
+caller rebinds what it draws with next
 ===============
 */
 void VK_TemporalAoApply( VkCommandBuffer cmd ) {
@@ -2081,7 +2103,8 @@ void VK_TemporalAoApply( VkCommandBuffer cmd ) {
 	scissor.extent.height = vkt.view.rect[3];
 
 	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkt.aoApplyPipeline );
-	qvkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkt.aoApplyLayout, 0, 1, &vkt.aoApplySet, 0, NULL );
+	qvkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkt.aoApplyLayout, 0, 1, &vkt.aoApplySets[vkt.current], 0, NULL );
+	qvkCmdPushConstants( cmd, vkt.aoApplyLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof( vk_aoApplyPush ), &vk_aoApplyPush );
 	qvkCmdSetViewport( cmd, 0, 1, &viewport );
 	qvkCmdSetScissor( cmd, 0, 1, &scissor );
 	qvkCmdDraw( cmd, 3, 1, 0, 0 );

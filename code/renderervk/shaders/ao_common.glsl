@@ -29,8 +29,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 //    (AoBlur) into the factor the apply pass multiplies the scene with
 //    (AoResult, ao_apply.frag), or the first of two blurs
 //  - ao_denoise.comp: the second of two blurs
-//  - ao_upsample.comp: the half resolution's blurred
-//    visibility to the framebuffer's pixels, into the result
+//  - ao_apply.frag: the half resolution's blurred visibility to the
+//    framebuffer's pixels, blended into the scene (ao_upsample.comp does
+//    the same into the result image, only for r_temporalShow 9's view)
 // View distances are positive, the view weapon's negative (it is in its own
 // depth range and only occludes itself), the sky at the far distance.
 // The occlusion, its blending over frames and its blur work on a grid
@@ -115,17 +116,8 @@ ivec2 AoGridHi() {
 	return ( pc.view.rect.xy + pc.view.rect.zw - 1 ) >> AO_SHIFT;
 }
 
-// the sky and what is farther at AoFar. The view distances are 32-bit
-// floats: in half floats (XeGTAO's) a wall close to the eye or seen at a
-// grazing angle stepped from pixel to pixel, each step a ledge that
-// occluded the next: the wall went dark in stripes
-float AoFar() {
-	return min( pc.view.depth.w, 60000.0 );
-}
-
-bool AoIsFar( float d ) {
-	return d >= AoFar() * 0.999;
-}
+// AoFar, AoIsFar, AoMultiBounce, AoResult (ao_apply.frag shares them)
+#include "ao_result.glsl"
 
 // the view distance of a pixel from its depth and its normal's class
 float AoDistance( float wz, float a ) {
@@ -185,39 +177,3 @@ float AoBlur( float v[9], float z[13], float frames, bool final ) {
 	return sum / ( center + dot( eC, vec4( 1.0 ) ) + wTL + wTR + wBL + wBR );
 }
 
-// Jimenez et al. 2016, the multi-bounce fit
-float AoMultiBounce( float v, float albedo ) {
-	float a = 2.0404 * albedo - 0.3324;
-	float b = -4.7951 * albedo + 0.6417;
-	float c = 2.7552 * albedo + 0.6903;
-
-	return max( v, ( ( v * a + b ) * v + c ) * v );
-}
-
-// what ao_apply.frag blends into the scene for the blurred visibility v at
-// view distance sd: v to the power r_aoStrength, the multi-bounce fit, in
-// the scene's gamma-encoded values (2.2: the game draws them so), undone
-// through the fog: the scene is C f + fog (1 - f), the occlusion belongs on
-// C alone; with a the factor, rgb = fog (1 - f)(1 - a), blended ONE,
-// SRC_ALPHA: dst a + rgb
-vec4 AoResult( float v, float sd ) {
-	float d = abs( sd );
-
-	if ( AoIsFar( d ) ) {
-		return vec4( 0.0, 0.0, 0.0, 1.0 );
-	}
-	// in linear light, then the scene's encoding
-	v = pow( clamp( v, 0.0, 1.0 ), pc.ao.w );
-	if ( pc.ao2.x > 0.0 ) {
-		v = AoMultiBounce( v, pc.ao2.x );
-	}
-	float a = pow( clamp( v, 0.0, 1.0 ), 1.0 / 2.2 );
-	vec3 fog = vec3( 0.0 );
-
-	if ( pc.fogColor.w != 0.0 ) {
-		float f = clamp( d * pc.fogParams.x + pc.fogParams.y, 0.0, 1.0 );
-
-		fog = pc.fogColor.rgb * ( 1.0 - f ) * ( 1.0 - a );
-	}
-	return vec4( fog, a );
-}

@@ -773,6 +773,10 @@ below are done.
   upsampled along the depth, always (the user's choice, seeing no
   difference; it was the cvar `r_aoHalfRes` for a few hours first): 0.78 to 0.31 ms at quality 2 at 2560x1440, the frames
   of the room one level off in 3 to 10 % of the pixels.
+  Since Plan 50 (the user's request: the temporal path's cost) the apply
+  pass upsamples the grid's blurred visibility itself instead of reading
+  back a result image a pass wrote: 0.31 to 0.26 ms, the frames one level
+  off where the factor is no longer rounded to 8 bits on the way.
   See Implementation notes, Ambient occlusion
 - motion blur (2026-10-27, Plan 46, the renderer; the user's request: a
   velocity motion blur from the motion vectors and the depth): with
@@ -1011,7 +1015,7 @@ Cvars of the backend:
 | `r_vkSubmitThread` (latched, archived, default 0) | 1: a thread submits and presents the frames and acquires the swapchain images, so the main thread never waits in `vkQueueSubmit`, `vkAcquireNextImageKHR` or `vkQueuePresentKHR` (see Implementation notes, Submit thread, and Performance, Submit thread); the swapchain then has 5 images without vsync, 3 with FIFO. The startup line `Vulkan present mode: ..., N swapchain images, N frames in flight, submit thread` says what is used |
 | `r_temporal` (latched, archived, default 0) | 1: the temporal path: the 3D views are drawn into an RGBA16F scene with motion vectors and normals, for temporal anti-aliasing (`r_taa`), ambient occlusion (`r_ao`), motion blur (`r_motionBlur`) and the HDR look; their own images (the depth pyramid, histories) are made only while they are on; off with multisampling (see Implementation notes, Temporal path) |
 | `r_ao` (archived, default 0) | with `r_temporal 1`: ground truth ambient occlusion (GTAO) of the opaque surfaces, before what is blended over them (see Implementation notes, Ambient occlusion) |
-| `r_aoQuality` (archived, default 2, 0 to 3) | with `r_ao 1`: directions and samples a pixel: 1 x 2, 2 x 2, 3 x 3, 9 x 3 a side (XeGTAO's low, medium, high and ultra; ultra blurs twice). GPU time over the temporal path at full resolution, before Plan 49, at 2560x1440 0.43, 0.51, 0.69, 1.62 ms, at 1920x1080 0.23, 0.28, 0.38, 0.80; at half resolution since, quality 2 0.31 ms at 2560x1440 |
+| `r_aoQuality` (archived, default 2, 0 to 3) | with `r_ao 1`: directions and samples a pixel: 1 x 2, 2 x 2, 3 x 3, 9 x 3 a side (XeGTAO's low, medium, high and ultra; ultra blurs twice). GPU time over the temporal path at full resolution, before Plan 49, at 2560x1440 0.43, 0.51, 0.69, 1.62 ms, at 1920x1080 0.23, 0.28, 0.38, 0.80; at half resolution since, quality 2 0.31 ms at 2560x1440, 0.26 since Plan 50 |
 | `r_aoRadius` (archived, default 48, 4 to 256) | with `r_ao 1`: how far occluders reach, in world units |
 | `r_aoStrength` (archived, default 1.5, 0 to 4) | with `r_ao 1`: the visibility to this power (1: as computed) |
 | `r_aoFalloff` (archived, default 0.6, 0.05 to 1) | with `r_ao 1`: the share of the radius over which occluders fade out |
@@ -8694,16 +8698,17 @@ selects the sample count (see Implementation notes).
     Images per reader: 102 MB at 2560x1440): `aoDepth[2]` view distances
     (R32F, 5 levels, the weapon's negative, the sky at `AoFar`; this
     frame's and the last one's), `aoRaw` (R8: one frame's visibility), `aoHistory[2]` (RG16F: the blended
-    visibility, its frames), `aoBlur` (RG16F), `aoResult` (RGBA8: what the
-    apply pass blends). Since Plan 49 `aoRaw`, `aoHistory` and
+    visibility, its frames), `aoBlur` (RG16F), `aoResult` (RGBA8: the
+    factor and the fog's part, written only for `r_temporalShow 9`'s view
+    since Plan 50: the apply pass upsamples itself). Since Plan 49 `aoRaw`, `aoHistory` and
     `aoBlur` are at half the size, with `aoGrid[2]` (R32F) and `aoBlur2`
     (RG16F) beside them (about 75 MB at 2560x1440). One descriptor set and push constant block
     (`vkAoPush_t`, 208 bytes) for the compute passes, written each frame.
   - *Barriers.* One call before: the depth image to
     `DEPTH_STENCIL_READ_ONLY`, the normals and the motion vectors to
     `SHADER_READ_ONLY`, the shader writes before visible; one between the
-    passes; one after: those back to attachments and the result to the
-    apply pass.
+    passes; one after: those back to attachments and what the apply pass
+    reads (the grid's blur, its distances, level 0) to it.
   - *View distances* (`ao_prefilter.comp`): 8 x 8 invocations, 2 x 2
     pixels each from a gather of the depth and one of the normals' class;
     levels 1 to 4 through shared memory with XeGTAO's weights (the nearer
@@ -8759,7 +8764,8 @@ selects the sample count (see Implementation notes).
     weighted 1.2 (0.24 for the first of two) times 1 + a quarter of the
     frames blended past the first. Two blurs at quality 3 and without
     history: the first into `aoBlur`, the second `ao_denoise.comp`'s.
-    The last makes the result (`AoResult`): the visibility to
+    The blurred visibility becomes the result (`AoResult`, in the apply
+    pass since Plan 50, Half resolution below): the visibility to
     `r_aoStrength`, the multi-bounce fit, to the scene's encoding (1 /
     2.2: the game draws gamma-encoded values), and the fog's part: the
     scene is C f + fog (1 - f) (the draws' linear fog of the view
@@ -8817,13 +8823,23 @@ selects the sample count (see Implementation notes).
     the full resolution's at that pixel, its samples from the full
     resolution's view distances (`u_aoLevels`); the history, its motion
     and the blurs' edges on the grid (the edges' tolerance doubled: a
-    texel is two pixels across); the last blur into `aoBlur2` (RG16F), then
-    `ao_upsample.comp` over the views' pixels (before the scene's render
-    pass begins again, the depth readable): each pixel's view distance from
-    the depth, the 2 x 2 texels around it weighted bilinear times 1 - their
+    texel is two pixels across); the last blur into `aoBlur2` (RG16F),
+    which the apply pass upsamples itself (`ao_apply.frag`, Plan 50): each
+    pixel's view distance from level 0 of the prefilter's distances (the
+    depth and the normals are the render pass's attachments, which a draw
+    in it can't read; the prefilter wrote `AoDistance` of every pixel
+    there), the 2 x 2 texels around it weighted bilinear times 1 - their
     distance's difference over 3 % and 1 unit (0 for the weapon against
     the world), the texel nearest in distance where none is left, then the
-    result as without it (`AoResult`, full resolution). `r_temporalShow 10`
+    result as without it (`AoResult`, in the fragment: the factor is no
+    longer rounded to 8 bits on the way). Before Plan 50 `ao_upsample.comp`
+    did the same into `aoResult`, which the apply pass read back: the pass
+    and the image's round trip cost 0.04 ms (the user's view of `dm/mohdm6`
+    at 2560x1440: the GPU frame 0.42 to 0.38 ms with the ambient occlusion
+    alone, 0.72 to 0.68 with the anti-aliasing and the motion blur too;
+    every differing pixel one level, the known 28 of the frame counter
+    aside). It still runs for `r_temporalShow 9`'s view
+    of the result, which is then the apply's to the bit. `r_temporalShow 10`
     shows the grid. First tries: the nearest and the farthest of the 2 x 2
     on alternate texels (a plane became a zigzag that occluded itself: a
     flat ceiling went blotchy), then the main pass's nearest samples from

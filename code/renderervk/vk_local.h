@@ -1072,7 +1072,7 @@ typedef struct {
 	VkPipeline		aoMainPipelines[4];	// r_aoQuality: slices and steps as specialization constants
 	VkPipeline		aoUpsamplePipeline;	// every pass at half resolution (AO_HALF)
 	VkDescriptorSet	aoSets[VK_MAX_FRAMES];	// written in each frame
-	VkDescriptorSet	aoApplySet;
+	VkDescriptorSet	aoApplySets[VK_TEMPORAL_HISTORY];
 
 	// motion blur (r_motionBlur, VK_TemporalMotionBlur: motion_blur.comp,
 	// the gather in temporal_composite.frag): each pixel's blur, its half
