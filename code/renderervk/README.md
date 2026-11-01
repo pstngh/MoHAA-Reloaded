@@ -8812,7 +8812,13 @@ selects the sample count (see Implementation notes).
     samples are 14 pixels away or more, where a half float's step tilts
     the horizon by a few degrees) changed nothing measurable (1.139
     against 1.140 ms a frame, 5 runs each): the occlusion isn't limited by
-    the bytes of its coarse samples. Not kept.
+    the bytes of its coarse samples. Not kept. Plan 50: the slice loop
+    kept rolled (`[[dont_unroll]]`, for the register pressure of the full
+    unroll) changed nothing either (0.379 against 0.377 ms GPU frame, 3
+    runs): not kept. Leaving the prefilter out speeds the passes after it
+    by more than its own time (0.127 against about 0.05 ms): its 23 MB of
+    writes drain from L2 while the occlusion reads; the writes are all
+    read later, so nothing to cut.
   - *Half resolution* (Plan 49, always: first the cvar `r_aoHalfRes`,
     removed the same day, the user seeing no difference; `AO_HALF`, a
     specialization constant of every pass, true in every pipeline: the
