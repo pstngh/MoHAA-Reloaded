@@ -7780,12 +7780,12 @@ selects the sample count (see Implementation notes).
   the trace along the view that chose between them in every frame of a
   team game, the two shader lookups of every frame, and the registration
   of both images at the load (`CG_PrecacheMatch`). `cg_crosshair_length`
-  (4), `cg_crosshair_gap` (3, from the center) and
-  `cg_crosshair_thickness` (1) are HUD pixels as the stock image was drawn
-  (16x16: white arms one pixel thick and four long, a gap of three; its
-  half-transparent black pixel at each arm's inner end is left out),
-  scaled with the height above 1920x1080 (`uiHiResScale`, rounded to whole
-  pixels), and `cg_crosshair_color` is `RRGGBB` (a leading `#` too;
+  (8), `cg_crosshair_gap` (4, from the center) and
+  `cg_crosshair_thickness` (2) are pixels at 1080 lines (CS2's default
+  crosshair without its outline: arms two pixels thick and eight long, a
+  gap of four), scaled with the screen's height as CS2 does it (rounded
+  to whole pixels, at least 1), and `cg_crosshair_color` is `RRGGBB` (a
+  leading `#` too;
   anything else is white). The layout is worked out when cgame takes the
   renderer's configuration (a map load, `vid_restart`), so a change of
   the cvars shows after one of those, and a frame only draws. The arms sit

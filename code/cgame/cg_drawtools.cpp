@@ -1367,8 +1367,8 @@ static int CG_CrosshairPixels(float value, float maximum)
 ====================
 CG_UpdateCrosshair
 
-By default the stock image's shape (textures/hud/crosshair: arms one pixel thick and four long, a gap of three),
-as it was drawn at 1080 lines. The arms sit around a center square as wide as they are thick, the same whole
+By default CS2's default crosshair without its outline, white: arms two pixels thick and eight long, a gap of four,
+at 1080 lines. The arms sit around a center square as wide as they are thick, the same whole
 number of pixels from it on every side, so the crosshair is symmetric at any size; the gap counts from the center.
 ====================
 */
