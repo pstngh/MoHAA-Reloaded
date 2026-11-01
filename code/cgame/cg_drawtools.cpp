@@ -1370,7 +1370,7 @@ static struct {
     float  arms[4][4]; // x, y, width, height, in whole pixels
 } crosshairLayout;
 
-// a size in HUD pixels (1 to maximum), in whole screen pixels
+// a size in pixels at 1080 lines (1 to maximum), scaled with the screen's height as CS2 does, in whole pixels
 static int CG_CrosshairPixels(float value, float maximum)
 {
     if (!(value >= 1.0f)) {
@@ -1378,7 +1378,7 @@ static int CG_CrosshairPixels(float value, float maximum)
     } else if (value > maximum) {
         value = maximum;
     }
-    return (int)(value * cgs.uiHiResScale[1] + 0.5f);
+    return Q_max((int)(value * cgs.glconfig.vidHeight / 1080.0f + 0.5f), 1);
 }
 
 /*
@@ -1386,7 +1386,7 @@ static int CG_CrosshairPixels(float value, float maximum)
 CG_UpdateCrosshair
 
 By default the stock image's shape (textures/hud/crosshair: arms one pixel thick and four long, a gap of three),
-in HUD pixels as it was drawn. The arms sit around a center square as wide as they are thick, the same whole
+as it was drawn at 1080 lines. The arms sit around a center square as wide as they are thick, the same whole
 number of pixels from it on every side, so the crosshair is symmetric at any size; the gap counts from the center.
 ====================
 */
