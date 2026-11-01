@@ -182,7 +182,7 @@ void CG_RegisterCvars(void)
     cg_hud                        = cgi.Cvar_Get("cg_hud", "0", 0);
     cg_huddraw_force              = cgi.Cvar_Get("cg_huddraw_force", "0", CVAR_SAVEGAME);
     cg_drawsvlag                  = cgi.Cvar_Get("cg_drawsvlag", "1", CVAR_ARCHIVE);
-    // the crosshair (CG_UpdateCrosshair): by default the stock image's shape, in HUD pixels
+    // the crosshair (CG_UpdateCrosshair): by default the stock image's shape, in pixels at 1080 lines
     ui_crosshair                  = cgi.Cvar_Get("ui_crosshair", "1", CVAR_ARCHIVE);
     cg_crosshair_length           = cgi.Cvar_Get("cg_crosshair_length", "4", CVAR_ARCHIVE);
     cg_crosshair_gap              = cgi.Cvar_Get("cg_crosshair_gap", "3", CVAR_ARCHIVE);
