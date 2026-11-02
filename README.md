@@ -1,11 +1,11 @@
 # MoHAA Reloaded: native Vulkan
 
-**MoHAA Reloaded** brings [OpenMoHAA](https://github.com/openmoh/openmohaa) natively to modern hardware. This is its `vulkan` branch: OpenMoHAA with a Vulkan renderer of its own, for 64-bit Linux and Windows (Windows not played yet). It plays Medal of Honor: Allied Assault, Spearhead and Breakthrough with your retail game data, on existing MOHAA and OpenMoHAA servers.
+**MoHAA Reloaded** brings [OpenMoHAA](https://github.com/openmoh/openmohaa) natively to modern hardware. This is its `vulkan` branch: OpenMoHAA with a Vulkan renderer of its own, for 64-bit Linux and Windows. It plays Medal of Honor: Allied Assault, Spearhead and Breakthrough with your retail game data, on existing MOHAA and OpenMoHAA servers.
 
 | Branch | Renderer | Status |
 |---|---|---|
 | `metal` | Metal, macOS on Apple Silicon | [Released](https://github.com/pstngh/MoHAA-Reloaded/releases) |
-| **`vulkan`** (this one) | Vulkan, Linux and Windows | [Released](https://github.com/pstngh/MoHAA-Reloaded/releases/tag/v1.0.0) (Windows untested) |
+| **`vulkan`** (this one) | Vulkan, Linux and Windows | [Released](https://github.com/pstngh/MoHAA-Reloaded/releases/tag/v1.0.0) |
 
 > [!IMPORTANT]
 > **This is a fork, not the upstream project.** Problems with this port belong on [this repository's tracker](https://github.com/pstngh/MoHAA-Reloaded/issues) (say which branch: `metal` or `vulkan`), not upstream's tracker or Discord.
@@ -22,11 +22,22 @@ Needs a GPU with a Vulkan 1.1 driver (on Linux Mesa's RADV, ANV or NVK, or NVIDI
 
 ## Install
 
-1. Download `openmohaa-vulkan-1.0.0-linux-amd64.tar.gz` (64-bit Linux) or `openmohaa-vulkan-1.0.0-windows-x64.zip` (64-bit Windows) from [Releases](https://github.com/pstngh/MoHAA-Reloaded/releases/tag/v1.0.0) and extract it (`tar xf openmohaa-vulkan-1.0.0-linux-amd64.tar.gz`; on Windows, right-click and Extract All). Nobody has played the Windows build on Windows yet: please report how it runs.
+1. Download `openmohaa-vulkan-1.0.0-linux-amd64.tar.gz` (64-bit Linux) or `openmohaa-vulkan-1.0.0-windows-x64.zip` (64-bit Windows) from [Releases](https://github.com/pstngh/MoHAA-Reloaded/releases/tag/v1.0.0) and extract it (`tar xf openmohaa-vulkan-1.0.0-linux-amd64.tar.gz`; on Windows, right-click and Extract All).
 2. Find your MOHAA game folder: the folder with `main/` (`Pak0.pk3` to `Pak6.pk3`; `mainta/` and `maintt/` for the expansions). Upstream's [installation guide](docs/markdown/01-intro/01-installation.md#linux-and-macos-users) shows how to get it from the GOG installer.
-3. Copy everything in the extracted folder into the game folder, next to `main/` (its own `main/` only holds the headphone sound set: let it merge), and start `launch_openmohaa_base` (or `launch_openmohaa_spearhead`, `launch_openmohaa_breakthrough`; `.exe` on Windows).
+3. Copy everything in the extracted folder into the game folder, next to `main/` (its own `main/` only holds the headphone sound set: let it merge), and start `mohlauncher` (`mohlauncher.exe` on Windows): [MoHAA Launcher](#mohaa-launcher). `launch_openmohaa_base` (or `launch_openmohaa_spearhead`, `launch_openmohaa_breakthrough`; `.exe` on Windows) start a game directly.
 
-On Linux you can also leave the game folder as it is and start the game from the extracted folder: `./openmohaa +set fs_basepath /path/to/mohaa`. `INSTALL.txt` in the download has the same steps. Configs go to `~/.config/openmohaa/` and saves and screenshots to `~/.local/share/openmohaa/` on Linux, all of them to `%APPDATA%\openmohaa\` on Windows, as with upstream's OpenMoHAA. Without a Vulkan driver the game stops and says so.
+On Linux you can also leave the game folder as it is and start the game from the extracted folder: `./openmohaa +set fs_basepath /path/to/mohaa`. `INSTALL.txt` in the download has the same steps. Started from MoHAA Launcher, the game keeps everything in the game folder (below). Started otherwise, configs go to `~/.config/openmohaa/` and saves and screenshots to `~/.local/share/openmohaa/` on Linux, all of them to `%APPDATA%\openmohaa\` on Windows, as with upstream's OpenMoHAA. Without a Vulkan driver the game stops and says so.
+
+### MoHAA Launcher
+
+`mohlauncher` (`mohlauncher.exe` on Windows) starts the game for Allied Assault, Spearhead or Breakthrough, at its main menu (**Single player**) or onto a server (**Connect**):
+
+- **Servers:** the address, the server's password and the RCON password. The servers you join are kept in a list (**Bookmark** keeps one without joining), Forte FFA built into Allied Assault's.
+- **Settings:** your name, the crosshair (with a preview), the resolution and the display mode, and Discord presence (`cl_discordPresence`, off unless you turn it on). Only what you change in the launcher goes to the game, so what you change in the game stays.
+- **Portable:** it writes only into the game folder. `mohlauncher.json` holds the servers and their passwords; the game is started with its home there (`fs_homepath`), so its configs, saves, screenshots, demos and logs go there too. A config an earlier start kept in `~/.config/openmohaa/` or `%APPDATA%\openmohaa\` is copied over once.
+- It finds the game folder by its `main/Pak0.pk3`, beside it or in the current folder, and asks for it otherwise. It needs nothing installed (on Linux, fontconfig and X11 or Wayland, as any desktop has).
+
+Its source is [`launcher/desktop`](launcher/desktop) (Rust and Slint: `cargo build --release` there); CI builds it with the game.
 
 Builds of newer commits come from [CI on this branch](https://github.com/pstngh/MoHAA-Reloaded/actions/workflows/branches-build.yml?query=branch%3Avulkan) (`out-linux-amd64`, `out-windows-x64`; needs a GitHub login, kept for a few days), or build it yourself (below).
 
@@ -47,7 +58,7 @@ Change settings in the console (`seta name value`) or at launch (`+set name valu
 |---|---|---|
 | `cl_movefps` | `100` | **Movement apart from the frame rate.** The client makes the server's commands at this rate, 85 to 125 a second, each exactly 1000 / `cl_movefps` whole ms of movement (10 at 100, 8 at 125), at any `com_maxfps`; the view turns with every frame's mouse look. Buttons and keys go with the next command (5 ms after the frame on average at 100). `0` is stock, as on `metal`: one command per frame, each as long as its frame, and at most 1000 frames a second (a higher `com_maxfps` or `0` runs at 1000). |
 | `cl_movesubgrid` | `1` | **Shots and jumps sooner**, with `cl_movefps` on, as on `metal` (notuern's idea). A fire click (primary or secondary) or a jump in the first half of a command's step gets a command of its own at the half step (5 ms after the one before at 100, 4 at 125), sent at once, and the commands after it stay where they were: that one step is split in two. At 250 frames a second and `cl_movefps 100` a shot reached a local server 2.6 ms after the click on average instead of 5.8 (at most 7.4 instead of 11.9), a jump 2.9 instead of 4.7. The cost: MOHAA's movement catches on small bumps more often in short steps, so a run whose two short steps land on a bump's lip stops there more often (10 to 14 points at that moment, at `dm/mohdm2`'s bumps); a shot or a jump at a random moment of a run stops it about as often as without (0 to 3 points more). Use and the movement keys stay on the grid. `0`: every command on the grid. |
-| `cg_crosshair_length`, `cg_crosshair_gap`, `cg_crosshair_thickness`, `cg_crosshair_color` | `4`, `3`, `1`, `FFFFFF` | The crosshair, as on `metal`: drawn as boxes in one draw, by default the stock image's shape (white arms one pixel thick and four long, a gap of three from the center; the image's dark pixel at each arm's inner end is left out). Sizes in HUD pixels (the screen's up to 1920x1080, scaled with the height above), the color as `RRGGBB`; read when a map loads or on `vid_restart`. Centered to the pixel at any size. The teammate crosshair of Spearhead and Breakthrough and `cg_crosshair`'s image are gone. |
+| `cg_crosshair_length`, `cg_crosshair_gap`, `cg_crosshair_thickness`, `cg_crosshair_color` | `8`, `4`, `2`, `FFFFFF` | The crosshair, as on `metal`: drawn as boxes in one draw, by default CS2's default crosshair without its outline, white (arms two pixels thick and eight long, a gap of four from the center). Sizes in pixels at 1080 lines, scaled with the screen's height as CS2 does it, the color as `RRGGBB`; read when a map loads or on `vid_restart`. Centered to the pixel at any size. Configs saved by earlier builds hold `4`, `3`, `1` (the stock image's shape): set the sizes for this one. The teammate crosshair of Spearhead and Breakthrough and `cg_crosshair`'s image are gone. |
 | `cg_tauntsounds` | `1` | `0` turns other players' taunts off: they aren't played at all (their chat line and radar icon stay). Your own still play. |
 | `r_fastSync` | `0` | `1`: **no tearing**, without tying the frame rate to the display (the mailbox present mode, like NVIDIA's Fast Sync): each refresh shows the newest finished frame. It costs input-to-screen time: fullscreen on a 60 Hz display here 5.5 to 6.5 ms instead of 1.5 uncapped, 6.6 to 8.0 instead of 1.9 at 250 (a faster display waits less). Its author added it for Wayland with NVIDIA, where the tearing mode stalled 0.2 ms a frame. Nothing changes where the driver has no mailbox. Latched. |
 | `r_maxDlights` | `4` | Dynamic lights a scene keeps, the nearest the view, 0 to 64 (latched). Real matches have 4 at most at once. |
@@ -111,7 +122,7 @@ Run it from `build/Release` with your game data: `./openmohaa +set fs_basepath /
 ## Looks and limits
 
 - **Looks like upstream's GL1 renderer**, except where a change bought speed: dynamic lights per pixel (a smoother falloff than GL1's lightmap texels), up to 64 of them and on doors and lifts too, and a few pixels where the drivers rasterize differently.
-- **Tested on Linux only**, on AMD (Mesa) and NVIDIA. Windows builds but hasn't been played. Reports are welcome. On macOS, play the `metal` branch.
+- **Measured on Linux**, on AMD (Mesa) and NVIDIA. Reports are welcome. On macOS, play the `metal` branch.
 
 ## More
 

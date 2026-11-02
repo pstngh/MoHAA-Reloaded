@@ -242,6 +242,28 @@ jobs:
         if (Test-Path ${{github.workspace}}/install/lib) { Copy-Item '${{github.workspace}}/install/lib/*' -Include '*.dll','*.exe' -Destination '${{github.workspace}}/package' }
 
     ###
+    # MoHAA Launcher (launcher/desktop: Rust and Slint), beside the game
+    ###
+    - name: Cache the launcher's build
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ${{github.workspace}}/source/launcher/desktop/target
+        key: ${{ runner.os }}-${{ matrix.architecture.name }}-launcher-${{ hashFiles('source/launcher/desktop/Cargo.lock') }}
+
+    - name: Build the launcher
+      working-directory: ${{github.workspace}}/source/launcher/desktop
+      # PowerShell, as the rest of the job: Git's bash would find its own link.exe before Visual Studio's. It
+      # doesn't stop at a command that fails, so each one's exit code is checked.
+      run: |
+        cargo test --locked
+        if ($LASTEXITCODE) { exit $LASTEXITCODE }
+        cargo build --release --locked
+        if ($LASTEXITCODE) { exit $LASTEXITCODE }
+        Copy-Item target/release/mohlauncher.exe -Destination '${{github.workspace}}/package'
+
+    ###
     # Artifact: the game's files only (no symbols, no installer)
     ###
 

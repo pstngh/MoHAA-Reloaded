@@ -773,7 +773,20 @@ below are done.
   upsampled along the depth, always (the user's choice, seeing no
   difference; it was the cvar `r_aoHalfRes` for a few hours first): 0.78 to 0.31 ms at quality 2 at 2560x1440, the frames
   of the room one level off in 3 to 10 % of the pixels.
-  See Implementation notes, Ambient occlusion
+  Since Plan 50 (the user's request: the temporal path's cost) the apply
+  pass upsamples the grid's blurred visibility itself instead of reading
+  back a result image a pass wrote: 0.31 to 0.26 ms, the frames one level
+  off where the factor is no longer rounded to 8 bits on the way.
+  Since Plans 51 and 52 (the same request) the occlusion, the blend over
+  frames and the blur run on a compute queue beside the next frame's
+  rendering where the device has one (`r_aoAsync`, on by default; the
+  prefilter bakes what they read, so they touch nothing of the scene),
+  and the apply pass blends the result two frames later: with the
+  anti-aliasing and the motion blur 0.78 to 0.71 ms a frame (1280 to
+  1400 fps) in the user's view. Still frames are the synchronous path's
+  within a level; in motion the occlusion trails the camera by the two
+  frames (at 60 fps a fast turn shifts it by a few dozen pixels, at a few
+  hundred fps by a few). See Implementation notes, Ambient occlusion
 - motion blur (2026-10-27, Plan 46, the renderer; the user's request: a
   velocity motion blur from the motion vectors and the depth): with
   `r_temporal 1`, `r_motionBlur 1` (archived, off by default, switched
@@ -1051,7 +1064,7 @@ Cvars of the backend:
 | `r_smp` (latched, archived, default 1) | 1: the back end (the draws' recording, the submission and the present) runs on a render thread while the game and the front end build the next frame; the frame rate is the slower half's, a frame's input reaches its present as before, and with vsync the input is read after the display is waited for, as without the thread; no thread on one core; 0: one thread (see Implementation notes, Render thread, and Performance, Render thread). The startup line `r_smp: the back end runs on a render thread` says it runs |
 | `r_temporal` (latched, archived, default 0) | 1: the temporal path: the 3D views are drawn into an RGBA16F scene with motion vectors and normals, for temporal anti-aliasing (`r_taa`), ambient occlusion (`r_ao`), motion blur (`r_motionBlur`) and the HDR look; their own images (the depth pyramid, histories) are made only while they are on; off with multisampling (see Implementation notes, Temporal path) |
 | `r_ao` (archived, default 0) | with `r_temporal 1`: ground truth ambient occlusion (GTAO) of the opaque surfaces, before what is blended over them (see Implementation notes, Ambient occlusion) |
-| `r_aoQuality` (archived, default 2, 0 to 3) | with `r_ao 1`: directions and samples a pixel: 1 x 2, 2 x 2, 3 x 3, 9 x 3 a side (XeGTAO's low, medium, high and ultra; ultra blurs twice). GPU time over the temporal path at full resolution, before Plan 49, at 2560x1440 0.43, 0.51, 0.69, 1.62 ms, at 1920x1080 0.23, 0.28, 0.38, 0.80; at half resolution since, quality 2 0.31 ms at 2560x1440 |
+| `r_aoQuality` (archived, default 2, 0 to 3) | with `r_ao 1`: directions and samples a pixel: 1 x 2, 2 x 2, 3 x 3, 9 x 3 a side (XeGTAO's low, medium, high and ultra; ultra blurs twice). GPU time over the temporal path at full resolution, before Plan 49, at 2560x1440 0.43, 0.51, 0.69, 1.62 ms, at 1920x1080 0.23, 0.28, 0.38, 0.80; at half resolution since, quality 2 0.31 ms at 2560x1440, 0.26 since Plan 50 |
 | `r_aoRadius` (archived, default 48, 4 to 256) | with `r_ao 1`: how far occluders reach, in world units |
 | `r_aoStrength` (archived, default 1.5, 0 to 4) | with `r_ao 1`: the visibility to this power (1: as computed) |
 | `r_aoFalloff` (archived, default 0.6, 0.05 to 1) | with `r_ao 1`: the share of the radius over which occluders fade out |
@@ -1059,6 +1072,7 @@ Cvars of the backend:
 | `r_aoTemporal` (archived, default 16, 1 to 64) | with `r_ao 1`: the most frames blended (a quarter of it for what moves); 1: none, the noise stays put and the blur works alone |
 | `r_aoNormals` (archived, default 0) | with `r_ao 1`: 0 the normals of the depth; 1 the draws' where they are within about 25 degrees of those (smoother curved models) |
 | `r_aoMultiBounce` (archived, default 0.4, 0 to 0.9) | with `r_ao 1`: the albedo of Jimenez's multi-bounce fit: the light occluders bounce back lightens the occlusion; 0 none |
+| `r_aoAsync` (default 1) | with `r_ao 1` and a compute queue beside the graphics one: the occlusion is computed while the next frame renders and blended in two frames later (the occlusion trails fast motion a little); 0: in its own frame, which waits for it (see Implementation notes, Ambient occlusion) |
 | `r_taa` (archived, default 0) | with `r_temporal 1`: temporal anti-aliasing; the projection is jittered with it whatever `r_temporalJitter` says (see Implementation notes, Temporal anti-aliasing) |
 | `r_taaFeedback` (archived, default 0.75, 0.5 to 0.98) | with `r_taa 1`: the weight of the history in the blend; more is smoother and blurs more in motion, less is sharper and shimmers more (it is lowered by up to a quarter for pixels that move fast). Of the pixels of a still view, with `r_taaSharpen` 0.8, 1.25 % change between frames at 0.75, 2.3 % at 0.5; 0.39 % at 0.9 with sharpening 0.3 |
 | `r_taaSharpen` (archived, default 0.8, 0 to 1) | with `r_taa 1`: sharpens the anti-aliased image when it is shown (the history stays unsharpened), within the colors of the pixel's 4 neighbours |
@@ -3650,8 +3664,8 @@ made it up to 0.03 ms longer at 144. The polling costs no measurable GPU
 time on this APU, whose CPU and GPU share a power budget: at 3840x2160 and cap 144 the
 GPU's main pass took 2.17 to 2.20 ms per frame with it, 2.16 to 2.18 with
 the old limiter and 2.00 to 2.23 with 30 µs sleeps (input to present
-0.652, 0.676 and 0.686 ms). On Windows (untested: the CI builds it, this
-machine can't run it) a sleep lasts whole timer ticks, 1 ms at best
+0.652, 0.676 and 0.686 ms). On Windows a sleep lasts whole timer ticks,
+1 ms at best
 (`Sys_PlatformInit` asks for 1 ms with `timeBeginPeriod`), so the wait
 sleeps whole milliseconds while more than 2 ms remain and polls the rest;
 `Sys_Microseconds` takes the whole seconds and the rest of
@@ -8167,12 +8181,12 @@ selects the sample count (see Implementation notes).
   the trace along the view that chose between them in every frame of a
   team game, the two shader lookups of every frame, and the registration
   of both images at the load (`CG_PrecacheMatch`). `cg_crosshair_length`
-  (4), `cg_crosshair_gap` (3, from the center) and
-  `cg_crosshair_thickness` (1) are HUD pixels as the stock image was drawn
-  (16x16: white arms one pixel thick and four long, a gap of three; its
-  half-transparent black pixel at each arm's inner end is left out),
-  scaled with the height above 1920x1080 (`uiHiResScale`, rounded to whole
-  pixels), and `cg_crosshair_color` is `RRGGBB` (a leading `#` too;
+  (8), `cg_crosshair_gap` (4, from the center) and
+  `cg_crosshair_thickness` (2) are pixels at 1080 lines (CS2's default
+  crosshair without its outline: arms two pixels thick and eight long, a
+  gap of four), scaled with the screen's height as CS2 does it (rounded
+  to whole pixels, at least 1), and `cg_crosshair_color` is `RRGGBB` (a
+  leading `#` too;
   anything else is white). The layout is worked out when cgame takes the
   renderer's configuration (a map load, `vid_restart`), so a change of
   the cvars shows after one of those, and a frame only draws. The arms sit
@@ -9048,16 +9062,18 @@ selects the sample count (see Implementation notes).
     Images per reader: 102 MB at 2560x1440): `aoDepth[2]` view distances
     (R32F, 5 levels, the weapon's negative, the sky at `AoFar`; this
     frame's and the last one's), `aoRaw` (R8: one frame's visibility), `aoHistory[2]` (RG16F: the blended
-    visibility, its frames), `aoBlur` (RG16F), `aoResult` (RGBA8: what the
-    apply pass blends). Since Plan 49 `aoRaw`, `aoHistory` and
-    `aoBlur` are at half the size, with `aoGrid[2]` (R32F) and `aoBlur2`
-    (RG16F) beside them (about 75 MB at 2560x1440). One descriptor set and push constant block
+    visibility, its frames), `aoBlur` (RG16F), `aoResult` (RGBA8: the
+    factor and the fog's part, written only for `r_temporalShow 9`'s view
+    since Plan 50: the apply pass upsamples itself). Since Plan 49 `aoRaw`, `aoHistory` and
+    `aoBlur` are at half the size, with `aoGrid[3]` (R32F, a ring of
+    three since Plan 52), `aoGridMotion[2]` (RGBA16F, Plan 51) and
+    `aoBlur2[2]` (RG16F) beside them (about 90 MB at 2560x1440). One descriptor set and push constant block
     (`vkAoPush_t`, 208 bytes) for the compute passes, written each frame.
   - *Barriers.* One call before: the depth image to
     `DEPTH_STENCIL_READ_ONLY`, the normals and the motion vectors to
     `SHADER_READ_ONLY`, the shader writes before visible; one between the
-    passes; one after: those back to attachments and the result to the
-    apply pass.
+    passes; one after: those back to attachments and what the apply pass
+    reads (the grid's blur, its distances, level 0) to it.
   - *View distances* (`ao_prefilter.comp`): 8 x 8 invocations, 2 x 2
     pixels each from a gather of the depth and one of the normals' class;
     levels 1 to 4 through shared memory with XeGTAO's weights (the nearer
@@ -9092,7 +9108,9 @@ selects the sample count (see Implementation notes).
     workgroups too), then the blur from there: the same values as a pass
     each, 0.1 ms less than the two passes). The blend: the motion of the
     pixel (the draw's motion vector where it moves, a weapon without one
-    none, else the camera's); the last result read bilinear among the 2 x
+    none, else the camera's; baked by the prefilter into `aoGridMotion`
+    with the surface's last view distance since Plan 51, so this pass
+    reads nothing of the scene); the last result read bilinear among the 2 x
     2 texels whose last view distance is the surface's (3 %, 10 % for
     what moves, and 1 unit), the texels picked by the shader and fetched
     one by one (a gather's are picked from the coordinate with 8 bits
@@ -9113,7 +9131,8 @@ selects the sample count (see Implementation notes).
     weighted 1.2 (0.24 for the first of two) times 1 + a quarter of the
     frames blended past the first. Two blurs at quality 3 and without
     history: the first into `aoBlur`, the second `ao_denoise.comp`'s.
-    The last makes the result (`AoResult`): the visibility to
+    The blurred visibility becomes the result (`AoResult`, in the apply
+    pass since Plan 50, Half resolution below): the visibility to
     `r_aoStrength`, the multi-bounce fit, to the scene's encoding (1 /
     2.2: the game draws gamma-encoded values), and the fog's part: the
     scene is C f + fog (1 - f) (the draws' linear fog of the view
@@ -9160,7 +9179,13 @@ selects the sample count (see Implementation notes).
     samples are 14 pixels away or more, where a half float's step tilts
     the horizon by a few degrees) changed nothing measurable (1.139
     against 1.140 ms a frame, 5 runs each): the occlusion isn't limited by
-    the bytes of its coarse samples. Not kept.
+    the bytes of its coarse samples. Not kept. Plan 50: the slice loop
+    kept rolled (`[[dont_unroll]]`, for the register pressure of the full
+    unroll) changed nothing either (0.379 against 0.377 ms GPU frame, 3
+    runs): not kept. Leaving the prefilter out speeds the passes after it
+    by more than its own time (0.127 against about 0.05 ms): its 23 MB of
+    writes drain from L2 while the occlusion reads; the writes are all
+    read later, so nothing to cut.
   - *Half resolution* (Plan 49, always: first the cvar `r_aoHalfRes`,
     removed the same day, the user seeing no difference; `AO_HALF`, a
     specialization constant of every pass, true in every pipeline: the
@@ -9171,18 +9196,81 @@ selects the sample count (see Implementation notes).
     the full resolution's at that pixel, its samples from the full
     resolution's view distances (`u_aoLevels`); the history, its motion
     and the blurs' edges on the grid (the edges' tolerance doubled: a
-    texel is two pixels across); the last blur into `aoBlur2` (RG16F), then
-    `ao_upsample.comp` over the views' pixels (before the scene's render
-    pass begins again, the depth readable): each pixel's view distance from
-    the depth, the 2 x 2 texels around it weighted bilinear times 1 - their
+    texel is two pixels across); the last blur into `aoBlur2` (RG16F),
+    which the apply pass upsamples itself (`ao_apply.frag`, Plan 50): each
+    pixel's view distance from level 0 of the prefilter's distances (the
+    depth and the normals are the render pass's attachments, which a draw
+    in it can't read; the prefilter wrote `AoDistance` of every pixel
+    there), the 2 x 2 texels around it weighted bilinear times 1 - their
     distance's difference over 3 % and 1 unit (0 for the weapon against
     the world), the texel nearest in distance where none is left, then the
-    result as without it (`AoResult`, full resolution). `r_temporalShow 10`
+    result as without it (`AoResult`, in the fragment: the factor is no
+    longer rounded to 8 bits on the way). Before Plan 50 `ao_upsample.comp`
+    did the same into `aoResult`, which the apply pass read back: the pass
+    and the image's round trip cost 0.04 ms (the user's view of `dm/mohdm6`
+    at 2560x1440: the GPU frame 0.42 to 0.38 ms with the ambient occlusion
+    alone, 0.72 to 0.68 with the anti-aliasing and the motion blur too;
+    every differing pixel one level, the known 28 of the frame counter
+    aside). It still runs for `r_temporalShow 9`'s view
+    of the result, which is then the apply's to the bit. `r_temporalShow 10`
     shows the grid. First tries: the nearest and the farthest of the 2 x 2
     on alternate texels (a plane became a zigzag that occluded itself: a
     flat ceiling went blotchy), then the main pass's nearest samples from
     the grid (snapped up to a pixel off their slice: a wall or a floor at
     a grazing angle occluded itself in streaks).
+  - *Async compute* (Plans 51 and 52, `r_aoAsync`, on by default; the
+    user's request: the temporal path's cost). Where the device has a
+    compute-only queue family and timeline semaphores (`vk.asyncCompute`,
+    vk_instance.c; NVIDIA, RADV and most desktops), the occlusion, the
+    blend over frames and the blur of a frame run on that queue once the
+    frame's graphics is done, beside the next frame's rendering, and the
+    apply pass blends the result two frames later (one frame in flight:
+    the compute runs during frame N + 1, frame N + 2 reads it). For that
+    the prefilter, which stays in the frame (it reads the depth and the
+    normals), bakes everything the later passes read: beside the view
+    distances the grid's motion (`aoGridMotion`, RGBA16F, half size: the
+    texel's motion, the view distance its surface had in the last frame,
+    and whether there is history, Plan 51), so they touch nothing of the
+    scene. Two timeline semaphores order it (`vkt.gfxTimeline`,
+    `vkt.aoTimeline`): every frame whose compute was submitted signals
+    gfxTimeline with its serial from its graphics submission (once, also
+    from a flush in the middle of the frame, `VK_TemporalTakeAoSubmitInfo`
+    in every submit path, the submit thread's too), the compute submission
+    waits for it (the prefilter's writes, and the apply pass has read what
+    it overwrites) and signals aoTimeline, and a frame's graphics
+    submission waits for the newest compute two or more frames old before
+    its compute and fragment stages (the apply pass's read, and the
+    prefilter writing over what the queue may still read). The grid is a
+    ring of three (a frame writes one while the queue still reads the two
+    before), `aoBlur2` and the rest alternate; the images are
+    `VK_SHARING_MODE_CONCURRENT` between the two families (storage images,
+    nothing to lose; the layout is `GENERAL` always, so no transitions
+    cross the queues). The apply pass sits out the two frames after `r_ao`
+    goes on, a load or a `vid_restart`. `vk_finish` drains the compute
+    queue too; vk_shutdown host-signals a pending wait first, or a frame
+    being recorded but never submitted would hang the device wait. The
+    synchronous path stays for devices without the queue, `r_aoAsync 0`,
+    `r_temporalShow` 9 and 10 (the composite reads what the queue would
+    still be writing) and `r_aoNormals` (the occlusion then reads the
+    scene's normals, the graphics queue's); switching drains first.
+    `vkinfo`'s gpu frame no longer sees the occlusion (it times the
+    graphics command buffers): compare wall time. Still frames match the
+    synchronous path's within a level (the converged occlusion of two
+    frames ago is today's); in motion the occlusion trails by two frames
+    of camera motion, which the blend's reprojection does not undo (a
+    fast turn at `fixedtime 16` moves 42 % of the pixels, most by 1 to 3
+    levels, some edges by up to 15; at the frame rates the effects run at
+    here the shift is a few pixels). Checked under the validation layer
+    (clean, also with the submit thread and through live toggles of
+    `r_ao`, `r_aoAsync`, the show views, `r_aoQuality` and a
+    `vid_restart`). Cost (the user's view, 2560x1440, wall time a frame,
+    `r_aoAsync` 0 against 1 of the same build): the ambient occlusion
+    alone 0.457 to 0.407 ms (2190 to 2455 fps), with the anti-aliasing
+    and the motion blur 0.780 to 0.714 (1280 to 1400); baking the motion
+    costs 0.015 ms of prefilter time, bought back here. Not done:
+    reprojecting the two frames in the apply pass (`aoGridMotion` and the
+    ring hold what it would need) would cut the trailing, for more edge
+    cases where the reprojection misses.
 - **Motion blur (Plan 46).** `r_motionBlur 1` with the temporal path
   (`VK_TemporalMotionBlur`, `shaders/motion_blur.comp`, the gather in
   `shaders/temporal_composite.frag`). McGuire, Hennessy, Bukowski and
@@ -10930,9 +11018,8 @@ Remaining:
   MB re-saved without its HDF5 chunks' padding (a changed file under
   Apache 2.0, and git keeps the old one); the obstruction traces stay on
   the main thread (the collision model's trace isn't thread-safe:
-  `cm.checkcount`). Untested: Windows (WASAPI; the package and installer
-  changes too), macOS (Core Audio, the `.app` layout), emscripten (no
-  threads: the streams decode on the main thread there). The device's
+  `cm.checkcount`). Untested: macOS (Core Audio, the `.app` layout),
+  emscripten (no threads: the streams decode on the main thread there). The device's
   period on this machine's PulseAudio is 15 ms (5 ms x 3 requested); the
   audio latency against OpenAL's was not measured.
 - The surface list (Plan 32, see Performance, Surface list): not measured
@@ -11009,8 +11096,8 @@ Remaining:
   with the old limiter's 62.5 and 166.7 frames per second, after
   `BeginFrame` (renderer and driver), and the new limiter at those old
   rates has the old tails: likely the frame rate against the 59.96 Hz
-  display, untested with a VRR display. Untested on Windows (whole
-  millisecond sleeps, the last 2 ms polled). The polled millisecond costs
+  display, untested with a VRR display. On Windows the sleeps are whole
+  milliseconds and the last 2 ms are polled. The polled millisecond costs
   0.4 to 0.7 ms of a core per frame; on this CPU sleeping through it cost
   up to 0.03 ms of input to present at 144 (lower clocks). Caps that
   divide 1000 start on the millisecond tick again: GL1's 99th percentile

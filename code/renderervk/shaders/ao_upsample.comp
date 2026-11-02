@@ -21,7 +21,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 // ao_upsample.comp -- the ambient occlusion of the half
-// resolution grid to the framebuffer's pixels (ao_common.glsl, AO_HALF): each
+// resolution grid to the framebuffer's pixels, into the result image: only
+// for r_temporalShow 9 (its view) since Plan 50; the apply pass upsamples
+// itself (ao_apply.frag, the same choices). Each
 // pixel's visibility from the 2 x 2 texels around it (the last blur's,
 // u_blur2), bilinear weights times how close each texel's view distance is
 // to the pixel's own (from the depth buffer), so the occlusion of a surface

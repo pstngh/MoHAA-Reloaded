@@ -63,6 +63,7 @@ typedef struct {
 	qboolean		present;		// present it; otherwise submit only
 	int				image;			// the swapchain image it was drawn into, -1: the offscreen image, to copy
 	VkSemaphore		acquired;		// that image's acquire semaphore, when no submission waited for it yet
+	uint64_t		aoSignalValue, aoWaitValue;	// the compute queue's ambient occlusion (VK_TemporalTakeAoSubmitInfo), 0 none
 	uint64_t		handoffUs;		// when the main thread queued it
 	uint64_t		frameStartUs;	// vk.frameStartUs of the frame
 
@@ -242,6 +243,7 @@ the swapchain is out of date the frame is submitted and not presented.
 static VkResult VK_ThreadCopyAndPresent( vkSubmitJob_t *job, vkFrame_t *frame ) {
 	VkPipelineStageFlags waitStage = VK_PresentCopyStage();
 	VkSubmitInfo submits[2];
+	vkAoSubmitChain_t aoChain;
 	VkSemaphore acquired;
 	uint32_t imageIndex;
 	int semaphore;
@@ -252,6 +254,7 @@ static VkResult VK_ThreadCopyAndPresent( vkSubmitJob_t *job, vkFrame_t *frame ) 
 	submits[0].sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 	submits[0].commandBufferCount = job->numCmds;
 	submits[0].pCommandBuffers = job->cmds;
+	VK_TemporalAoChainSubmit( &aoChain, &submits[0], job->aoSignalValue, job->aoWaitValue );
 
 	SDL_LockMutex( vk_submit.lock );
 	ahead = vk_submit.ahead;
@@ -294,6 +297,7 @@ static void VK_RunSubmitJob( vkSubmitJob_t *job, int slot ) {
 	vkFrame_t *frame = &vk.frames[slot];
 	VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 	VkSubmitInfo submit;
+	vkAoSubmitChain_t aoChain;
 	uint32_t imageIndex;
 	int semaphore;
 
@@ -314,6 +318,7 @@ static void VK_RunSubmitJob( vkSubmitJob_t *job, int slot ) {
 		}
 		submit.signalSemaphoreCount = 1;
 		submit.pSignalSemaphores = &vk.presentSemaphores[job->image];
+		VK_TemporalAoChainSubmit( &aoChain, &submit, job->aoSignalValue, job->aoWaitValue );
 		job->result = VK_ThreadSubmit( job, 1, &submit, frame->fence );
 		if ( job->result == VK_SUCCESS ) {
 			job->result = VK_ThreadPresent( job, job->image );
@@ -322,6 +327,7 @@ static void VK_RunSubmitJob( vkSubmitJob_t *job, int slot ) {
 		job->result = VK_ThreadCopyAndPresent( job, frame );
 	} else {
 		// minimized, or the frame drew nothing: the window keeps the last frame
+		VK_TemporalAoChainSubmit( &aoChain, &submit, job->aoSignalValue, job->aoWaitValue );
 		job->result = VK_ThreadSubmit( job, 1, &submit, frame->fence );
 	}
 
@@ -605,6 +611,9 @@ void VK_QueueSubmitJob( vkFrame_t *frame, const VkCommandBuffer *cmds, uint32_t 
 	job->image = image;
 	job->acquired = acquired;
 	job->frameStartUs = vk.frameStartUs;
+	// the compute queue's ambient occlusion (r_aoAsync): taken here, on
+	// the main thread
+	VK_TemporalTakeAoSubmitInfo( &job->aoSignalValue, &job->aoWaitValue );
 	if ( present && vk_submit.inlatQueued ) {
 		vk_submit.inlatQueued( job->serial );
 	}

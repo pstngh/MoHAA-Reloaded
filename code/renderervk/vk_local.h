@@ -196,8 +196,11 @@ FUNCTION POINTERS
 #define VK_DEVICE_FUNCTIONS_OPTIONAL( X ) \
 	X( vkCmdSetLineStippleEXT ) \
 	X( vkCreateRenderPass2KHR ) \
+	X( vkGetSemaphoreCounterValueKHR ) \
 	X( vkReleaseSwapchainImagesEXT ) \
-	X( vkSetHdrMetadataEXT )
+	X( vkSetHdrMetadataEXT ) \
+	X( vkSignalSemaphoreKHR ) \
+	X( vkWaitSemaphoresKHR )
 
 #define VK_DECLARE_FUNCTION( name ) extern PFN_##name q##name;
 VK_GLOBAL_FUNCTIONS( VK_DECLARE_FUNCTION )
@@ -466,6 +469,14 @@ typedef struct {
 	uint32_t			timestampValidBits;	// 0: the queue has no timestamps
 	VkQueue				queue;
 
+	// a queue of a compute-only family beside the graphics one, with
+	// timeline semaphores: the ambient occlusion's passes run on it beside
+	// the next frame's rendering (r_aoAsync, vk_temporal.c). Only the main
+	// thread submits to it
+	qboolean			asyncCompute;		// the family and the semaphores are there
+	uint32_t			computeFamily;		// VK_QUEUE_FAMILY_IGNORED: none
+	VkQueue				computeQueue;
+
 	// r_vkSubmitThread: a thread submits and presents the frames and
 	// acquires the swapchain images, and copies a frame drawn offscreen when
 	// no image was acquired by its first render pass (vk_submit.c)
@@ -648,6 +659,8 @@ void		VK_EndRenderPass( void );
 void		VK_FlushAndWait( void );
 VkCommandBuffer VK_GetUploadCommandBuffer( void );
 qboolean	VK_FormatHasFeatures( VkFormat format, VkFormatFeatureFlags features );
+void		VK_CreateImageShared( VkFormat format, VkSampleCountFlagBits samples, VkImageUsageFlags usage, VkImageAspectFlags aspect,
+				int width, int height, int mipLevels, qboolean computeShared, VkImage *image, VkDeviceMemory *memory, VkImageView *view );
 void		VK_CreateImage( VkFormat format, VkSampleCountFlagBits samples, VkImageUsageFlags usage, VkImageAspectFlags aspect,
 				int width, int height, int mipLevels, VkImage *image, VkDeviceMemory *memory, VkImageView *view );
 void		VK_DestroyTargetImage( VkImage *image, VkDeviceMemory *memory, VkImageView *view );
@@ -958,7 +971,8 @@ with shaders/temporal_common.glsl. Its readers: temporal anti-aliasing
 #define VK_TEMPORAL_MAX_PASSES	12		// dispatches of the pyramid after its levels 0 and 1
 #define VK_TEMPORAL_TAIL_SIZE	128		// a level no larger: the rest in one dispatch (hiz_build.comp, TAIL); 256 was slower: one workgroup
 #define VK_TEMPORAL_TAIL_IMAGES	8		// bindings of that dispatch: that level and up to 7 more
-#define VK_TEMPORAL_MAX_BINDINGS	21	// of a pass's descriptor set (the ambient occlusion's)
+#define VK_TEMPORAL_MAX_BINDINGS	23	// of a pass's descriptor set (the ambient occlusion's)
+#define VK_TEMPORAL_AO_GRID_RING	3	// aoGrid images (see the field)
 #define VK_TEMPORAL_AO_LEVELS	5		// of the ambient occlusion's view distances (ao_common.glsl, AO_LEVELS)
 #define VK_SKIN_RING			( VK_MAX_FRAMES + 1 )	// frame data of the skinned draws with the temporal path: see vk_alloc_skin_frame
 
@@ -1086,8 +1100,10 @@ typedef struct {
 	// opaque surfaces and its blended ones; its images are GENERAL always
 	qboolean		aoRan;			// this frame's scene has it
 	vkTemporalImage_t	aoDepth[VK_TEMPORAL_HISTORY];	// R32F view distances (the weapon's negative), VK_TEMPORAL_AO_LEVELS levels; the other one the last frame's
-	vkTemporalImage_t	aoGrid[VK_TEMPORAL_HISTORY];	// R32F, a texel a 2 x 2 pixels: the top-left one's view distance
-	vkTemporalImage_t	aoBlur2;		// RG16F, the last blur, which the upsampling reads
+	vkTemporalImage_t	aoGrid[VK_TEMPORAL_AO_GRID_RING];	// R32F, a texel a 2 x 2 pixels: the top-left one's view distance; a ring of 3: with r_aoAsync a frame writes one while the compute queue still reads the two before
+	int				aoGridIndex;	// the ring entry this scene writes (VK_TemporalAo turns it)
+	vkTemporalImage_t	aoGridMotion[VK_TEMPORAL_HISTORY];	// RGBA16F, a texel a 2 x 2 pixels: its motion, its last view distance, its class (ao_prefilter.comp)
+	vkTemporalImage_t	aoBlur2[VK_TEMPORAL_HISTORY];	// RG16F, the last blur, which the apply pass upsamples; two with r_aoAsync: the one being written and the one applied
 	VkImageView		aoDepthLevel[VK_TEMPORAL_HISTORY][VK_TEMPORAL_AO_LEVELS];
 	uint64_t		aoDepthSerial[VK_TEMPORAL_HISTORY];	// the frame each was made in, 0 for none
 	vkTemporalImage_t	aoRaw;			// R8: one frame's visibility
@@ -1102,7 +1118,27 @@ typedef struct {
 	VkPipeline		aoMainPipelines[4];	// r_aoQuality: slices and steps as specialization constants
 	VkPipeline		aoUpsamplePipeline;	// every pass at half resolution (AO_HALF)
 	VkDescriptorSet	aoSets[VK_MAX_FRAMES];	// written in each frame
-	VkDescriptorSet	aoApplySet;
+	VkDescriptorSet	aoApplySets[VK_MAX_FRAMES];	// written in each frame (the grid ring turns)
+
+	// r_aoAsync (vk.asyncCompute): the occlusion, the blend and the blur
+	// of a frame run on vk.computeQueue once the frame's graphics is done
+	// (they read only the prefilter's images), beside the next frame's
+	// rendering; the apply pass reads the result two frames later. The
+	// timeline semaphores order it: a frame's submission signals
+	// gfxTimeline with its serial (once: aoGfxSignalPending), the compute
+	// submission waits for it and signals aoTimeline with the same serial,
+	// and the frame two later waits for that before its compute and
+	// fragment stages (aoWaitPending)
+	VkSemaphore		gfxTimeline, aoTimeline;
+	VkCommandPool	aoCmdPool;
+	VkCommandBuffer	aoCmds[VK_MAX_FRAMES];
+	uint64_t		aoCmdSerial[VK_MAX_FRAMES];	// the frame that last recorded each, 0 none
+	uint64_t		aoComputeSerial;	// the last frame submitted to the compute queue, 0 none
+	uint64_t		aoComputeWait;		// the one before that
+	uint64_t		aoGfxSignalPending;	// the frame's next graphics submission signals gfxTimeline with it, 0 none
+	uint64_t		aoWaitPending;		// and waits for aoTimeline to reach this first, 0 none
+	uint64_t		aoBlurReadable[VK_TEMPORAL_HISTORY];	// the frame from which each aoBlur2 can be applied, 0 none
+	qboolean		aoApplyRun;			// this scene's apply pass draws (a result is there)
 
 	// motion blur (r_motionBlur, VK_TemporalMotionBlur: motion_blur.comp,
 	// the gather in temporal_composite.frag): each pixel's blur, its half
@@ -1194,6 +1230,21 @@ qboolean	VK_TemporalAoWanted( void );
 void		VK_TemporalAo( VkCommandBuffer cmd, const float *fog );
 void		VK_TemporalAoApply( VkCommandBuffer cmd );
 qboolean	VK_TemporalWritesBuffers( uint64_t bits );
+
+// r_aoAsync (vk.asyncCompute): what a graphics submission carries for the
+// compute queue, and the waits for it (vk_temporal.c)
+typedef struct {
+	VkSemaphore		waitSems[2];
+	VkPipelineStageFlags waitStages[2];
+	uint64_t		waitValues[2];
+	VkSemaphore		signalSems[2];
+	uint64_t		signalValues[2];
+	VkTimelineSemaphoreSubmitInfoKHR timeline;
+} vkAoSubmitChain_t;
+void		VK_TemporalTakeAoSubmitInfo( uint64_t *signalValue, uint64_t *waitValue );
+void		VK_TemporalAoChainSubmit( vkAoSubmitChain_t *c, VkSubmitInfo *submit, uint64_t signalValue, uint64_t waitValue );
+void		VK_TemporalFinishAoCompute( void );
+void		VK_TemporalAbortAoCompute( void );
 
 // cvars
 extern cvar_t	*r_vkValidation;

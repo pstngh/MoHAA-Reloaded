@@ -52,8 +52,8 @@ jobs:
     - uses: awalsh128/cache-apt-pkgs-action@latest
       name: Install required packages
       with:
-        packages: flex bison ninja-build cmake clang libpulse-dev portaudio19-dev libasound2-dev libjack-dev libpipewire-0.3-dev qtbase5-dev libdbus-1-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev libdecor-0-dev libegl1-mesa-dev libdrm-dev libgbm-dev libudev-dev
-        version: "${{ runner.os }}-${{ runner.arch }}-v2"
+        packages: flex bison ninja-build cmake clang libpulse-dev portaudio19-dev libasound2-dev libjack-dev libpipewire-0.3-dev qtbase5-dev libdbus-1-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev libdecor-0-dev libegl1-mesa-dev libdrm-dev libgbm-dev libudev-dev libfontconfig1-dev
+        version: "${{ runner.os }}-${{ runner.arch }}-v3"
 
     - name: Settings
       working-directory: ${{github.workspace}}
@@ -250,6 +250,26 @@ jobs:
         cp -l ${{github.workspace}}/thirdparties/curl/install/lib*/libcurl.so.4 '${{github.workspace}}/package/'
         if [ -d ${{github.workspace}}/install/bin ]; then cp -r ${{github.workspace}}/install/bin/openmohaa/. '${{github.workspace}}/package'; fi
         if [ -d ${{github.workspace}}/install/lib ]; then cp -r ${{github.workspace}}/install/lib/openmohaa/. '${{github.workspace}}/package'; fi
+
+    ###
+    # MoHAA Launcher (launcher/desktop: Rust and Slint), beside the game
+    ###
+    - name: Cache the launcher's build
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ${{github.workspace}}/source/launcher/desktop/target
+        key: ${{ runner.os }}-${{ matrix.architecture.name }}-launcher-${{ hashFiles('source/launcher/desktop/Cargo.lock') }}
+
+    - name: Build the launcher
+      working-directory: ${{github.workspace}}/source/launcher/desktop
+      run: |
+        # the game's clang settings aren't the launcher's
+        unset CC CXX CFLAGS CXXFLAGS
+        cargo test --locked
+        cargo build --release --locked
+        cp target/release/mohlauncher '${{github.workspace}}/package/'
 
     ###
     # Artifacts

@@ -124,6 +124,7 @@ cvar_t	*r_dofAperture;
 cvar_t	*r_dofFocus;
 cvar_t	*r_dofFocusSpeed;
 cvar_t	*r_dofQuality;
+static cvar_t	*r_aoAsync;
 
 // push constants of the passes, see the shaders
 typedef struct {
@@ -191,8 +192,8 @@ typedef struct {
 #define VK_TEMPORAL_TAA_BINDINGS		8	// color, motion vectors, normals, depth, history, last pyramid (sampled), result, this pyramid's level 0 (storage)
 #define VK_TEMPORAL_TAA_HISTORY_BINDING	4	// read with the bilinear sampler
 #define VK_TEMPORAL_TAA_GROUP			16	// the workgroup's width and height (taa_resolve.comp, GROUP)
-#define VK_TEMPORAL_AO_BINDINGS		21	// ao_common.glsl: 10 sampled, 11 storage
-#define VK_TEMPORAL_AO_SAMPLED			10
+#define VK_TEMPORAL_AO_BINDINGS		23	// ao_common.glsl: 11 sampled, 12 storage
+#define VK_TEMPORAL_AO_SAMPLED			11
 #define VK_TEMPORAL_MB_BINDINGS		7	// depth, normals, motion vectors (sampled), mbVelocity, mbTile, mbNeighbor, mbSample (storage)
 #define VK_TEMPORAL_MB_SAMPLED			3
 #define VK_TEMPORAL_MB_NEIGHBOR_GROUP	8	// the neighbour pass's workgroup's width and height (motion_blur.comp)
@@ -206,6 +207,11 @@ typedef struct {
 // a scope's zoom, blurs more, by its zoom)
 #define VK_DOF_REFERENCE_FOCUS		128.0f
 #define VK_DOF_PROJ_FOV80			1.5890f
+
+// the ambient occlusion's apply pass's push constants, saved by
+// VK_TemporalAo for VK_TemporalAoApply (it draws in the scene's render pass
+// right after, recorded on the same thread)
+static vkAoPush_t vk_aoApplyPush;
 
 // pairs of samples of the motion blur's gather at r_motionBlurQuality 0, 1, 2
 static const int vk_mbPairs[3] = { 4, 6, 8 };
@@ -269,6 +275,9 @@ void VK_TemporalRegisterCvars( void ) {
 	r_aoMultiBounce = ri.Cvar_Get( "r_aoMultiBounce", "0.4", CVAR_ARCHIVE );
 	ri.Cvar_SetDescription( r_aoMultiBounce, "with r_ao 1: the albedo of the light bounced back by occluders (lightens the occlusion), 0 none" );
 	ri.Cvar_CheckRange( r_aoMultiBounce, 0.0f, 0.9f, qfalse );
+	r_aoAsync = ri.Cvar_Get( "r_aoAsync", "1", 0 );
+	ri.Cvar_SetDescription( r_aoAsync, "with r_ao 1 and a compute queue: the occlusion is computed beside the next frame's rendering and blended into the scene two frames later; 0: in its own frame, which waits for it" );
+	ri.Cvar_CheckRange( r_aoAsync, 0, 1, qtrue );
 	r_motionBlur = ri.Cvar_Get( "r_motionBlur", "0", CVAR_ARCHIVE );
 	ri.Cvar_SetDescription( r_motionBlur, "with r_temporal 1: motion blur of the camera's motion and of what moves, from the motion vectors and the depth" );
 	r_motionBlurShutter = ri.Cvar_Get( "r_motionBlurShutter", "0.5", CVAR_ARCHIVE );
@@ -409,6 +418,13 @@ static VkImageView VK_TemporalLevelView( VkImage image, VkFormat format, VkImage
 
 static void VK_TemporalCreateImage( vkTemporalImage_t *img, VkFormat format, VkImageUsageFlags usage, int width, int height, int mipLevels ) {
 	VK_CreateImage( format, VK_SAMPLE_COUNT_1_BIT, usage, VK_IMAGE_ASPECT_COLOR_BIT, width, height, mipLevels,
+		&img->image, &img->memory, &img->view );
+}
+
+// the ambient occlusion's: with r_aoAsync the compute queue reads and
+// writes them too (VK_SHARING_MODE_CONCURRENT)
+static void VK_TemporalCreateAoImage( vkTemporalImage_t *img, VkFormat format, VkImageUsageFlags usage, int width, int height, int mipLevels ) {
+	VK_CreateImageShared( format, VK_SAMPLE_COUNT_1_BIT, usage, VK_IMAGE_ASPECT_COLOR_BIT, width, height, mipLevels, qtrue,
 		&img->image, &img->memory, &img->view );
 }
 
@@ -628,26 +644,32 @@ static void VK_TemporalCreateGroup( int group, VkCommandBuffer cmd ) {
 		gridWidth = ( vk.width + 1 ) / 2;
 		gridHeight = ( vk.height + 1 ) / 2;
 		for ( i = 0; i < VK_TEMPORAL_HISTORY; i++ ) {
-			VK_TemporalCreateImage( &vkt.aoDepth[i], VK_FORMAT_R32_SFLOAT, storage, vk.width, vk.height, VK_TEMPORAL_AO_LEVELS );
+			VK_TemporalCreateAoImage( &vkt.aoDepth[i], VK_FORMAT_R32_SFLOAT, storage, vk.width, vk.height, VK_TEMPORAL_AO_LEVELS );
 			for ( l = 0; l < VK_TEMPORAL_AO_LEVELS; l++ ) {
 				vkt.aoDepthLevel[i][l] = VK_TemporalLevelView( vkt.aoDepth[i].image, VK_FORMAT_R32_SFLOAT, VK_IMAGE_ASPECT_COLOR_BIT, l );
 			}
-			VK_TemporalCreateImage( &vkt.aoHistory[i], VK_FORMAT_R16G16_SFLOAT, storage, gridWidth, gridHeight, 1 );
+			VK_TemporalCreateAoImage( &vkt.aoHistory[i], VK_FORMAT_R16G16_SFLOAT, storage, gridWidth, gridHeight, 1 );
 			VK_TemporalClearImage( cmd, vkt.aoDepth[i].image, VK_IMAGE_LAYOUT_GENERAL, zero );
 			VK_TemporalClearImage( cmd, vkt.aoHistory[i].image, VK_IMAGE_LAYOUT_GENERAL, zero );
-			VK_TemporalCreateImage( &vkt.aoGrid[i], VK_FORMAT_R32_SFLOAT, storage, gridWidth, gridHeight, 1 );
+			// cleared to class 0: no history until the prefilter writes it
+			VK_TemporalCreateAoImage( &vkt.aoGridMotion[i], VK_FORMAT_R16G16B16A16_SFLOAT, storage, gridWidth, gridHeight, 1 );
+			VK_TemporalClearImage( cmd, vkt.aoGridMotion[i].image, VK_IMAGE_LAYOUT_GENERAL, zero );
+			VK_TemporalCreateAoImage( &vkt.aoBlur2[i], VK_FORMAT_R16G16_SFLOAT, storage, gridWidth, gridHeight, 1 );
+			VK_TemporalClearImage( cmd, vkt.aoBlur2[i].image, VK_IMAGE_LAYOUT_GENERAL, zero );
+		}
+		for ( i = 0; i < VK_TEMPORAL_AO_GRID_RING; i++ ) {
+			VK_TemporalCreateAoImage( &vkt.aoGrid[i], VK_FORMAT_R32_SFLOAT, storage, gridWidth, gridHeight, 1 );
 			VK_TemporalClearImage( cmd, vkt.aoGrid[i].image, VK_IMAGE_LAYOUT_GENERAL, zero );
 		}
-		VK_TemporalCreateImage( &vkt.aoRaw, VK_FORMAT_R8_UNORM, storage, gridWidth, gridHeight, 1 );
-		VK_TemporalCreateImage( &vkt.aoBlur, VK_FORMAT_R16G16_SFLOAT, storage, gridWidth, gridHeight, 1 );
-		VK_TemporalCreateImage( &vkt.aoBlur2, VK_FORMAT_R16G16_SFLOAT, storage, gridWidth, gridHeight, 1 );
-		VK_TemporalClearImage( cmd, vkt.aoBlur2.image, VK_IMAGE_LAYOUT_GENERAL, zero );
+		VK_TemporalCreateAoImage( &vkt.aoRaw, VK_FORMAT_R8_UNORM, storage, gridWidth, gridHeight, 1 );
+		VK_TemporalCreateAoImage( &vkt.aoBlur, VK_FORMAT_R16G16_SFLOAT, storage, gridWidth, gridHeight, 1 );
 		VK_TemporalCreateImage( &vkt.aoResult, VK_FORMAT_R8G8B8A8_UNORM, storage, vk.width, vk.height, 1 );
 		VK_TemporalClearImage( cmd, vkt.aoRaw.image, VK_IMAGE_LAYOUT_GENERAL, zero );
 		VK_TemporalClearImage( cmd, vkt.aoBlur.image, VK_IMAGE_LAYOUT_GENERAL, zero );
 		VK_TemporalClearImage( cmd, vkt.aoResult.image, VK_IMAGE_LAYOUT_GENERAL, aoClear );
 		Com_Memset( vkt.aoSerial, 0, sizeof( vkt.aoSerial ) );
 		Com_Memset( vkt.aoDepthSerial, 0, sizeof( vkt.aoDepthSerial ) );
+		Com_Memset( vkt.aoBlurReadable, 0, sizeof( vkt.aoBlurReadable ) );
 		break;
 	case VK_TEMPORAL_GROUP_PREVCOLOR:
 		VK_TemporalCreateImage( &vkt.color[1], vkt.colorFormat, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
@@ -716,11 +738,14 @@ static void VK_TemporalDestroyGroup( int group ) {
 			}
 			VK_TemporalDestroyImage( &vkt.aoDepth[i] );
 			VK_TemporalDestroyImage( &vkt.aoHistory[i] );
+			VK_TemporalDestroyImage( &vkt.aoGridMotion[i] );
+			VK_TemporalDestroyImage( &vkt.aoBlur2[i] );
+		}
+		for ( i = 0; i < VK_TEMPORAL_AO_GRID_RING; i++ ) {
 			VK_TemporalDestroyImage( &vkt.aoGrid[i] );
 		}
 		VK_TemporalDestroyImage( &vkt.aoRaw );
 		VK_TemporalDestroyImage( &vkt.aoBlur );
-		VK_TemporalDestroyImage( &vkt.aoBlur2 );
 		VK_TemporalDestroyImage( &vkt.aoResult );
 		break;
 	case VK_TEMPORAL_GROUP_PREVCOLOR:
@@ -1107,8 +1132,9 @@ static VkPipeline VK_TemporalCompositePipeline( VkBool32 motionBlur, VkBool32 do
 VK_TemporalAoApplyPipeline
 
 The ambient occlusion into the scene: a triangle over the framebuffer in the
-scene's render pass (vkt.renderPass), no depth test; the color blended ONE,
-SRC_ALPHA (dst a + rgb, ao_denoise.comp), its alpha kept, the motion vectors
+scene's render pass (vkt.renderPass), no depth test; ao_apply.frag upsamples
+the grid's blurred visibility itself; the color blended ONE,
+SRC_ALPHA (dst a + rgb), its alpha kept, the motion vectors
 and the normals not written
 ===============
 */
@@ -1259,9 +1285,12 @@ static const VkDescriptorType vk_aoTypes[VK_TEMPORAL_AO_BINDINGS] = {
 	VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 	VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-	VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
+	VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
 };
-static const VkDescriptorType vk_aoApplyTypes[1] = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER };
+static const VkDescriptorType vk_aoApplyTypes[3] = {
+	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+};
 static const VkDescriptorType vk_mbTypes[VK_TEMPORAL_MB_BINDINGS] = {
 	VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 	VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
@@ -1342,10 +1371,8 @@ static void VK_TemporalWriteStaticSets( void ) {
 		VK_TemporalWriteSet( vkt.compositeTaaSets[cur], vk_compositeTypes, views, layouts, VK_TEMPORAL_COMPOSITE_BINDINGS, 0 );
 	}
 
-	// the ambient occlusion's apply pass
-	views[0] = ao ? vkt.aoResult.view : placeholder;
-	layouts[0] = VK_IMAGE_LAYOUT_GENERAL;
-	VK_TemporalWriteSet( vkt.aoApplySet, vk_aoApplyTypes, views, layouts, 1, 0 );
+	// the ambient occlusion's apply pass's sets are written in each frame
+	// (VK_TemporalAo): the grid ring turns
 }
 
 /*
@@ -1438,8 +1465,8 @@ void VK_TemporalInitPipelines( void ) {
 	// the ambient occlusion: one set and layout for its compute passes
 	vkt.aoSetLayout = VK_TemporalSetLayout( vk_aoTypes, VK_TEMPORAL_AO_BINDINGS, VK_SHADER_STAGE_COMPUTE_BIT );
 	vkt.aoLayout = VK_TemporalSimpleLayout( vkt.aoSetLayout, VK_SHADER_STAGE_COMPUTE_BIT, sizeof( vkAoPush_t ) );
-	vkt.aoApplySetLayout = VK_TemporalSetLayout( vk_aoApplyTypes, 1, VK_SHADER_STAGE_FRAGMENT_BIT );
-	vkt.aoApplyLayout = VK_TemporalPipelineLayout( &vkt.aoApplySetLayout, 1, NULL, 0 );
+	vkt.aoApplySetLayout = VK_TemporalSetLayout( vk_aoApplyTypes, 3, VK_SHADER_STAGE_FRAGMENT_BIT );
+	vkt.aoApplyLayout = VK_TemporalSimpleLayout( vkt.aoApplySetLayout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof( vkAoPush_t ) );
 	vkt.aoPrefilterShader = VK_CreateShaderModule( vk_spirv_ao_prefilter_comp, vk_spirv_ao_prefilter_comp_size );
 	vkt.aoMainShader = VK_CreateShaderModule( vk_spirv_gtao_main_comp, vk_spirv_gtao_main_comp_size );
 	vkt.aoTemporalShader = VK_CreateShaderModule( vk_spirv_ao_temporal_comp, vk_spirv_ao_temporal_comp_size );
@@ -1454,6 +1481,36 @@ void VK_TemporalInitPipelines( void ) {
 	vkt.aoDenoisePipeline = VK_TemporalAoHalfPipeline( vkt.aoDenoiseShader );
 	vkt.aoUpsamplePipeline = VK_TemporalAoHalfPipeline( vkt.aoUpsampleShader );
 	vkt.aoApplyPipeline = VK_TemporalAoApplyPipeline();
+
+	// r_aoAsync: the occlusion's passes on the compute queue, ordered by
+	// two timeline semaphores (see VK_TemporalAo)
+	if ( vk.asyncCompute ) {
+		VkSemaphoreTypeCreateInfoKHR type;
+		VkSemaphoreCreateInfo semInfo;
+		VkCommandPoolCreateInfo cmdPool;
+		VkCommandBufferAllocateInfo alloc;
+
+		Com_Memset( &type, 0, sizeof( type ) );
+		type.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO_KHR;
+		type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE_KHR;
+		Com_Memset( &semInfo, 0, sizeof( semInfo ) );
+		semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+		semInfo.pNext = &type;
+		VK_CHECK( qvkCreateSemaphore( vk.device, &semInfo, NULL, &vkt.gfxTimeline ) );
+		VK_CHECK( qvkCreateSemaphore( vk.device, &semInfo, NULL, &vkt.aoTimeline ) );
+
+		Com_Memset( &cmdPool, 0, sizeof( cmdPool ) );
+		cmdPool.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+		cmdPool.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+		cmdPool.queueFamilyIndex = vk.computeFamily;
+		VK_CHECK( qvkCreateCommandPool( vk.device, &cmdPool, NULL, &vkt.aoCmdPool ) );
+		Com_Memset( &alloc, 0, sizeof( alloc ) );
+		alloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+		alloc.commandPool = vkt.aoCmdPool;
+		alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+		alloc.commandBufferCount = VK_MAX_FRAMES;
+		VK_CHECK( qvkAllocateCommandBuffers( vk.device, &alloc, vkt.aoCmds ) );
+	}
 
 	// the motion blur: one set and layout for its two passes
 	vkt.mbSetLayout = VK_TemporalSetLayout( vk_mbTypes, VK_TEMPORAL_MB_BINDINGS, VK_SHADER_STAGE_COMPUTE_BIT );
@@ -1484,15 +1541,15 @@ void VK_TemporalInitPipelines( void ) {
 	poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	poolSizes[0].descriptorCount = VK_MAX_FRAMES * 4;
 	poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	poolSizes[1].descriptorCount = VK_MAX_FRAMES * ( 2 + VK_TEMPORAL_TAA_BINDINGS - 2 + VK_TEMPORAL_AO_SAMPLED + VK_TEMPORAL_MB_SAMPLED + VK_TEMPORAL_DOF_SAMPLED + VK_TEMPORAL_DOF_FILTERED )
-		+ VK_TEMPORAL_HISTORY * 2 * VK_TEMPORAL_COMPOSITE_BINDINGS + 1;
+	poolSizes[1].descriptorCount = VK_MAX_FRAMES * ( 2 + VK_TEMPORAL_TAA_BINDINGS - 2 + VK_TEMPORAL_AO_SAMPLED + VK_TEMPORAL_MB_SAMPLED + VK_TEMPORAL_DOF_SAMPLED + VK_TEMPORAL_DOF_FILTERED + 3 )
+		+ VK_TEMPORAL_HISTORY * 2 * VK_TEMPORAL_COMPOSITE_BINDINGS;
 	poolSizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	poolSizes[2].descriptorCount = VK_MAX_FRAMES * ( 4 + VK_TEMPORAL_AO_BINDINGS - VK_TEMPORAL_AO_SAMPLED + VK_TEMPORAL_MB_BINDINGS - VK_TEMPORAL_MB_SAMPLED
 		+ VK_TEMPORAL_DOF_BINDINGS - VK_TEMPORAL_DOF_SAMPLED - VK_TEMPORAL_DOF_FILTERED )
 		+ VK_TEMPORAL_HISTORY * VK_TEMPORAL_MAX_PASSES * VK_TEMPORAL_TAIL_IMAGES;
 	Com_Memset( &poolInfo, 0, sizeof( poolInfo ) );
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	poolInfo.maxSets = VK_MAX_FRAMES * 6 + VK_TEMPORAL_HISTORY * ( VK_TEMPORAL_MAX_PASSES + 2 ) + 1;
+	poolInfo.maxSets = VK_MAX_FRAMES * 7 + VK_TEMPORAL_HISTORY * ( VK_TEMPORAL_MAX_PASSES + 2 );
 	poolInfo.poolSizeCount = ARRAY_LEN( poolSizes );
 	poolInfo.pPoolSizes = poolSizes;
 	VK_CHECK( qvkCreateDescriptorPool( vk.device, &poolInfo, NULL, &vkt.pool ) );
@@ -1503,7 +1560,7 @@ void VK_TemporalInitPipelines( void ) {
 	VK_TemporalAllocateSets( vkt.compositeSetLayout, vkt.compositeTaaSets, VK_TEMPORAL_HISTORY );
 	VK_TemporalAllocateSets( vkt.taaSetLayout, vkt.taaSets, VK_MAX_FRAMES );
 	VK_TemporalAllocateSets( vkt.aoSetLayout, vkt.aoSets, VK_MAX_FRAMES );
-	VK_TemporalAllocateSets( vkt.aoApplySetLayout, &vkt.aoApplySet, 1 );
+	VK_TemporalAllocateSets( vkt.aoApplySetLayout, vkt.aoApplySets, VK_MAX_FRAMES );
 	VK_TemporalAllocateSets( vkt.mbSetLayout, vkt.mbSets, VK_MAX_FRAMES );
 	VK_TemporalAllocateSets( vkt.dofSetLayout, vkt.dofSets, VK_MAX_FRAMES );
 	for ( i = 0; i < VK_TEMPORAL_HISTORY; i++ ) {
@@ -1571,6 +1628,22 @@ void VK_TemporalShutdownPipelines( void ) {
 		qvkDestroyDescriptorPool( vk.device, vkt.pool, NULL );
 		vkt.pool = VK_NULL_HANDLE;
 	}
+	if ( vkt.aoCmdPool ) {
+		qvkDestroyCommandPool( vk.device, vkt.aoCmdPool, NULL );
+		vkt.aoCmdPool = VK_NULL_HANDLE;
+		Com_Memset( vkt.aoCmds, 0, sizeof( vkt.aoCmds ) );
+	}
+	if ( vkt.gfxTimeline ) {
+		qvkDestroySemaphore( vk.device, vkt.gfxTimeline, NULL );
+		vkt.gfxTimeline = VK_NULL_HANDLE;
+	}
+	if ( vkt.aoTimeline ) {
+		qvkDestroySemaphore( vk.device, vkt.aoTimeline, NULL );
+		vkt.aoTimeline = VK_NULL_HANDLE;
+	}
+	vkt.aoComputeSerial = vkt.aoComputeWait = 0;
+	vkt.aoGfxSignalPending = vkt.aoWaitPending = 0;
+	Com_Memset( vkt.aoCmdSerial, 0, sizeof( vkt.aoCmdSerial ) );
 	for ( i = 0; i < ARRAY_LEN( setLayouts ); i++ ) {
 		if ( *setLayouts[i] ) {
 			qvkDestroyDescriptorSetLayout( vk.device, *setLayouts[i], NULL );
@@ -1589,7 +1662,7 @@ void VK_TemporalShutdownPipelines( void ) {
 	Com_Memset( vkt.aoSets, 0, sizeof( vkt.aoSets ) );
 	Com_Memset( vkt.mbSets, 0, sizeof( vkt.mbSets ) );
 	Com_Memset( vkt.dofSets, 0, sizeof( vkt.dofSets ) );
-	vkt.aoApplySet = VK_NULL_HANDLE;
+	Com_Memset( vkt.aoApplySets, 0, sizeof( vkt.aoApplySets ) );
 }
 
 /*
@@ -1896,15 +1969,166 @@ qboolean VK_TemporalAoWanted( void ) {
 
 /*
 ===============
+VK_TemporalAoAsync
+
+Whether this scene's occlusion, blend and blur run on the compute queue
+(r_aoAsync): they read only the prefilter's images (ao_prefilter.comp
+bakes the grid's motion), start once the frame's graphics is done, run
+beside the next frame's rendering, and the apply pass blends the result
+two frames later. Not when a view of their images is shown
+(r_temporalShow 9, 10: the composite would read what the queue writes) or
+the occlusion reads the draws' normals (r_aoNormals: the scene's images
+are the graphics queue's)
+===============
+*/
+static qboolean VK_TemporalAoAsync( void ) {
+	return vk.asyncCompute && vkt.gfxTimeline && r_aoAsync->integer
+		&& vkt.showMode != 9 && vkt.showMode != 10 && !r_aoNormals->integer;
+}
+
+// waits here until aoTimeline has reached value: the occlusion of the
+// frame with that serial is done on the compute queue
+static void VK_TemporalWaitAoTimeline( uint64_t value ) {
+	VkSemaphoreWaitInfoKHR info;
+
+	Com_Memset( &info, 0, sizeof( info ) );
+	info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO_KHR;
+	info.semaphoreCount = 1;
+	info.pSemaphores = &vkt.aoTimeline;
+	info.pValues = &value;
+	VK_CHECK( qvkWaitSemaphoresKHR( vk.device, &info, UINT64_MAX ) );
+}
+
+/*
+===============
+VK_TemporalFinishAoCompute
+
+vk_finish for the compute queue: waits until the last occlusion submitted
+to it is done. When this frame's is submitted but the graphics submission
+that signals its start isn't yet (a flush in the middle of the frame will
+carry it, VK_TemporalTakeAoSubmitInfo), only up to the one before
+===============
+*/
+void VK_TemporalFinishAoCompute( void ) {
+	uint64_t value = vkt.aoGfxSignalPending ? vkt.aoComputeWait : vkt.aoComputeSerial;
+
+	if ( value && qvkWaitSemaphoresKHR ) {
+		VK_TemporalWaitAoTimeline( value );
+	}
+}
+
+/*
+===============
+VK_TemporalAbortAoCompute
+
+At vk_shutdown, before vkDeviceWaitIdle: a frame being recorded won't be
+submitted, and a compute submission waiting for its signal would hang the
+wait for the device. Signaled from here instead: the passes read images
+whose writes never ran, defined values of older frames (GENERAL always),
+and nothing reads their result
+===============
+*/
+void VK_TemporalAbortAoCompute( void ) {
+	VkSemaphoreSignalInfoKHR info;
+
+	if ( !vkt.aoGfxSignalPending || !qvkSignalSemaphoreKHR ) {
+		return;
+	}
+	Com_Memset( &info, 0, sizeof( info ) );
+	info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO_KHR;
+	info.semaphore = vkt.gfxTimeline;
+	info.value = vkt.aoGfxSignalPending;
+	VK_CHECK( qvkSignalSemaphoreKHR( vk.device, &info ) );
+	vkt.aoGfxSignalPending = 0;
+	vkt.aoWaitPending = 0;
+}
+
+/*
+===============
+VK_TemporalTakeAoSubmitInfo
+
+What the frame's next graphics submission does for the compute queue,
+consumed once: signal gfxTimeline with signalValue (the compute submission
+of this frame waits for it), after waiting for aoTimeline to reach
+waitValue before its compute and fragment stages (the apply pass reads the
+result of the frame two before, and the prefilter writes images the
+compute queue may still read). 0: nothing
+===============
+*/
+void VK_TemporalTakeAoSubmitInfo( uint64_t *signalValue, uint64_t *waitValue ) {
+	*signalValue = vkt.aoGfxSignalPending;
+	*waitValue = vkt.aoWaitPending;
+	vkt.aoGfxSignalPending = 0;
+	vkt.aoWaitPending = 0;
+}
+
+/*
+===============
+VK_TemporalAoChainSubmit
+
+Adds VK_TemporalTakeAoSubmitInfo's timeline values to a graphics
+submission's batch (the one with the frame's command buffers): the wait
+for aoTimeline before its compute and fragment stages, the signal of
+gfxTimeline after it. c holds the arrays until the submission; the batch's
+own semaphores (binary, their values ignored) are copied over. Called on
+the submit thread too: it reads only the semaphore handles
+===============
+*/
+void VK_TemporalAoChainSubmit( vkAoSubmitChain_t *c, VkSubmitInfo *submit, uint64_t signalValue, uint64_t waitValue ) {
+	uint32_t i;
+
+	if ( !signalValue && !waitValue ) {
+		return;
+	}
+	for ( i = 0; i < submit->waitSemaphoreCount; i++ ) {
+		c->waitSems[i] = submit->pWaitSemaphores[i];
+		c->waitStages[i] = submit->pWaitDstStageMask[i];
+		c->waitValues[i] = 0;
+	}
+	for ( i = 0; i < submit->signalSemaphoreCount; i++ ) {
+		c->signalSems[i] = submit->pSignalSemaphores[i];
+		c->signalValues[i] = 0;
+	}
+	if ( waitValue ) {
+		// before the prefilter writes what the compute queue may still
+		// read and the apply pass reads the result of the frame two before
+		c->waitSems[submit->waitSemaphoreCount] = vkt.aoTimeline;
+		c->waitStages[submit->waitSemaphoreCount] = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		c->waitValues[submit->waitSemaphoreCount] = waitValue;
+		submit->waitSemaphoreCount++;
+	}
+	if ( signalValue ) {
+		c->signalSems[submit->signalSemaphoreCount] = vkt.gfxTimeline;
+		c->signalValues[submit->signalSemaphoreCount] = signalValue;
+		submit->signalSemaphoreCount++;
+	}
+	Com_Memset( &c->timeline, 0, sizeof( c->timeline ) );
+	c->timeline.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO_KHR;
+	c->timeline.waitSemaphoreValueCount = submit->waitSemaphoreCount;
+	c->timeline.pWaitSemaphoreValues = c->waitValues;
+	c->timeline.signalSemaphoreValueCount = submit->signalSemaphoreCount;
+	c->timeline.pSignalSemaphoreValues = c->signalValues;
+	c->timeline.pNext = (void *)submit->pNext;
+	submit->pNext = &c->timeline;
+	submit->pWaitSemaphores = c->waitSems;
+	submit->pWaitDstStageMask = c->waitStages;
+	submit->pSignalSemaphores = c->signalSems;
+}
+
+/*
+===============
 VK_TemporalAo
 
 Ground truth ambient occlusion of the primary view, outside of a render
 pass, after the view's opaque surfaces (vk_ao_scene; the scene's images are
 in their attachment layouts): the depth buffer to view distances
 (ao_prefilter.comp), the occlusion (gtao_main.comp), blended with the last
-frames' (ao_temporal.comp), blurred into what the apply pass blends
-(ao_denoise.comp, once or twice). The depth, normal and motion images are
-the passes' to read in between, then attachments again. fog: the view's
+frames' (ao_temporal.comp), blurred into what the apply pass upsamples and
+blends (ao_denoise.comp, once or twice). The depth, normal and motion images are
+the passes' to read in between, then attachments again. With r_aoAsync
+(VK_TemporalAoAsync) only the prefilter runs here: the rest is recorded
+for the compute queue, where it runs once this frame's graphics is done,
+and the apply pass blends the result of the frame two before. fog: the view's
 draws' (start, end, r, g, b), NULL for none. Sets vkt.aoRan when it ran
 ===============
 */
@@ -1918,13 +2142,30 @@ void VK_TemporalAo( VkCommandBuffer cmd, const float *fog ) {
 	VkImageMemoryBarrier barriers[3];
 	VkMemoryBarrier memory;
 	vkAoPush_t push;
-	qboolean history, twoBlurs;
-	int q, i, groupsX, groupsY, gridX, gridY;
+	qboolean history, twoBlurs, async;
+	int q, i, groupsX, groupsY, gridX, gridY, gcur, gprev;
 
 	if ( !rect[2] || !rect[3] ) {
 		return;
 	}
 	VK_TemporalViewDepth();
+
+	async = VK_TemporalAoAsync();
+	// the compute work this frame slot recorded two frames ago is done:
+	// its command buffer and its sets can be written again
+	if ( vkt.aoCmdSerial[vk.frameIndex] ) {
+		VK_TemporalWaitAoTimeline( vkt.aoCmdSerial[vk.frameIndex] );
+		vkt.aoCmdSerial[vk.frameIndex] = 0;
+	}
+	// without the compute queue this scene reads and writes what it may
+	// still be working on: all of it first (a mode switch, rare)
+	if ( !async && vkt.aoComputeSerial && qvkWaitSemaphoresKHR ) {
+		VK_TemporalWaitAoTimeline( vkt.aoComputeSerial );
+	}
+	// the grid ring turns: the compute queue may still read the two before
+	gprev = vkt.aoGridIndex;
+	gcur = ( gprev + 1 ) % VK_TEMPORAL_AO_GRID_RING;
+	vkt.aoGridIndex = gcur;
 
 	// the depth image's view can change between frames; this frame slot's
 	// last use of the set is done
@@ -1932,8 +2173,8 @@ void VK_TemporalAo( VkCommandBuffer cmd, const float *fog ) {
 	views[1] = vkt.normal.view;
 	views[2] = vkt.velocity.view;
 	// the grid's view distances (aoGrid); the framebuffer's in u_aoLevels
-	views[3] = vkt.aoGrid[cur].view;
-	views[4] = vkt.aoGrid[cur ^ 1].view;
+	views[3] = vkt.aoGrid[gcur].view;
+	views[4] = vkt.aoGrid[gprev].view;
 	views[5] = vkt.aoRaw.view;
 	views[6] = vkt.aoHistory[cur ^ 1].view;
 	for ( i = 0; i < VK_TEMPORAL_AO_LEVELS; i++ ) {
@@ -1945,14 +2186,23 @@ void VK_TemporalAo( VkCommandBuffer cmd, const float *fog ) {
 	views[15] = vkt.aoResult.view;
 	views[16] = vkt.aoDepth[cur].view;
 	views[17] = vkt.aoBlur.view;
-	views[18] = views[19] = vkt.aoBlur2.view;
-	views[20] = vkt.aoGrid[cur].view;
+	views[18] = views[19] = vkt.aoBlur2[cur].view;
+	views[20] = vkt.aoGrid[gcur].view;
+	views[21] = views[22] = vkt.aoGridMotion[cur].view;
 	for ( i = 0; i < VK_TEMPORAL_AO_BINDINGS; i++ ) {
 		layouts[i] = VK_IMAGE_LAYOUT_GENERAL;
 	}
 	layouts[0] = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 	layouts[1] = layouts[2] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	VK_TemporalWriteSet( set, vk_aoTypes, views, layouts, VK_TEMPORAL_AO_BINDINGS, 0 );
+
+	// the apply pass's set: the pixels' view distances (the prefilter's
+	// level 0), this scene's grid, and the blurred visibility it upsamples
+	views[0] = vkt.aoDepthLevel[cur][0];
+	views[1] = vkt.aoGrid[gcur].view;
+	views[2] = vkt.aoBlur2[cur].view;
+	layouts[0] = layouts[1] = layouts[2] = VK_IMAGE_LAYOUT_GENERAL;
+	VK_TemporalWriteSet( vkt.aoApplySets[vk.frameIndex], vk_aoApplyTypes, views, layouts, 3, 0 );
 
 	Com_Memset( &push, 0, sizeof( push ) );
 	push.view = vkt.view;
@@ -1985,6 +2235,9 @@ void VK_TemporalAo( VkCommandBuffer cmd, const float *fog ) {
 	push.ints[2] = r_aoTemporal->integer > 1 ? (int)( vk.frameSerial & 63 ) : 0;
 	twoBlurs = q == 3 || !history;
 	push.ints[3] = twoBlurs ? 0 : 1;	// AO_PASS_HISTORY_TO_BLUR, AO_PASS_HISTORY_TO_RESULT
+	// the apply pass pushes the same block (it upsamples and blends,
+	// ao_apply.frag); it draws right after, in the scene's render pass
+	vk_aoApplyPush = push;
 
 	// what the scene drew so far, to the passes; the ambient occlusion's
 	// images were last read by the last frame's passes and composite
@@ -2008,7 +2261,6 @@ void VK_TemporalAo( VkCommandBuffer cmd, const float *fog ) {
 	// it), 16 x 16 pixels a workgroup
 	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoPrefilterPipeline );
 	qvkCmdDispatch( cmd, ( vk.width + 15 ) / 16, ( vk.height + 15 ) / 16, 1 );
-	VK_TemporalComputeBarrier( cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT );
 
 	// the others over the primary view's texels of the grid (a texel a 2 x
 	// 2 pixels), 8 x 8 a workgroup
@@ -2016,27 +2268,37 @@ void VK_TemporalAo( VkCommandBuffer cmd, const float *fog ) {
 	gridY = ( ( rect[1] + rect[3] - 1 ) >> 1 ) - ( rect[1] >> 1 ) + 1;
 	groupsX = ( gridX + 7 ) / 8;
 	groupsY = ( gridY + 7 ) / 8;
-	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoMainPipelines[q] );
-	qvkCmdDispatch( cmd, groupsX, groupsY, 1 );
-	VK_TemporalComputeBarrier( cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT );
-
-	// blended over frames and blurred, 16 x 16 texels a workgroup: into the
-	// result, or, at r_aoQuality 3 and without history (the first frames
-	// after a cut are the noisiest), into o_blur for a second blur; the last
-	// blur into o_blur2
-	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoTemporalPipeline );
-	qvkCmdDispatch( cmd, ( gridX + 15 ) / 16, ( gridY + 15 ) / 16, 1 );
-	if ( twoBlurs ) {
+	if ( !async ) {
 		VK_TemporalComputeBarrier( cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT );
-		push.ints[3] = 2;	// AO_PASS_BLUR_TO_RESULT
-		qvkCmdPushConstants( cmd, vkt.aoLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( push ), &push );
-		qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoDenoisePipeline );
+		qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoMainPipelines[q] );
 		qvkCmdDispatch( cmd, groupsX, groupsY, 1 );
+		VK_TemporalComputeBarrier( cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT );
+
+		// blended over frames and blurred, 16 x 16 texels a workgroup: into the
+		// result, or, at r_aoQuality 3 and without history (the first frames
+		// after a cut are the noisiest), into o_blur for a second blur; the last
+		// blur into o_blur2
+		qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoTemporalPipeline );
+		qvkCmdDispatch( cmd, ( gridX + 15 ) / 16, ( gridY + 15 ) / 16, 1 );
+		if ( twoBlurs ) {
+			VK_TemporalComputeBarrier( cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT );
+			push.ints[3] = 2;	// AO_PASS_BLUR_TO_RESULT
+			qvkCmdPushConstants( cmd, vkt.aoLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( push ), &push );
+			qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoDenoisePipeline );
+			qvkCmdDispatch( cmd, groupsX, groupsY, 1 );
+		}
+		// the grid's last blur to the views' pixels, into the result, only for
+		// r_temporalShow 9 (its view of the result): the apply pass upsamples
+		// itself (ao_apply.frag), which cost less than writing the result out
+		// and reading it back
+		if ( vkt.showMode == 9 ) {
+			VK_TemporalComputeBarrier( cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT );
+			qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoUpsamplePipeline );
+			qvkCmdDispatch( cmd, ( rect[2] + 7 ) / 8, ( rect[3] + 7 ) / 8, 1 );
+		}
+		vkt.aoBlurReadable[cur] = vk.frameSerial;
+		vkt.aoApplyRun = qtrue;
 	}
-	// the grid's last blur to the views' pixels, into the result
-	VK_TemporalComputeBarrier( cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT );
-	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoUpsamplePipeline );
-	qvkCmdDispatch( cmd, ( rect[2] + 7 ) / 8, ( rect[3] + 7 ) / 8, 1 );
 
 	// the scene's images back to the draws; the result to the apply pass
 	// (and the composite's r_temporalShow views)
@@ -2053,6 +2315,76 @@ void VK_TemporalAo( VkCommandBuffer cmd, const float *fog ) {
 		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | depthStages | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 		0, 1, &memory, 0, NULL, 3, barriers );
 
+	if ( async ) {
+		const uint64_t serial = vk.frameSerial;
+		const uint64_t prev = vkt.aoComputeSerial;
+		VkCommandBuffer acmd = vkt.aoCmds[vk.frameIndex];
+		VkCommandBufferBeginInfo begin;
+		VkTimelineSemaphoreSubmitInfoKHR timeline;
+		VkSubmitInfo submit;
+		VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+		uint64_t readable;
+
+		// the occlusion, the blend and the blur for the compute queue (the
+		// same set and push constants; they read only the prefilter's images)
+		Com_Memset( &begin, 0, sizeof( begin ) );
+		begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+		VK_CHECK( qvkBeginCommandBuffer( acmd, &begin ) );
+		qvkCmdBindDescriptorSets( acmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoLayout, 0, 1, &set, 0, NULL );
+		qvkCmdPushConstants( acmd, vkt.aoLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( push ), &push );
+		qvkCmdBindPipeline( acmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoMainPipelines[q] );
+		qvkCmdDispatch( acmd, groupsX, groupsY, 1 );
+		VK_TemporalComputeBarrier( acmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT );
+		qvkCmdBindPipeline( acmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoTemporalPipeline );
+		qvkCmdDispatch( acmd, ( gridX + 15 ) / 16, ( gridY + 15 ) / 16, 1 );
+		if ( twoBlurs ) {
+			VK_TemporalComputeBarrier( acmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT );
+			push.ints[3] = 2;	// AO_PASS_BLUR_TO_RESULT
+			qvkCmdPushConstants( acmd, vkt.aoLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( push ), &push );
+			qvkCmdBindPipeline( acmd, VK_PIPELINE_BIND_POINT_COMPUTE, vkt.aoDenoisePipeline );
+			qvkCmdDispatch( acmd, groupsX, groupsY, 1 );
+		}
+		VK_CHECK( qvkEndCommandBuffer( acmd ) );
+
+		// starts once this frame's graphics is done (its submission signals
+		// gfxTimeline, VK_TemporalTakeAoSubmitInfo: the prefilter's writes,
+		// and the apply pass has read what this overwrites); the signal
+		// makes its writes visible to the frames that wait for it
+		Com_Memset( &timeline, 0, sizeof( timeline ) );
+		timeline.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO_KHR;
+		timeline.waitSemaphoreValueCount = 1;
+		timeline.pWaitSemaphoreValues = &serial;
+		timeline.signalSemaphoreValueCount = 1;
+		timeline.pSignalSemaphoreValues = &serial;
+		Com_Memset( &submit, 0, sizeof( submit ) );
+		submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+		submit.pNext = &timeline;
+		submit.waitSemaphoreCount = 1;
+		submit.pWaitSemaphores = &vkt.gfxTimeline;
+		submit.pWaitDstStageMask = &waitStage;
+		submit.commandBufferCount = 1;
+		submit.pCommandBuffers = &acmd;
+		submit.signalSemaphoreCount = 1;
+		submit.pSignalSemaphores = &vkt.aoTimeline;
+		VK_CHECK( qvkQueueSubmit( vk.computeQueue, 1, &submit, VK_NULL_HANDLE ) );
+
+		vkt.aoGfxSignalPending = serial;
+		// the newest occlusion that is two or more frames old: the apply
+		// read its result, and the prefilter wrote over what it read
+		vkt.aoWaitPending = prev && prev + 2 <= serial ? prev : vkt.aoComputeWait;
+		vkt.aoComputeWait = prev;
+		vkt.aoComputeSerial = serial;
+		vkt.aoCmdSerial[vk.frameIndex] = serial;
+
+		// the apply pass blends the result of the frame two before, once
+		// there is one that isn't stale (not right after r_ao went on, a
+		// a load or a vid_restart)
+		readable = vkt.aoBlurReadable[cur];
+		vkt.aoApplyRun = readable && readable <= serial && serial - readable <= 2;
+		vkt.aoBlurReadable[cur] = serial + 2;
+	}
+
 	vkt.aoDepthSerial[cur] = vk.frameSerial;
 	vkt.aoSerial[cur] = vk.frameSerial;
 	vkt.aoRan = qtrue;
@@ -2062,15 +2394,21 @@ void VK_TemporalAo( VkCommandBuffer cmd, const float *fog ) {
 ===============
 VK_TemporalAoApply
 
-In the scene's render pass, after VK_TemporalAo: its result blended into
-the scene's color over the primary view (ao_apply.frag). The caller rebinds
-what it draws with next
+In the scene's render pass, after VK_TemporalAo: the grid's blurred
+visibility upsampled and blended into the scene's color over the primary
+view (ao_apply.frag, with the push constants VK_TemporalAo saved). The
+caller rebinds what it draws with next
 ===============
 */
 void VK_TemporalAoApply( VkCommandBuffer cmd ) {
 	VkViewport viewport;
 	VkRect2D scissor;
 
+	// r_aoAsync: no result to blend yet (right after r_ao went on, a load
+	// or a vid_restart: the compute queue's first results are to come)
+	if ( !vkt.aoApplyRun ) {
+		return;
+	}
 	viewport.x = 0;
 	viewport.y = 0;
 	viewport.width = vk.width;
@@ -2083,7 +2421,8 @@ void VK_TemporalAoApply( VkCommandBuffer cmd ) {
 	scissor.extent.height = vkt.view.rect[3];
 
 	qvkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkt.aoApplyPipeline );
-	qvkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkt.aoApplyLayout, 0, 1, &vkt.aoApplySet, 0, NULL );
+	qvkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkt.aoApplyLayout, 0, 1, &vkt.aoApplySets[vk.frameIndex], 0, NULL );
+	qvkCmdPushConstants( cmd, vkt.aoApplyLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof( vk_aoApplyPush ), &vk_aoApplyPush );
 	qvkCmdSetViewport( cmd, 0, 1, &viewport );
 	qvkCmdSetScissor( cmd, 0, 1, &scissor );
 	qvkCmdDraw( cmd, 3, 1, 0, 0 );
