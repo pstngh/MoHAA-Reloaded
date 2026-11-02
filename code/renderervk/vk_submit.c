@@ -378,7 +378,9 @@ static int SDLCALL VK_SubmitThreadMain( void *data ) {
 		SDL_LockMutex( vk_submit.lock );
 		vk_submit.taken++;
 		vk_submit.finished[slot] = qtrue;
-		SDL_SignalCondition( vk_submit.done );
+		// every waiter: with r_smp the render thread and the main thread can
+		// both wait for a frame (one woken alone left the other asleep)
+		SDL_BroadcastCondition( vk_submit.done );
 	}
 	SDL_UnlockMutex( vk_submit.lock );
 	return 0;

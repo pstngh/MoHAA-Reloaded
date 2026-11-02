@@ -2148,7 +2148,9 @@ static void VK_Info_f( void ) {
 	int numBlocks, numPipelines, prebuilt, prebuiltUsed;
 
 	// the submit thread's counters and its present fences and retired
-	// swapchains, as of every frame queued
+	// swapchains, as of every frame queued (the render thread queues the
+	// frames and joins them too: it is waited for first, as in vk_finish)
+	R_FrontEndSync();
 	VK_DrainSubmitThread();
 
 #define VK_DELTA( field ) ( (unsigned long long)( s->field - r->field ) )
