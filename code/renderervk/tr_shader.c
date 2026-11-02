@@ -3018,14 +3018,57 @@ pass, trying to guess which is the correct one to best aproximate
 what it is supposed to look like.
 =================
 */
+
+// the colors a surface's own lighting gives: no penalty when ranking stages
+// (FindShader gives a world shader's first stage exactVertex)
+static qboolean VertexLightingLitColor( colorGen_t rgbGen ) {
+	switch ( rgbGen ) {
+	case CGEN_IDENTITY:
+	case CGEN_IDENTITY_LIGHTING:
+	case CGEN_EXACT_VERTEX:
+	case CGEN_VERTEX:
+	case CGEN_LIGHTING_GRID:
+	case CGEN_LIGHTING_SPHERICAL:
+	case CGEN_STATIC:
+		return qtrue;
+	default:
+		return qfalse;
+	}
+}
+
 static void VertexLightingCollapse( void ) {
 	int		stage;
+	int		first;
 	shaderStage_t	*bestStage;
 	int		bestImageRank;
 	int		rank;
+	qboolean	opaque;
+
+	// a stage drawn without blending paints over the stages before it (all
+	// of it, or all but its alpha test's holes): drop those first. Many
+	// shaders start with a reflection (tcGen environment) under the texture
+	first = 0;
+	for ( stage = 1; stage < MAX_SHADER_STAGES && unfoggedStages[stage].active; stage++ ) {
+		const shaderStage_t *pStage = &unfoggedStages[stage];
+
+		if ( !( pStage->stateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS | GLS_DEPTHFUNC_EQUAL ) )
+			&& !pStage->bundle[0].isLightmap ) {
+			first = stage;
+		}
+	}
+	if ( first ) {
+		memmove( &unfoggedStages[0], &unfoggedStages[first], sizeof( unfoggedStages[0] ) * ( stage - first ) );
+		Com_Memset( &unfoggedStages[stage - first], 0, sizeof( unfoggedStages[0] ) * first );
+	}
+
+	// FinishShader works out the sort after this, from the stage left, so
+	// it is still unset unless the shader names one: unset is opaque when
+	// the first stage doesn't blend, as FinishShader will decide
+	opaque = shader.sort == SS_OPAQUE
+		|| ( shader.sort == SS_BAD && !( unfoggedStages[0].stateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS ) ) );
 
 	// if we aren't opaque, just use the first pass
-	if ( shader.sort == SS_OPAQUE ) {
+	if ( opaque ) {
 
 		// pick the best texture for the single pass
 		bestStage = &unfoggedStages[0];
@@ -3048,7 +3091,7 @@ static void VertexLightingCollapse( void ) {
 			if ( pStage->bundle[0].numTexMods ) {
 				rank -= 5;
 			}
-			if ( pStage->rgbGen != CGEN_IDENTITY && pStage->rgbGen != CGEN_IDENTITY_LIGHTING ) {
+			if ( !VertexLightingLitColor( pStage->rgbGen ) ) {
 				rank -= 3;
 			}
 
@@ -3058,15 +3101,23 @@ static void VertexLightingCollapse( void ) {
 			}
 		}
 
-		unfoggedStages[0].bundle[0] = bestStage->bundle[0];
+		// both bundles: a nextBundle stage's second one goes with it
+		if ( bestStage != &unfoggedStages[0] ) {
+			Com_Memcpy( unfoggedStages[0].bundle, bestStage->bundle, sizeof( unfoggedStages[0].bundle ) );
+			unfoggedStages[0].multitextureEnv = bestStage->multitextureEnv;
+			unfoggedStages[0].rgbGen = bestStage->rgbGen;
+			unfoggedStages[0].rgbWave = bestStage->rgbWave;
+			Com_Memcpy( unfoggedStages[0].colorConst, bestStage->colorConst, sizeof( unfoggedStages[0].colorConst ) );
+		}
 		unfoggedStages[0].stateBits &= ~( GLS_DSTBLEND_BITS | GLS_SRCBLEND_BITS );
 		unfoggedStages[0].stateBits |= GLS_DEPTHMASK_TRUE;
-		if ( shader.lightmapIndex == LIGHTMAP_NONE ) {
-			unfoggedStages[0].rgbGen = CGEN_LIGHTING_GRID;
-		} else {
+		// world surfaces light by their vertex colors in place of the
+		// lightmap; models, effects and 2D pictures keep their stage's color
+		// (lightingGrid for them reads a grid FinishShader never asked for)
+		if ( shader.lightmapIndex >= 0 || shader.lightmapIndex == LIGHTMAP_BY_VERTEX || shader.lightmapIndex == LIGHTMAP_WHITEIMAGE ) {
 			unfoggedStages[0].rgbGen = CGEN_EXACT_VERTEX;
 		}
-		unfoggedStages[0].alphaGen = AGEN_SKIP;		
+		unfoggedStages[0].alphaGen = AGEN_SKIP;
 	} else {
 		// don't use a lightmap (tesla coils)
 		if ( unfoggedStages[0].bundle[0].isLightmap ) {
