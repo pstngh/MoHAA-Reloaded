@@ -164,6 +164,27 @@ below are done.
   game time (one usercmd): with the deadline in microseconds anywhere in
   the millisecond, up to half of the frames at 250 were 3 and 5 ms (see
   Performance, Frame limiter)
+- frame limiter, no overshoot (2026-11-02, an engine change outside this
+  directory and a small one in the renderer; REF_API_VERSION 16): a frame
+  starts one period after the previous one started, never sooner, and its
+  present is held until one period after the previous present
+  (`Com_PresentGate`, which the renderer calls before each present on
+  whichever thread presents): no two presents are closer than the period,
+  where the old limiter made a late frame up with a short one and, like
+  any pacing of the starts alone, let a frame whose work was shorter than
+  the previous frame's present early (44 % of the presents at 500, by up
+  to 349 µs). Frames start a lead (the 90th percentile of the recent
+  frames' start to present time) before the gate of their present, so the
+  hold costs the lead over the median work in latency, 41 µs at 237 and
+  500, 16 at 8000, and the rate sits a little under the cap (499.4 at
+  500, 7658 at 8000). The `fps` counter counts the presents and can't read
+  above the cap. Deadlines are in nanoseconds (`Sys_Nanoseconds`), the
+  last 50 µs of a wait are spun on the clock alone, the sleep's margin
+  grows after a late wake-up, whole-millisecond periods keep whole
+  milliseconds of game time by moving a start that sits just before a
+  millisecond tick onto it, and on Windows the wait sleeps in a
+  high-resolution waitable timer and spins 1 ms instead of 2 (not run
+  there yet, see `WINDOWS_TESTING.md`; see Performance, Frame limiter)
 - present timing (2026-10-17, measurement only): when frames reach the
   display after their present, under KWin with Xwayland and as a native
   Wayland client, from the X11 completion events, Wayland's presentation
@@ -989,10 +1010,10 @@ Implementation notes, No OpenGL), and `m_filter`'s removal
 off and taunts (`code/client/omaha/snd_omaha.cpp`, `code/cgame/cg_parsemsg.cpp`,
 `cg_main.c`, `cg_local.h`), and the frame limiter
 (`Com_Frame` and `Com_FrameWait` in `code/qcommon/common.c`,
-`Sys_Microseconds` in `code/sys/sys_unix.c` and `code/sys/sys_win32.c`,
+`Sys_Nanoseconds` in `code/sys/sys_unix.c` and `code/sys/sys_win32.c`,
 the timer slack set in `sys_unix.c`'s `Sys_PlatformInit`, `NET_SleepUs`
 in `code/qcommon/net_ip.c`, their declarations in `code/qcommon/qcommon.h`:
-`com_maxfps` caps in microseconds, those that divide 1000 on the
+`com_maxfps` caps in nanoseconds, those that divide 1000 on the
 millisecond tick, see Performance, Frame limiter), and the command rate
 (`code/client/cl_input.cpp`: `cl_movefps`, `CL_CreateNewCommands`,
 `CL_ApplyLook`, `CL_GetViewUserCmd`, `CL_SendCmd`; `code/client/client.h`;
@@ -3935,6 +3956,153 @@ first results, in ms; CPU of the game process):
   `menus.txt` and `mp_mohdm1` with Vulkan and `dm/mohdm1` with GL1 (66
   comparisons). A dedicated server runs 20.00 and 40.00 frames a second at
   `sv_fps` 20 and 40 as with 413c50d1 (its wait doesn't use the tick).
+
+No catch-up, and the presents held apart (2026-11-02; `Com_Frame`,
+`Com_FrameWait`, `Com_PresentGate` and `Com_PresentMark` in
+`code/qcommon/common.c`, `Sys_Nanoseconds` and `Sys_SleepNs` in
+`code/sys/sys_unix.c` and `code/sys/sys_win32.c`, the renderer's part in
+`tr_cmds.c`, `tr_backend.c`, `vk.c` and `vk_submit.c`; REF_API_VERSION
+16): the deadline advanced by exactly one period from the previous
+deadline, so a frame late by less than a period (its work ran longer, a
+late wake-up) was made up by the next one, which started that much less
+than a period after it, a moment above the cap. And the frame starts
+alone, however evenly paced, don't pace the presents: a present comes a
+frame's work after its start, and a frame whose work was shorter than the
+previous frame's presented early by the difference, the frame after a
+long one by most of a period. At a cap of 500 the presents came 1834 to
+2400 µs apart, 44 % of them less than the 2000 of the period; on a VRR
+display at the cap that is a frame before the display can take it, and
+the `fps` counter, 16 frames of the main thread's, read 500.7 at times.
+The owner's order: no overshoot first, then latency, then stability, then
+the rate.
+
+Now a frame starts one period after the previous frame's start, never
+sooner (the time the wait saw its own deadline passed: a late frame moves
+every frame after it by as much, nothing catches up), and its present is
+held: the renderer takes a token for the frame at its end
+(`ri.FrameToken`, the frame's number, carried in the swap command to
+whichever thread presents) and, before presenting it, calls
+`ri.PresentGate`, which spins until one period after the previous
+present, outside the submit thread's queue lock (the main thread's
+submissions take it too), then `ri.PresentMark` right before the call,
+inside the lock: the present's moment, which the next gate counts from.
+No two presents are closer than the period, whatever the frames' work did
+and whatever delayed the call after the gate. The `fps` counter counts the
+marks (16 of them): it can't read above the cap. To keep the hold from
+costing latency, the gate measures each frame's work (its start to its
+arrival at the gate) and keeps the 90th percentile of the last 64 as the
+lead, and `Com_Frame` starts a frame no earlier than the lead before the
+gate of its own present (the previous present plus the period; the thread
+that presents may not have presented the previous frame yet, then the one
+before plus two): a frame after a long one isn't started at once to then
+wait at the gate for most of a period, and the time from input to present
+is the lead, or the work when that is longer. The work beyond the lead,
+one frame in ten, moves the schedule by its excess: the rate stays a
+little under the cap, and that is what the cap's rate loses, besides how
+late the wait sees each deadline (tens of ns: the last 50 µs of a wait,
+`COM_SPIN_NS`, are spun on the clock alone, where the `select` per
+iteration of the old polling, kept until then and once a frame at least,
+saw it 1 to 2 µs late) and the frames whose work runs past the period.
+
+Deadlines are in nanoseconds (`Sys_Nanoseconds`: `clock_gettime`,
+`QueryPerformanceCounter` with the seconds apart), so caps that don't
+divide a million (9000: 111.11 µs) are exact too. Whole-millisecond
+periods (125, 250, 500, 1000) no longer start their frames on the
+millisecond tick (the tick grid and a continuous chain of presents can't
+agree: the latency would ratchet up by whole milliseconds), but they keep
+every frame the same whole milliseconds of game time: a start within
+`COM_TICK_GUARD_NS` (50 µs) before a tick of `Sys_Milliseconds`, where
+`com_frameTime`'s read 7 to 14 µs later would fall in the next
+millisecond (3 and 5 ms frames instead of 4 at 250, see above), moves to
+the tick; the wait's spinning notes when the clock ticks, and the starts
+only ever drift forward, so this happens once per millisecond of drift.
+The sleep's margin (`pollNs`, 1 ms) grows by what a sleep woke up late by
+plus 0.25 ms, to 4 ms at most, and shrinks back by a millisecond a
+minute, so that a machine whose sleeps end later than this one's still
+starts its frames on time. On Windows the wait sleeps the whole
+milliseconds but two in `select` (packets wake it; it ends on a tick of
+the system timer, up to 1 ms late), the rest to the margin in a waitable
+timer (`Sys_SleepNs`: `CREATE_WAITABLE_TIMER_HIGH_RESOLUTION`, Windows 10
+1803 and later, which fires when due) and spins 1 ms instead of 2 (not
+run on Windows: `WINDOWS_TESTING.md`).
+
+Results (2026-11-02, a Ryzen 7 9800X3D with an NVIDIA GPU under niri;
+`perf.py obj/obj_team2 1744 2832 68 0 315 0 --caps ... --seconds 6
+--sizes 1280x720 --preload libinlat.so --framelog DIR -- +set r_smp 0 +set
+r_vkSubmitThread 1`: the yard in a 1280x720 window, the submit thread
+presenting; the intervals between `libinlat.so`'s present calls, which
+come right after the mark; "early": presents more than 5 µs less than the
+period after the previous one, over the runs; three builds: "old", the
+limiter of 2026-10-17; "starts", the first change of this day, the frame
+starts paced one period apart with no catch-up and nothing at the
+present; "gate", this one. The old and starts rows are 2 runs of 8 s
+(237 and 0: 1 run of 5 s), the gate rows 2 runs of 6 s in a later batch;
+a batch lands in a faster or slower state of the machine (uncapped 14266
+to 13338 frames a second here), so the rates and latencies of different
+batches aren't comparable, the present intervals are):
+
+| `com_maxfps` | build | presents a second | present interval (µs): min, p0.1, p50, p99.9, max, sd | early |
+| --- | --- | --- | --- | --- |
+| 144 | old | 143.99 | 6742, 6783, 6944, 7159, 7264, 42.0 | 1007 of 2384 |
+| 144 | starts | 144.00 | 6753, 6786, 6944, 7124, 7177, 43.0 | 1061 of 2384 |
+| 144 | gate | 143.92 | 6944, 6944, 6945, 7272, 7447, 20.7 | 0 of 1564 |
+| 237 | old | 236.97 | 4034, 4062, 4219, 4416, 4433, 40.3 | 532 of 1218 |
+| 237 | starts | 237.00 | 4088, 4094, 4218, 4358, 4371, 39.6 | 544 of 1218 |
+| 237 | gate | 236.83 | 4219, 4219, 4220, 4345, 4755, 14.8 | 0 of 2266 |
+| 500 | old | 500.00 | 1870, 1888, 1999, 2115, 2155, 35.5 | 2973 of 6828 |
+| 500 | starts | 500.00 | 1834, 1874, 1999, 2128, 2402, 36.2 | 2965 of 6828 |
+| 500 | gate | 499.45 | 2000, 2000, 2000, 2090, 2104, 8.6 | 0 of 4254 |
+| 1000 | old | 1000.00 | 886, 906, 999, 1103, 1132, 23.2 | 4922 of 13068 |
+| 1000 | starts | 999.99 | 890, 906, 999, 1110, 1150, 22.4 | 4777 of 13068 |
+| 1000 | gate | 996.74 | 998, 1000, 1000, 1113, 2843, 21.4 | 0 of 8034 |
+| 8000 | old | 7940 | 42, 56, 124, 322, 1859, 28.7 | 35051 of 100428 |
+| 8000 | starts | 7852 | 40, 65, 125, 332, 1763, 27.6 | 33248 of 100428 |
+| 8000 | gate | 7653 | 123, 125, 125, 358, 1863, 28.8 | 0 of 60954 |
+| 0 | old | 14252 | 20, 22, 62, 308, 1771, 41.0 | |
+| 0 | starts | 13753 | 23, 26, 62, 336, 398, 35.2 | |
+| 0 | gate | 13338 | 28, 30, 62, 376, 1514, 41.8 | |
+
+The cost, from runs of the starts build (with its renderer of REF_API_VERSION
+15 under another name) and this one alternated, 3 runs of 6 s each
+(`libinlat.so`'s input read to its present call; CPU: the game process):
+
+| `com_maxfps` | build | frames a second | input to present (µs): median, p99 | present interval (µs): min | early | CPU |
+| --- | --- | --- | --- | --- | --- | --- |
+| 237 | starts | 237.00 | 140, 250 | 4074 | 1529 of 3399 | 0.27 |
+| 237 | gate | 236.85 | 182, 260 | 4219 | 0 | 0.27 |
+| 500 | starts | 499.99 | 124, 216 | 1651 | 2871 of 6381 | 0.56 |
+| 500 | gate | 499.37 | 165, 234 | 1999 | 0 | 0.55 |
+| 8000 | starts | 7738 | 67, 176 | 39 | 32074 of 91431 | 0.95 |
+| 8000 | gate | 7658 | 83, 172 | 124 | 0 | 0.95 |
+
+- No present comes early now: the shortest intervals are the period
+  (6944 at 144 for 6944.4, 4219 at 237 for 4219.4, 2000 at 500, 123 to
+  125 at 8000, where 3 of 6381 at 500 and 17 of 91431 at 8000 were 1 to 2
+  µs short: the present call's own timestamp comes after the mark, and a
+  preemption in between shows there). With the starts alone, 44 % of the
+  presents came early, by up to 145 µs at 237 (a 240 Hz VRR display can't
+  take a frame before 4167) and 349 µs at 500; the old limiter the same,
+  plus its catch-up. With the main thread presenting (`r_vkSubmitThread
+  0`, 1 run each) the same: 4219 at 237, 1999 at 500 (2 of 2127 a
+  microsecond short), 119 at 8000 (1 of 30477 six short).
+- The cost is latency: the median time from input to present is the lead,
+  41 to 42 µs over the starts' at 237 and 500 (182 and 165 against 140
+  and 124; the 99th percentiles about the same), 16 at 8000, and the rate
+  sits a little under the cap: 499.4 at 500, 236.85 at 237, 7658 at 8000
+  against 7738 (the work beyond the lead, one frame in ten, moves the
+  schedule by its excess; the lead's percentile, `sorted[n * 9 / 10]` in
+  `Com_PresentGate`, is the knob: a lower one trades rate for latency).
+  CPU the same.
+- The present-to-present jitter that remains is the work's long tail, now
+  only on the long side (p99.9 at 500 2090 for the starts' 2128), and the
+  `fps` counter, counting the marks, reads at or under the cap.
+- Uncapped nothing changed: the gate records and counts, the starts
+  aren't held (the batches' 14252, 13753 and 13338 are the machine's
+  states, interleaved runs of the starts build and the old one gave 14157
+  against 13889).
+- A dedicated server runs 20.00 frames a second at `sv_fps` 20
+  (intervals 50.0 to 50.1 ms); the whole-millisecond game time of the
+  caps that divide 1000 was reasoned (above), not re-measured.
 
 Present timing (2026-10-17): everything measured above ends at the
 present call. What happens after it, until the frame is on the screen,

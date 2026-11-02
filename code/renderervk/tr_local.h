@@ -2758,6 +2758,7 @@ typedef struct {
 typedef struct {
 	int			commandId;
 	uint64_t	inputUs;		// r_vkLatency: when the frame's input was read after (vk_probe_input_time)
+	uint64_t	frameToken;		// the engine's name for the frame (ri.FrameToken), for its present gate
 } swapBuffersCommand_t;
 
 typedef struct {

@@ -175,23 +175,7 @@ static char	*rd_buffer;
 static int	rd_buffersize;
 static void	(*rd_flush)( char *buffer );
 
-#define MAX_FPS_TIMES 16
-
-#ifdef __cplusplus
-using fps_clock_t = std::chrono::high_resolution_clock;
-using fps_time_t = fps_clock_t::time_point;
-using fps_delta_t = fps_clock_t::duration;
-#else
-typedef unsigned long long fps_clock_t;
-typedef unsigned long long fps_time_t;
-typedef unsigned long long fps_delta_t;
-#endif
-
-static int fpsindex;
-static fps_delta_t fpstimes[MAX_FPS_TIMES];
-static fps_delta_t fpstotal;
-static fps_time_t fpslasttime;
-float currentfps;
+float currentfps;	// presents a second (Com_PresentGate counts them)
 
 void Com_BeginRedirect (char *buffer, int buffersize, void (*flush)( char *) )
 {
@@ -2278,88 +2262,313 @@ int Com_TimeVal(int minMsec)
 Com_FrameWait
 
 Waits until the next frame may start: until Sys_Milliseconds has passed
-com_frameTime by minMsec and Sys_Microseconds has reached deadlineUs. The
-network is read as packets come (NET_SleepUs) and the local server sends
-its queued packets when they are due.
+com_frameTime by minMsec and Sys_Nanoseconds has reached deadlineNs (0:
+none), and returns the time it saw both, the frame's start. The network is
+read as packets come (NET_SleepUs, at least once a frame: nothing else
+reads it) and the local server sends its queued packets when they are due.
 
-Both are waited for the same way: asleep until COM_POLL_US before, then
-polling the network. Sleeps end late, by up to 0.9 ms on a Ryzen 7 8700GE
-when the core reached its deepest idle state; shorter sleeps instead of the
-polling used less CPU but let the core clock down, and the frame's work
-(input read to present) took longer. The millisecond clock is waited for in
-whole milliseconds, its last one polled (when it ticks is not known), or,
-with onTick, from the last tick seen while polling: Sys_Milliseconds and
-Sys_Microseconds run at the same rate, so it ticks whole milliseconds after
-it, and its last COM_POLL_US are polled like the deadline's (not on
-Windows, where Sys_Milliseconds follows the timer interrupts).
+Both are waited for the same way: asleep until pollNs before, then
+spinning. Sleeps end late, by up to 0.9 ms on a Ryzen 7 8700GE when the
+core reached its deepest idle state; shorter sleeps instead of the
+spinning used less CPU but let the core clock down, and the frame's work
+(input read to present) took longer. pollNs is COM_POLL_NS at least and
+grows when a sleep ends later than that (a loaded machine, a coarser
+timer), to COM_POLL_PAD_NS over the lateness, up to COM_POLL_MAX_NS; it
+shrinks back by a millisecond a minute. The spinning polls the network
+until the last COM_SPIN_NS, which it spins on the clocks alone: the
+deadline is then seen within a clock read (tens of ns), where a select()
+per iteration saw it 1 to 2 us late, and the next frame's deadline (one
+period after this frame's start, Com_Frame) would carry that forward.
 
-When the polling starts after a sleep, the window system's events are
+The millisecond clock is waited for in whole milliseconds, its last one
+spun (when it ticks is not known); with a cap it never binds, since its
+deadline is at least a period after the previous start. The spinning
+notes when it ticks (com_tickNs): the phase of the millisecond clock
+against the deadlines, for the whole-millisecond periods (Com_Frame). On
+Windows, where Sys_Milliseconds follows the timer interrupts and a
+select() ends on one of them, up to 1 ms late, the whole milliseconds
+but two are slept in select() (packets wake it) and the rest to pollNs in
+a waitable timer (Sys_SleepNs: high resolution on Windows 10 1803 and
+later), and the millisecond clock, when a deadline wakes the frame on
+time anyway, is slept for a millisecond less.
+
+When the spinning starts after a sleep, the window system's events are
 handled once (IN_PumpEvents), so the next frame's input read has only what
 came after.
 =================
 */
-#ifdef _WIN32
-#define COM_POLL_US		2000	// sleeps last whole timer ticks, 1 ms at best
+#define COM_POLL_NS		1000000LL	// the sleeping stops this long before a deadline, at least
+#define COM_POLL_MAX_NS	4000000LL	// and at most, after late wake-ups
+#define COM_POLL_PAD_NS	250000LL	// what a late wake-up grows it by, over its lateness
+#define COM_SPIN_NS		50000LL		// the last of a deadline, spun on the clocks alone
+#define COM_TICK_GUARD_NS	50000LL		// a start this close before a millisecond tick moves to the tick (Com_Frame)
+
+#if defined( _WIN32 )
+#define Com_SpinPause()	YieldProcessor()
+#elif defined( __x86_64__ ) || defined( __i386__ )
+#define Com_SpinPause()	__builtin_ia32_pause()
+#elif defined( __aarch64__ )
+#define Com_SpinPause()	__asm__ __volatile__( "yield" )
 #else
-#define COM_POLL_US		1000
+#define Com_SpinPause()	( (void)0 )
 #endif
 
-static void Com_FrameWait( int minMsec, int64_t deadlineUs, qboolean onTick )
+/*
+=================
+Com_PresentGate
+
+The frame limiter's hold before a present. Com_Frame records each frame's
+start (the time its wait ended) under the frame's number, which the
+renderer takes as a token at the frame's end (Com_FrameToken, carried
+through its command stream to whichever thread presents) and gives back
+before presenting the frame: to Com_PresentGate, which holds until one
+period of the cap after the previous present, outside any lock the present
+needs (the submit thread's queue lock, which the main thread's submissions
+take too), and to Com_PresentMark right before the present call, inside
+it, which is the present's moment the next gate counts from: no two
+presents are closer than the period, whatever the frames' work did and
+whatever delayed the call after the gate. The frame starts alone, paced
+one period apart, let a frame whose work was shorter than the previous
+frame's present early by the difference, and the frame after a long one by
+most of a period.
+
+It also measures each frame's work, its start to its arrival here (not
+the hold: that is not work), and keeps the 90th percentile of the last
+COM_LEAD_SAMPLES as the lead (com_leadNs): how long before its present a
+frame should start. Com_Frame starts a frame no earlier than the lead
+before the gate of its own present (one period after the previous
+present), so that a frame after a long one is not started at once to then
+wait here for most of a period, and the time from input to present stays
+the lead, or the work when that is longer. And it counts the presents: the
+fps counter (currentfps), presents a second over the last COM_FPS_SAMPLES,
+which no present interval below the period can push above the cap.
+
+Runs on the thread that presents (the main thread, the render thread with
+r_smp, the submit thread with r_vkSubmitThread), one at a time; Com_Frame
+reads what it leaves. The shared words are 64-bit and aligned: read and
+written whole on the platforms this builds for.
+=================
+*/
+#define COM_FRAME_RING		16
+#define COM_LEAD_SAMPLES	64
+#define COM_FPS_SAMPLES		16
+
+typedef struct {
+	uint64_t	number;		// the frame (com_frameNumber)
+	int64_t		startNs;	// when its wait ended
+	int64_t		presentNs;	// when its present was released, 0: not yet
+} comFrame_t;
+
+static volatile comFrame_t	com_frames[COM_FRAME_RING];	// by number
+static volatile int64_t	com_presentPeriodNs;	// the cap's period for the gate, 0: none
+static volatile int64_t	com_lastPresentNs;		// the last gate's release
+static volatile int64_t	com_leadNs;				// the lead (above), 0: unknown yet
+static int64_t	com_leadSamples[COM_LEAD_SAMPLES];	// the presenting thread's
+static int		com_leadIndex, com_numLeadSamples;
+static int64_t	com_fpsTimes[COM_FPS_SAMPLES];		// the last presents
+static int		com_numPresents;
+
+uint64_t Com_FrameToken( void )
 {
-	static int		tickMsec;	// the last tick of Sys_Milliseconds seen while polling
-	static int64_t	tickUs;		// and when, 0: none
-	int64_t	sleepUs, msecUs;
-	int		timeVal, timeValSV;
-	qboolean	slept = qfalse, pumped = qfalse;
+	return (uint64_t)com_frameNumber;
+}
 
-	do {
-		sleepUs = deadlineUs - Sys_Microseconds() - COM_POLL_US;
+static int Com_CompareNs( const void *a, const void *b )
+{
+	int64_t x = *(const int64_t *)a, y = *(const int64_t *)b;
+
+	return x < y ? -1 : x > y;
+}
+
+void Com_PresentGate( uint64_t token )
+{
+	volatile comFrame_t	*frame = &com_frames[token % COM_FRAME_RING];
+	int64_t	nowNs, periodNs, gateNs;
+	int		n;
+
+	nowNs = Sys_Nanoseconds();
+
+	// the frame's work, for the lead
+	if ( frame->number == token && frame->startNs && nowNs > frame->startNs ) {
+		com_leadSamples[com_leadIndex] = nowNs - frame->startNs;
+		com_leadIndex = ( com_leadIndex + 1 ) % COM_LEAD_SAMPLES;
+		if ( com_numLeadSamples < COM_LEAD_SAMPLES ) {
+			com_numLeadSamples++;
+		}
+		if ( com_numLeadSamples < 8 || ( com_leadIndex & 7 ) == 0 ) {
+			int64_t sorted[COM_LEAD_SAMPLES];
+
+			n = com_numLeadSamples;
+			Com_Memcpy( sorted, com_leadSamples, n * sizeof( sorted[0] ) );
+			qsort( sorted, n, sizeof( sorted[0] ), Com_CompareNs );
+			com_leadNs = sorted[n * 9 / 10];
+		}
+	}
+
+	// the hold
+	periodNs = com_presentPeriodNs;
+	if ( periodNs ) {
+		gateNs = com_lastPresentNs + periodNs;
+		while ( nowNs < gateNs ) {
+			Com_SpinPause();
+			nowNs = Sys_Nanoseconds();
+		}
+	}
+}
+
+void Com_PresentMark( uint64_t token )
+{
+	volatile comFrame_t	*frame = &com_frames[token % COM_FRAME_RING];
+	int64_t	nowNs, oldestNs;
+	int		i;
+
+	nowNs = Sys_Nanoseconds();
+	com_lastPresentNs = nowNs;
+	if ( frame->number == token ) {
+		frame->presentNs = nowNs;
+	}
+
+	// the fps counter
+	if ( fps && fps->integer ) {
+		i = com_numPresents % COM_FPS_SAMPLES;
+		oldestNs = com_fpsTimes[i];
+		com_fpsTimes[i] = nowNs;
+		com_numPresents++;
+		if ( com_numPresents > COM_FPS_SAMPLES && nowNs > oldestNs ) {
+			currentfps = COM_FPS_SAMPLES * 1000000000.0 / ( nowNs - oldestNs );
+		}
+	}
+}
+
+// when a frame's present was released, 0: not yet, or not that frame
+static int64_t Com_FramePresentNs( int number )
+{
+	volatile comFrame_t	*frame;
+
+	if ( number < 0 ) {
+		return 0;
+	}
+	frame = &com_frames[number % COM_FRAME_RING];
+	return frame->number == (uint64_t)number ? frame->presentNs : 0;
+}
+
+static int64_t	com_tickNs;		// when Sys_Milliseconds last ticked while a wait spun, 0: never seen
+
+static int64_t Com_FrameWait( int minMsec, int64_t deadlineNs )
+{
+	static int64_t	pollNs = COM_POLL_NS;	// how long before a deadline the sleeping stops
+	static int64_t	lastNs;		// the last frame's start
+	int64_t	nowNs, waitNs, sleepNs, msWaitNs, msSleepNs, wakeNs, lateNs;
+	int		ms, lastMs = 0, timeVal, timeValSV;
+	qboolean	slept = qfalse, pumped = qfalse, polled = qfalse;
+
+	for ( ;; ) {
+		nowNs = Sys_Nanoseconds();
+		ms = Sys_Milliseconds();
+		if ( lastMs && ms != lastMs ) {
+			// a tick, seen while spinning (lastMs is 0 after a sleep)
+			com_tickNs = nowNs;
+		}
+		lastMs = ms;
+		timeVal = ms - com_frameTime;	// whole milliseconds of Sys_Milliseconds to go, 0: passed (Com_TimeVal)
+		timeVal = timeVal >= minMsec ? 0 : minMsec - timeVal;
+		if ( polled && !timeVal && nowNs >= deadlineNs ) {
+			break;
+		}
+
+		// the sleep ends pollNs before the later of the deadline and the
+		// tick, which is timeVal - 1 to timeVal ms away
+		waitNs = deadlineNs ? deadlineNs - nowNs : 0;
+		sleepNs = waitNs - pollNs;
+		if ( timeVal ) {
+			msSleepNs = ( timeVal - 1 ) * 1000000LL;
+			msWaitNs = msSleepNs + 1000000;
 #ifdef _WIN32
-		sleepUs -= sleepUs % 1000;
+			if ( deadlineNs ) {
+				msSleepNs -= 1000000;
+			}
 #endif
-
-		timeVal = Com_TimeVal( minMsec );
-		msecUs = ( timeVal - 1 ) * 1000LL;
-#ifndef _WIN32
-		if ( onTick && timeVal && tickUs ) {
-			// whole milliseconds after the last tick seen, which must be timeVal
-			// - 1 to timeVal ms away (50 us for the poll that saw it); else the
-			// clock was set: wait as without onTick until a tick is seen again
-			int64_t tickInUs = tickUs + ( com_frameTime + minMsec - tickMsec ) * 1000LL - Sys_Microseconds();
-			if ( tickInUs > msecUs - 50 && tickInUs <= msecUs + 1050 ) {
-				msecUs = tickInUs - COM_POLL_US;
-			} else {
-				tickUs = 0;
+			if ( waitNs < msWaitNs ) {
+				waitNs = msWaitNs;
+			}
+			if ( sleepNs < msSleepNs ) {
+				sleepNs = msSleepNs;
 			}
 		}
-#endif
-		if ( sleepUs < msecUs ) {
-			sleepUs = msecUs;
-		}
 
-		if ( com_sv_running->integer ) {
+		if ( sleepNs > 0 && com_sv_running->integer ) {
 			timeValSV = SV_SendQueuedPackets();
-			if ( sleepUs > ( timeValSV - 1 ) * 1000LL ) {
-				sleepUs = ( timeValSV - 1 ) * 1000LL;
+			if ( sleepNs > ( timeValSV - 1 ) * 1000000LL ) {
+				sleepNs = ( timeValSV - 1 ) * 1000000LL;
 			}
 		}
-
-		if ( com_busyWait->integer || sleepUs < 0 ) {
-			sleepUs = 0;
+		if ( com_busyWait->integer ) {
+			sleepNs = 0;
 		}
-		if ( slept && !sleepUs && !pumped ) {
+#ifdef _WIN32
+		if ( !deadlineNs ) {
+			// a server's frame has no deadline to be on time for: whole
+			// milliseconds in select(), the last one spun
+			sleepNs -= sleepNs % 1000000;
+		}
+#endif
+
+		if ( sleepNs > 0 ) {
+			slept = qtrue;
+			lastMs = 0;
+			wakeNs = nowNs + sleepNs;
+#ifdef _WIN32
+			// select() ends on a tick of the system timer, up to 1 ms late:
+			// the whole milliseconds but two in it (packets wake it), the
+			// rest in a timer
+			if ( !deadlineNs || sleepNs >= 3000000 ) {
+				NET_SleepUs( deadlineNs ? ( sleepNs / 1000000 - 2 ) * 1000 : sleepNs / 1000 );
+				polled = qtrue;
+				continue;
+			}
+			Sys_SleepNs( sleepNs );
+#else
+			NET_SleepUs( sleepNs / 1000 );
+			polled = qtrue;
+#endif
+			// a wake-up later than the margin would start the frame late:
+			// the margin grows to cover the next one
+			lateNs = Sys_Nanoseconds() - wakeNs;
+			if ( lateNs + COM_POLL_PAD_NS > pollNs ) {
+				pollNs = lateNs + COM_POLL_PAD_NS;
+				if ( pollNs > COM_POLL_MAX_NS ) {
+					pollNs = COM_POLL_MAX_NS;
+				}
+			}
+			continue;
+		}
+
+		// spinning
+		if ( slept && !pumped ) {
 			IN_PumpEvents();
 			pumped = qtrue;
 		}
-		if ( sleepUs ) {
-			slept = qtrue;
+		if ( !polled || waitNs > COM_SPIN_NS ) {
+			if ( com_sv_running->integer ) {
+				SV_SendQueuedPackets();
+			}
+			NET_SleepUs( 0 );
+			polled = qtrue;
+		} else {
+			Com_SpinPause();
 		}
-		NET_SleepUs( sleepUs );
-		if ( !sleepUs && timeVal && !Com_TimeVal( minMsec ) ) {
-			tickMsec = com_frameTime + minMsec;
-			tickUs = Sys_Microseconds();
+	}
+
+	// the margin shrinks back slowly, a millisecond a minute
+	if ( lastNs ) {
+		pollNs -= ( nowNs - lastNs ) / 60000;
+		if ( pollNs < COM_POLL_NS ) {
+			pollNs = COM_POLL_NS;
 		}
-	} while ( Com_TimeVal( minMsec ) || Sys_Microseconds() < deadlineUs );
+	}
+	lastNs = nowNs;
+
+	return nowNs;
 }
 
 /*
@@ -2371,10 +2580,9 @@ void Com_Frame( void ) {
 
 	int		msec, minMsec;
 	static int	lastTime = 0;
-	static int64_t	nextFrameUs;	// deadline of the frame start
-	static int	nextFrameMs;	// the same in whole milliseconds, caps that divide 1000
-	int64_t	periodUs, nowUs;
-	int		periodMs, nowMs, maxfps;
+	static int64_t	frameStartNs;	// when the last frame's wait ended: its start
+	int64_t	periodNs, deadlineNs, nowNs, gateNs, phaseNs;
+	int		periodMs, maxfps;
 
 	int		timeBeforeFirstEvents;
 	int		timeBeforeServer;
@@ -2430,14 +2638,14 @@ void Com_Frame( void ) {
     // Figure out how much time we have: a dedicated server's frame, and the
     // period of a client's frame rate cap. Caps up to 1000 also wait for 1 ms
     // of Sys_Milliseconds (no frame of 0 ms); at a timescale of 1, a client
-    // cap above 1000 waits only for its deadline in microseconds and an
+    // cap above 1000 waits only for its deadline in nanoseconds and an
     // uncapped client not at all: its frames can last 0 ms of game time
     // (Com_ModifyMsec, which makes them 1 ms at other timescales), the
     // commands to the server come at their own rate (cl_movefps). With
     // cl_movefps 0 every frame makes a command, so caps above 1000 and
     // uncapped are 1000 (a frame per tick), as stock
     minMsec = 1;
-    periodUs = 0;
+    periodNs = 0;
     periodMs = 0;
     if (!com_timedemo->integer)
     {
@@ -2457,53 +2665,72 @@ void Com_Frame( void ) {
                 maxfps = 1000;
 #endif
 
-            // 1000: minMsec alone, a frame per tick of Sys_Milliseconds
-            if (maxfps > 1000)
+            if (maxfps > 0)
             {
-                periodUs = (1000000 + maxfps - 1) / maxfps; // rounded up: never above the cap
-                if (com_timescale->value == 1.0f)
-                    minMsec = 0;
-            }
-            else if (maxfps > 0 && maxfps < 1000)
-            {
-                if (1000 % maxfps == 0)
+                periodNs = (1000000000LL + maxfps - 1) / maxfps; // rounded up: never above the cap
+                if (maxfps > 1000)
+                {
+                    if (com_timescale->value == 1.0f)
+                        minMsec = 0;
+                }
+                else if (1000 % maxfps == 0)
                     periodMs = 1000 / maxfps;
-                else
-                    periodUs = (1000000 + maxfps - 1) / maxfps;
             }
-            else if (maxfps <= 0 && com_timescale->value == 1.0f)
+            else if (com_timescale->value == 1.0f)
                 minMsec = 0;
         }
     }
 
-    // The deadline advances by exactly one period, so that caps that don't
-    // divide 1000 are exact and frames evenly spaced. A frame late by less
-    // than a period is made up by the next one; after a later one, frames
-    // start again from now (no burst to catch up).
-    nowUs = Sys_Microseconds();
-    nextFrameUs += periodUs;
-    if (nowUs - nextFrameUs > periodUs)
-        nextFrameUs = nowUs;
-
-    // Caps that divide 1000 keep the deadline in whole milliseconds of
-    // Sys_Milliseconds, the clock of com_frameTime, and frames start when it
-    // ticks (the wait polls the millisecond before): every frame is then
-    // 1000 / cap ms of game time, one usercmd, as with the old limiter. A
-    // deadline in microseconds sits anywhere in the millisecond, and near
-    // its end the microseconds from the start to com_frameTime's read put
-    // some reads in the next one: 3 and 5 ms frames instead of 4 at 250.
-    // Same rule after a late frame.
-    if (periodMs)
+    // The next frame starts one period after this one started, never
+    // sooner: no interval between two frame starts is below the period,
+    // and a frame late by any amount (its work ran past the period, a late
+    // wake-up) moves every frame after it by as much. What the rate loses
+    // is how late the wait sees each deadline, tens of ns (Com_FrameWait).
+    // The presents are held apart by the period too (Com_PresentGate), and
+    // a frame starts no earlier than the lead (the time a frame takes from
+    // its start to its present, com_leadNs) before the gate of its own
+    // present, one period after the previous frame's: a frame after a long
+    // one isn't started at once to then wait at the gate for most of a
+    // period, and the time from input to present stays the lead, or the
+    // work when that is longer. The thread that presents may not have
+    // presented the previous frame yet: then two periods after the one
+    // before it.
+    nowNs = Sys_Nanoseconds();
+    com_presentPeriodNs = periodNs;
+    deadlineNs = 0;
+    if (periodNs)
     {
-        nowMs = Sys_Milliseconds();
-        nextFrameMs += periodMs;
-        if (nowMs - nextFrameMs > periodMs)
-            nextFrameMs = nowMs;
-        if (minMsec < nextFrameMs - com_frameTime)
-            minMsec = nextFrameMs - com_frameTime;
+        deadlineNs = frameStartNs + periodNs;
+        gateNs = Com_FramePresentNs(com_frameNumber - 1);
+        if (gateNs)
+            gateNs += periodNs;
+        else if ((gateNs = Com_FramePresentNs(com_frameNumber - 2)) != 0)
+            gateNs += 2 * periodNs;
+        if (gateNs && deadlineNs < gateNs - com_leadNs)
+            deadlineNs = gateNs - com_leadNs;
     }
 
-    Com_FrameWait(minMsec, nextFrameUs, periodMs != 0);
+    // Whole-millisecond periods keep every frame the same whole milliseconds
+    // of game time: com_frameTime, read 7 to 14 us after the start, must
+    // fall in the same millisecond relative to the start each frame (else 3
+    // and 5 ms frames instead of 4 at 250, see the README), so a start
+    // within COM_TICK_GUARD_NS before a tick of Sys_Milliseconds (whole
+    // milliseconds after the last tick a wait's spinning saw) moves to the
+    // tick. The starts drift forward only (a late frame, a long one), so
+    // this happens once per millisecond of drift.
+    if (periodMs && com_tickNs && nowNs - com_tickNs < 10000000)
+    {
+        phaseNs = (deadlineNs - com_tickNs) % 1000000;
+        if (phaseNs < 0)
+            phaseNs += 1000000;
+        if (phaseNs > 1000000 - COM_TICK_GUARD_NS)
+            deadlineNs += 1000000 - phaseNs;
+    }
+
+    frameStartNs = Com_FrameWait(minMsec, deadlineNs);
+    com_frames[com_frameNumber % COM_FRAME_RING].presentNs = 0;
+    com_frames[com_frameNumber % COM_FRAME_RING].startNs = frameStartNs;
+    com_frames[com_frameNumber % COM_FRAME_RING].number = (uint64_t)com_frameNumber;
 
     IN_Frame();
 
@@ -2618,40 +2845,6 @@ void Com_Frame( void ) {
 
 		Com_Printf ("frame:%i all:%3i sv:%3i ev:%3i cl:%3i gm:%3i rf:%3i bk:%3i\n",
 					 com_frameNumber, all, sv, ev, cl, time_game, time_frontend, time_backend );
-	}
-
-	if (fps->integer) {
-		fps_time_t fpstime;
-		fps_delta_t delta;
-
-#ifdef __cplusplus
-		fpstime = fps_clock_t::now();
-#else
-		// microseconds: frames shorter than a millisecond (above 1000 a
-		// second) made whole milliseconds a coarse measure
-		fpstime = Sys_Microseconds();
-#endif
-
-		delta = fpstime - fpslasttime;
-
-		fpstotal = (fpstime - fpslasttime) + (fpstotal - fpstimes[fpsindex]);
-		fpstimes[fpsindex] = fpstime - fpslasttime;
-		fpsindex = (fpsindex + 1) % MAX_FPS_TIMES;
-		fpslasttime = fpstime;
-
-#ifdef __cplusplus
-		if (fpstotal.count()) {
-			currentfps = MAX_FPS_TIMES / std::chrono::duration<long double>(fpstotal).count();
-		} else {
-			currentfps = 0.0;
-		}
-#else
-		if (fpstotal) {
-			currentfps = MAX_FPS_TIMES / (fpstotal / 1000000.0);
-		} else {
-			currentfps = 0.0;
-		}
-#endif
 	}
 
 	//

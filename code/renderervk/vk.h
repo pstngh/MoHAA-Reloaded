@@ -601,6 +601,7 @@ void		vk_read_pixels( int x, int y, int width, int height, readFormat_t format, 
 uint64_t	vk_probe_input_time( void );
 void		vk_probe_frame_end( void );
 void		vk_probe_input( uint64_t inputUs );
+void		vk_frame_token( uint64_t token );
 // the same without waiting: the back end records the copy and gets a handle
 // (0: too many in flight, dropped); the main thread takes the readbacks
 // once the GPU has done them, in the order they were recorded, with the

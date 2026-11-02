@@ -584,6 +584,7 @@ void RE_EndFrame( int *frontEndMsec, int *backEndMsec ) {
 	}
 	cmd->commandId = RC_SWAP_BUFFERS;
 	cmd->inputUs = vk_probe_input_time();
+	cmd->frameToken = ri.FrameToken();
 
 	R_IssueRenderCommands( qtrue );
 	vk_probe_frame_end();

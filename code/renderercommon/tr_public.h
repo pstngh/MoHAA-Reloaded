@@ -28,7 +28,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 extern "C" {
 #endif
 
-#define	REF_API_VERSION		15	// 15: DrawBoxes
+#define	REF_API_VERSION		16	// 15: DrawBoxes, 16: FrameToken, PresentGate
 
 typedef struct dtiki_s dtiki_t;
 typedef struct skelAnimFrame_s skelAnimFrame_t;
@@ -335,6 +335,16 @@ typedef struct {
     //
     int (*SKEL_GetMorphWeightFrame)(void *skeletor, int index, float time, int *data);
     int (*SKEL_GetBoneParent)(void *skeletor, int boneIndex);
+
+    // the frame limiter's present gate (Com_PresentGate): the renderer names
+    // each frame by the token it takes at the frame's end (FrameToken, its
+    // number) and gives it back before presenting the frame, on whichever
+    // thread presents: PresentGate waits until one period of the cap after
+    // the previous present (outside any lock the present needs), PresentMark
+    // right before the present call says this is it
+    uint64_t    (*FrameToken)(void);
+    void        (*PresentGate)(uint64_t token);
+    void        (*PresentMark)(uint64_t token);
 } refimport_t;
 
 

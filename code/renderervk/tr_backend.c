@@ -1491,6 +1491,7 @@ const void	*RB_SwapBuffers( const void *data ) {
 	// here, summed by the readback writer once the GPU has done it
 	// (tr_init.c), nothing waits for it
 	vk_probe_input( cmd->inputUs );
+	vk_frame_token( cmd->frameToken );
 
 	if ( r_measureOverdraw->integer ) {
 		int size[2] = { glConfig.vidWidth, glConfig.vidHeight };

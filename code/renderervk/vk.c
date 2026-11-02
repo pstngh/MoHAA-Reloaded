@@ -578,6 +578,7 @@ void VK_BeginFrameIfNeeded( void ) {
 	// the pixel readbacks of the frame that used the slot before
 	VK_ReadbacksDone( frame->serial );
 	frame->probeInputUs = 0;
+	frame->token = 0;
 
 	frame->vertexOffset = 0;
 	frame->stagingOffset = 0;
@@ -1145,9 +1146,12 @@ static void VK_QueuePresent( uint32_t imageIndex ) {
 		VK_ChainPresentId( &presentInfo, &presentId, &id );
 	}
 
+	// the frame limiter's hold: no two presents closer than the cap's period
+	ri.PresentGate( vk.frame ? vk.frame->token : 0 );
 	start = VK_Microseconds();
 	vk.stats.frameToPresentUs += start - vk.frameStartUs;
 	vk.lastPresentUs = start;
+	ri.PresentMark( vk.frame ? vk.frame->token : 0 );
 	result = qvkQueuePresentKHR( vk.queue, &presentInfo );
 	vk.stats.presentUs += VK_Microseconds() - start;
 	vk.heldImage = qfalse;
@@ -4976,6 +4980,15 @@ void vk_probe_input( uint64_t inputUs ) {
 	}
 	VK_BeginFrameIfNeeded();
 	vk.frame->probeInputUs = inputUs;
+}
+
+// the engine's name for the frame (RB_SwapBuffers), for the present gate
+void vk_frame_token( uint64_t token ) {
+	if ( !vk.device ) {
+		return;
+	}
+	VK_BeginFrameIfNeeded();
+	vk.frame->token = token;
 }
 
 static int VK_ProbeCompare( const void *a, const void *b ) {

@@ -76,6 +76,7 @@ typedef struct {
 	VkSemaphore		acquired;		// that image's acquire semaphore, when no submission waited for it yet
 	uint64_t		aoSignalValue, aoWaitValue;	// the compute queue's ambient occlusion (VK_TemporalTakeAoSubmitInfo), 0 none
 	uint64_t		inputUs;		// r_vkLatency: the frame's input time
+	uint64_t		token;			// the engine's name for the frame, for its present gate
 	uint64_t		handoffUs;		// when the main thread queued it
 	uint64_t		frameStartUs;	// vk.frameStartUs of the frame
 
@@ -224,9 +225,14 @@ static VkResult VK_ThreadPresent( vkSubmitJob_t *job, uint32_t imageIndex ) {
 		vk_submit.inlatPresenting( job->serial );
 	}
 
+	// the frame limiter's hold: no two presents closer than the cap's
+	// period (outside queueLock: the main thread submits meanwhile), and
+	// the present's moment inside it, right before the call
+	ri.PresentGate( job->token );
 	start = VK_Microseconds();
 	job->presentAt = start;
 	SDL_LockMutex( vk_submit.queueLock );
+	ri.PresentMark( job->token );
 	result = qvkQueuePresentKHR( vk.queue, &presentInfo );
 	SDL_UnlockMutex( vk_submit.queueLock );
 	job->presentUs = VK_Microseconds() - start;
@@ -653,6 +659,7 @@ void VK_QueueSubmitJob( vkFrame_t *frame, const VkCommandBuffer *cmds, uint32_t 
 	job->acquired = acquired;
 	job->frameStartUs = vk.frameStartUs;
 	job->inputUs = frame->probeInputUs;
+	job->token = frame->token;
 	// the compute queue's ambient occlusion (r_aoAsync): taken here, on
 	// the main thread
 	VK_TemporalTakeAoSubmitInfo( &job->aoSignalValue, &job->aoWaitValue );
@@ -690,6 +697,7 @@ void VK_QueuePresentJob( vkFrame_t *frame, int image ) {
 	job->image = image;
 	job->frameStartUs = vk.frameStartUs;
 	job->inputUs = frame->probeInputUs;
+	job->token = frame->token;
 	if ( vk_submit.inlatQueued ) {
 		vk_submit.inlatQueued( job->serial );
 	}

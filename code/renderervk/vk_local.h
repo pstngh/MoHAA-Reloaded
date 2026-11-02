@@ -319,6 +319,7 @@ typedef struct {
 	VkCommandBuffer	mainCmd;		// everything else, in the order the renderer issued it
 	VkCommandBuffer	presentCmd;		// copy to the swapchain image (recorded by the submit thread with r_vkSubmitThread)
 	uint64_t		probeInputUs;	// r_vkLatency: when its input was read (VK_Microseconds), 0 unknown
+	uint64_t		token;			// the engine's name for the frame (ri.FrameToken), given back to its present gate
 	VkFence			fence;			// signaled when every submission of the frame has completed
 	VkQueryPool		queryPool;		// VK_NUM_TIMESTAMPS timestamps, when the queue has them
 	uint32_t		timestampsWritten;	// bits of the VK_TS_* recorded in this frame

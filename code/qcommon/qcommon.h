@@ -1023,6 +1023,12 @@ int QDECL	Com_strCompare( const void *a, const void *b );
 
 
 extern	float currentfps;
+// the frame limiter's present gate: the frame being built, as a token for
+// the renderer (its number), the hold before that frame's present and the
+// present itself (any thread; see Com_PresentGate in common.c)
+uint64_t Com_FrameToken( void );
+void	Com_PresentGate( uint64_t token );
+void	Com_PresentMark( uint64_t token );
 extern	cvar_t	*paused;
 extern	cvar_t	*config;
 extern	cvar_t	*fps;
@@ -1391,8 +1397,13 @@ void	Sys_Print( const char *msg );
 // Sys_Milliseconds should only be used for profiling purposes,
 // any game related timing information should come from event timestamps
 int		Sys_Milliseconds (void);
-// a monotonic clock in microseconds (the frame limiter's deadlines)
+// a monotonic clock in microseconds (the fps counter) and in nanoseconds
+// (the frame limiter's deadlines)
 int64_t	Sys_Microseconds (void);
+int64_t	Sys_Nanoseconds (void);
+// sleeps for about ns nanoseconds, as closely as the platform's timers can
+// (the frame limiter's wait on Windows, Com_FrameWait)
+void	Sys_SleepNs (int64_t ns);
 
 qboolean Sys_RandomBytes( byte *string, int len );
 

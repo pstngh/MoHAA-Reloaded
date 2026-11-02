@@ -3246,6 +3246,9 @@ void CL_InitRef( void ) {
 	ri.Printf = CL_RefPrintf;
 	ri.Error = Com_Error;
 	ri.Milliseconds = CL_ScaledMilliseconds;
+	ri.FrameToken = Com_FrameToken;
+	ri.PresentGate = Com_PresentGate;
+	ri.PresentMark = Com_PresentMark;
 	ri.LV_ConvertString = Sys_LV_CL_ConvertString;
 	ri.Malloc = CL_RefMalloc;
 	ri.Free = CL_RefFree;

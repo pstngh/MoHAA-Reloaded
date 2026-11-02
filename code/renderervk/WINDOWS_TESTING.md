@@ -107,7 +107,11 @@ overwrites it). The console opens with the key below Esc.
    `+set r_vkSubmitThread 1` added (`limiter_thread.log`; rename the five
    `lim_*.txt` files of the first run before, e.g. to `lim_*_off.txt`).
    Look at the Task Manager's CPU column for openmohaa meanwhile if you
-   can (one core busy is expected at 250 and uncapped).
+   can: about a third of a core at 250 (the wait spins the last
+   millisecond of every frame, more when the timer woke it up late), one
+   core uncapped. A whole core at 60 to 165 means the waitable timer
+   (Windows 10 1803 and later) isn't precise on that system and the wait
+   spins more to stay on time.
 3. Optional, with the LunarG Vulkan SDK installed: run 1 with
    `+set r_vkValidation 2` (`life_val.log`, slower).
 
@@ -125,7 +129,11 @@ overwrites it). The console opens with the key below Esc.
 - In each `lim_*.txt` the line `# frame time ms:` has a median of
   1000 / cap: 16.667 at 60, 6.944 at 144, 6.061 at 165, 4.000 at 250
   (uncapped: whatever the machine gives, above 1000 frames a second where it
-  can). The old limiter gave 6.000 at 144 and 165.
+  can), a p99.9 within about 0.1 ms of it, and a max of a few ms at
+  most (a frame whose work ran long; the frames after it start one period
+  after it, none shorter). With `fps 1` the HUD's counter must never read
+  above `com_maxfps` (it counts the presents, which the limiter holds one
+  period apart). The old limiter gave 6.000 at 144 and 165.
 - With `r_vkSubmitThread 1`: the line `Vulkan present mode: ...` ends with
   `5 swapchain images, 2 frames in flight, submit thread (r_vkSubmitThread)`
   (3 images with vsync), and the same as above: no crash, hang or black
