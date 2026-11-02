@@ -48,6 +48,8 @@ protected:
     //
     str name;
     int refHandle;
+    // drawn width / 640x480 layout width of text on the owner's virtual screen
+    float widthRatio;
 
 public:
     UIFont();
@@ -73,8 +75,9 @@ public:
     void setAlpha(float alpha);
     void setFont(const char *fontname);
     int  getMaxWidthIndex(const char *text, int maxlen);
-    int  getWidth(const char *text, int maxlen);
-    int  getCharWidth(unsigned short ch);
+    void setVirtualScale(const float *virtualScale);
+    float getWidth(const char *text, int maxlen);
+    float getCharWidth(unsigned short ch);
     int  getHeight(const char *text, int maxlen, const float *virtualScale = NULL);
     int  getHeight(const float *virtualScale = NULL);
     int  CodeSearch(unsigned short uch);
