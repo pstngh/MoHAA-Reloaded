@@ -56,6 +56,17 @@ cvar_t	*r_hdrBlack;
 cvar_t	*r_hdrOutputTest;
 cvar_t	*r_hdrOutputTestPage;
 
+// r_hdrOutput 1 takes scRGB before HDR10 on Windows: NVIDIA's Vulkan driver
+// presents HDR through a DXGI swapchain of its own, and Microsoft documents
+// the HDR10 swapchain for Direct3D only, scRGB for every API (see README,
+// HDR output). Elsewhere HDR10 first: it is the display's signal, which a
+// compositor can show without converting it
+#ifdef _WIN32
+#define VK_HDR_PREFER_SCRGB		qtrue
+#else
+#define VK_HDR_PREFER_SCRGB		qfalse
+#endif
+
 #define VK_HDR_DEFAULT_WHITE	203.0f		// nits of paper white without SDL's (ITU-R BT.2408)
 #define VK_HDR_DEFAULT_PEAK		1000.0f
 // the calibration's peak sliders (the client's menus, UI_HDR_PEAK_MIN and
@@ -65,7 +76,7 @@ cvar_t	*r_hdrOutputTestPage;
 
 void VK_OutputRegisterCvars( void ) {
 	r_hdrOutput = ri.Cvar_Get( "r_hdrOutput", "0", CVAR_ARCHIVE | CVAR_LATCH );
-	ri.Cvar_SetDescription( r_hdrOutput, "0 off; 1 HDR output where the display is in HDR (HDR10, else scRGB), SDR otherwise; 2 the HDR look on an SDR display (with r_temporal 1: the expansion and r_hdrBlack put back into SDR); 3 HDR10 and 4 scRGB whatever the window's state (tests)" );
+	ri.Cvar_SetDescription( r_hdrOutput, "0 off; 1 HDR output where the display is in HDR (scRGB, else HDR10 on Windows; HDR10, else scRGB elsewhere), SDR otherwise; 2 the HDR look on an SDR display (with r_temporal 1: the expansion and r_hdrBlack put back into SDR); 3 HDR10 and 4 scRGB whatever the window's state (tests)" );
 	ri.Cvar_CheckRange( r_hdrOutput, 0, 4, qtrue );
 	r_hdrPaperWhite = ri.Cvar_Get( "r_hdrPaperWhite", "0", CVAR_ARCHIVE );
 	ri.Cvar_SetDescription( r_hdrPaperWhite, "with HDR output: the brightness of the whole picture, in nits of the game's white (the menus, the HUD and the 3D view; the expansion goes from there toward r_hdrPeak); 0 the system's SDR white level" );
@@ -249,7 +260,11 @@ qboolean VK_OutputChooseFormat( const VkSurfaceFormatKHR *formats, uint32_t coun
 		if ( !vko.windowHdr ) {
 			reason = "the window's display is not in HDR";
 		} else {
-			pick = pq ? pq : scrgb;
+			if ( VK_HDR_PREFER_SCRGB ) {
+				pick = scrgb ? scrgb : pq;
+			} else {
+				pick = pq ? pq : scrgb;
+			}
 			reason = "the surface has no HDR format (the window system or the driver can't take it)";
 		}
 		break;

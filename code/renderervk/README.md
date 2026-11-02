@@ -662,7 +662,8 @@ below are done.
   shown on an HDR display, the 3D view expanded toward its peak, the look
   set by cvars): `r_hdrOutput 1` (archived, latched: `vid_restart`, off
   by default) uses
-  an HDR10 or scRGB swapchain when the window's surface offers one and SDL
+  an HDR10 or scRGB swapchain (scRGB first on Windows since 2026-11-02)
+  when the window's surface offers one and SDL
   says the window is in HDR, on any Wayland compositor (the driver's WSI
   speaks `wp_color_manager_v1`) and on Windows alike, and changes mode
   when the window's HDR state changes; SDR otherwise, the console says
@@ -893,6 +894,19 @@ below are done.
   other way in two of ten views. `vkinfo` counts the vertex and index
   binds, push constants and dynamic state calls (see Performance, Each
   stage cheaper)
+- scRGB first on Windows (2026-11-02, the user's request): `r_hdrOutput 1`
+  takes the scRGB swapchain before HDR10 on Windows, HDR10 first elsewhere.
+  On the user's Windows 11 machine (RTX 4070 Ti, Windows HDR on) an HDR10
+  swapchain presented at most about 3,460 times a second, each present
+  about 109 µs of the CPU and a 150 to 250 µs stall of the GPU's queue,
+  whatever the driver's present method, the swapchain's images or the
+  present mode. NVIDIA's Windows driver presents through a DXGI swapchain
+  of its own and may copy each image into it (an NVIDIA engineer on their
+  forum, March 2026); Microsoft documents the HDR10 swapchain for Direct3D
+  11 and 12 only and scRGB for every API; NVIDIA's own Vulkan game, Quake
+  II RTX, presents HDR in scRGB only. scRGB's present cost on Windows is
+  not measured yet (`r_hdrOutput 3` and `4` force either one). See
+  Implementation notes, HDR output
 - GL1 was the visual reference until 2026-10-19; since then the look may
   change where that buys performance, and comparisons with the build before
   (until 2026-10-23 also with GL1) check for bugs and show what changed
@@ -9548,7 +9562,9 @@ selects the sample count (see Implementation notes).
     `VK_EXT_hdr_metadata` when it has it. `VK_ChooseSurfaceFormat` asks
     `VK_OutputChooseFormat` first: an `A2B10G10R10` or `A2R10G10B10`
     format with `HDR10_ST2084`, else `RGBA16F` with
-    `EXTENDED_SRGB_LINEAR`, that can be a color attachment, when SDL says
+    `EXTENDED_SRGB_LINEAR` (on Windows the other way round,
+    `VK_HDR_PREFER_SCRGB`: the HDR10 present's cost there, see the
+    changelog), that can be a color attachment, when SDL says
     the window is in HDR (`SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN`; some
     Windows drivers list HDR10 on SDR displays too) or `r_hdrOutput` 3 or
     4 forces the mode. On Wayland the driver's WSI does the protocol
