@@ -907,6 +907,20 @@ below are done.
   II RTX, presents HDR in scRGB only. scRGB's present cost on Windows is
   not measured yet (`r_hdrOutput 3` and `4` force either one). See
   Implementation notes, HDR output
+- one submission for a frame drawn offscreen (2026-11-02, the user's
+  request; NVIDIA's "Vulkan Dos and Don'ts": minimize queue submissions,
+  each has significant CPU cost): with HDR output, or whenever the frame
+  is drawn offscreen and copied to the swapchain image, the frame's
+  commands and the copy go in one `vkQueueSubmit` of two batches (only the
+  copy waits for the image) instead of two submissions, as the submit
+  thread already did. At the `dm/mohdm6` spot of the render thread with
+  HDR10 forced (`r_hdrOutput 3`, `r_smp 1`, 640x480 window, Fedora, RTX
+  4070 Ti; three runs each, the machine busy with other work): 2 to 1
+  submissions a frame, 13,744 to 15,410 frames a second (73 to 65 µs a
+  frame), and the GPU's frame from its start to the copy's end 46 to 18
+  µs (the copy no longer waits for the second submission). Not measured on
+  Windows, where a submission costs more. See Implementation notes,
+  Render target
 - GL1 was the visual reference until 2026-10-19; since then the look may
   change where that buys performance, and comparisons with the build before
   (until 2026-10-23 also with GL1) check for bugs and show what changed
@@ -7346,7 +7360,11 @@ selects the sample count (see Implementation notes).
   GL back buffer (see Frames and synchronisation). Otherwise (a window
   resized before its `vid_restart`, no usable swapchain) the frame is drawn
   into an offscreen color image of that format, blitted (scaled) to the
-  swapchain image at present; frames that drew nothing present nothing. The
+  swapchain image at present (with HDR output always, through the output
+  pass); frames that drew nothing present nothing. The frame's commands
+  and the copy go in one `vkQueueSubmit` of two batches, only the copy
+  waiting for the acquired image (`VK_Present`, as the submit thread's
+  `VK_ThreadCopyAndPresent`; two submissions until 2026-11-02). The
   depth/stencil image is always offscreen. Its format is the first of
   `D24_UNORM_S8_UINT`, `D32_SFLOAT_S8_UINT` and `D16_UNORM_S8_UINT` the
   device supports, or without a stencil buffer (`r_stencilbits` 0, the

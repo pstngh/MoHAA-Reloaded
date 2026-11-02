@@ -882,6 +882,21 @@ static uint32_t VK_EndFrameCommands( VkCommandBuffer *cmds, qboolean endOfFrame 
 	return numCmds;
 }
 
+// one vkQueueSubmit of count batches, timed and counted; the fence, if any,
+// reset first
+static void VK_QueueSubmit( uint32_t count, const VkSubmitInfo *submits, VkFence fence ) {
+	uint64_t start;
+
+	if ( fence ) {
+		VK_CHECK( qvkResetFences( vk.device, 1, &fence ) );
+		vk.lastSubmitFence = fence;
+	}
+	start = VK_Microseconds();
+	VK_CHECK( qvkQueueSubmit( vk.queue, count, submits, fence ) );
+	vk.stats.submitUs += VK_Microseconds() - start;
+	vk.stats.submits++;
+}
+
 /*
 ===============
 VK_SubmitFrameCommands
@@ -899,7 +914,6 @@ static void VK_SubmitFrameCommands( VkFence fence, VkSemaphore signal, qboolean 
 	vkAoSubmitChain_t aoChain;
 	uint64_t aoSignal, aoWait;
 	uint32_t numCmds;
-	uint64_t start;
 
 	numCmds = VK_EndFrameCommands( cmds, endOfFrame );
 
@@ -919,15 +933,7 @@ static void VK_SubmitFrameCommands( VkFence fence, VkSemaphore signal, qboolean 
 	// the compute queue's ambient occlusion (r_aoAsync, vk_temporal.c)
 	VK_TemporalTakeAoSubmitInfo( &aoSignal, &aoWait );
 	VK_TemporalAoChainSubmit( &aoChain, &submit, aoSignal, aoWait );
-
-	if ( fence ) {
-		VK_CHECK( qvkResetFences( vk.device, 1, &fence ) );
-		vk.lastSubmitFence = fence;
-	}
-	start = VK_Microseconds();
-	VK_CHECK( qvkQueueSubmit( vk.queue, 1, &submit, fence ) );
-	vk.stats.submitUs += VK_Microseconds() - start;
-	vk.stats.submits++;
+	VK_QueueSubmit( 1, &submit, fence );
 
 	// draws recorded from now on are in a new segment (see vk_image.c)
 	vk.segment++;
@@ -1116,17 +1122,21 @@ VkPipelineStageFlags VK_PresentCopyStage( void ) {
 VK_Present
 
 Frames drawn offscreen: copies the frame to a swapchain image and presents
-it; returns qfalse when there is nothing to present to (minimized window),
-the frame fence is then not submitted
+it. The frame's commands (cmds, ended) and the copy go in one vkQueueSubmit
+of two batches, only the copy waiting for the image, as on the submit
+thread (vk_submit.c): one submission's driver and kernel cost a frame less.
+Returns qfalse, with nothing submitted, when there is nothing to present to
+(minimized window, out of date)
 ===============
 */
-static qboolean VK_Present( vkFrame_t *frame ) {
+static qboolean VK_Present( vkFrame_t *frame, const VkCommandBuffer *cmds, uint32_t numCmds ) {
 	VkPipelineStageFlags waitStage;
-	VkSubmitInfo submit;
+	VkSubmitInfo submits[2];
+	vkAoSubmitChain_t aoChain;
+	uint64_t aoSignal, aoWait;
 	VkCommandBuffer cmd;
 	uint32_t imageIndex;
 	VkResult result;
-	uint64_t start;
 	int width, height;
 
 	// recreate the swapchain when the window changed; there is none while
@@ -1161,20 +1171,21 @@ static qboolean VK_Present( vkFrame_t *frame ) {
 	}
 	VK_CHECK( VK_RecordPresentCopy( frame, cmd, vk.swapchainImages[imageIndex] ) );
 
-	Com_Memset( &submit, 0, sizeof( submit ) );
-	submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	VK_WaitForHeldImage( &submit, &waitStage, VK_PresentCopyStage() );
-	submit.commandBufferCount = 1;
-	submit.pCommandBuffers = &cmd;
-	submit.signalSemaphoreCount = 1;
-	submit.pSignalSemaphores = &vk.presentSemaphores[imageIndex];
-
-	VK_CHECK( qvkResetFences( vk.device, 1, &frame->fence ) );
-	start = VK_Microseconds();
-	VK_CHECK( qvkQueueSubmit( vk.queue, 1, &submit, frame->fence ) );
-	vk.stats.submitUs += VK_Microseconds() - start;
-	vk.stats.submits++;
-	vk.lastSubmitFence = frame->fence;
+	Com_Memset( submits, 0, sizeof( submits ) );
+	submits[0].sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	submits[0].commandBufferCount = numCmds;
+	submits[0].pCommandBuffers = cmds;
+	submits[1].sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	VK_WaitForHeldImage( &submits[1], &waitStage, VK_PresentCopyStage() );
+	submits[1].commandBufferCount = 1;
+	submits[1].pCommandBuffers = &cmd;
+	submits[1].signalSemaphoreCount = 1;
+	submits[1].pSignalSemaphores = &vk.presentSemaphores[imageIndex];
+	// the compute queue's ambient occlusion (r_aoAsync, vk_temporal.c): on
+	// the frame's batch, as in VK_SubmitFrameCommands
+	VK_TemporalTakeAoSubmitInfo( &aoSignal, &aoWait );
+	VK_TemporalAoChainSubmit( &aoChain, &submits[0], aoSignal, aoWait );
+	VK_QueueSubmit( 2, submits, frame->fence );
 
 	VK_QueuePresent( imageIndex );
 	return qtrue;
@@ -2375,16 +2386,28 @@ void vk_end_frame( void ) {
 			}
 		}
 	} else {
-		VK_SubmitFrameCommands( VK_NULL_HANDLE, VK_NULL_HANDLE, qtrue );
+		VkCommandBuffer cmds[2];
+		uint32_t numCmds = VK_EndFrameCommands( cmds, qtrue );
 
 		// a frame that drew nothing presents nothing: the window keeps the
 		// last frame
-		if ( vk.target != VK_TARGET_OFFSCREEN || !VK_Present( frame ) ) {
+		if ( vk.target != VK_TARGET_OFFSCREEN || !VK_Present( frame, cmds, numCmds ) ) {
+			VkSubmitInfo submit;
+			vkAoSubmitChain_t aoChain;
+			uint64_t aoSignal, aoWait;
+
 			// the fence still has to signal for the next use of this frame slot
-			VK_CHECK( qvkResetFences( vk.device, 1, &frame->fence ) );
-			VK_CHECK( qvkQueueSubmit( vk.queue, 0, NULL, frame->fence ) );
-			vk.lastSubmitFence = frame->fence;
+			Com_Memset( &submit, 0, sizeof( submit ) );
+			submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+			submit.commandBufferCount = numCmds;
+			submit.pCommandBuffers = cmds;
+			VK_TemporalTakeAoSubmitInfo( &aoSignal, &aoWait );
+			VK_TemporalAoChainSubmit( &aoChain, &submit, aoSignal, aoWait );
+			VK_QueueSubmit( 1, &submit, frame->fence );
 		}
+
+		// draws recorded from now on are in a new segment (see vk_image.c)
+		vk.segment++;
 	}
 
 	// after the present: the fence of the next one, and the retired
