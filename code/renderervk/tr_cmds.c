@@ -127,7 +127,13 @@ void R_IssueRenderCommands( qboolean runPerformanceCounters ) {
 			qboolean wait = backEndData->syncAfterIssue;
 
 			backEndData->syncAfterIssue = qfalse;
-			R_IssueRenderCommandsThreaded( cmdList->cmds );
+			if ( runPerformanceCounters ) {
+				// the frame's list (RE_EndFrame), and the waits before the
+				// next frame's input
+				R_IssueFrameThreaded( cmdList->cmds );
+			} else {
+				R_IssueRenderCommandsThreaded( cmdList->cmds );
+			}
 			if ( wait ) {
 				R_SyncRenderThread();
 			}
@@ -393,18 +399,16 @@ void RE_BeginFrame( stereoFrame_t stereoFrame ) {
 	if ( !tr.registered ) {
 		return;
 	}
+	// the screenshots, video frames and overdraw sums the GPU has done
+	R_ProcessReadbacks();
+
 	// the UI also draws between frames (when a menu is pushed): drawn before
 	// the frame begins, as each of those draws was
 	if ( glConfig.smpActive ) {
 		end2DBatchCommand_t *batchCmd;
 
-		// with vsync the thread waits for the display at the frame before's
-		// present: waited for here, before the game reads this frame's
-		// input, so the input is as late as without the thread (the frame
-		// rate is the display's either way)
-		if ( vk_present_waits() ) {
-			R_SyncRenderThread();
-		}
+		// with vsync the frame before was waited for at its hand-over
+		// (R_IssueFrameThreaded), before this frame read its input
 		batchCmd = R_GetCommandBuffer( sizeof( *batchCmd ) );
 		if ( batchCmd ) {
 			batchCmd->commandId = RC_END_2D_BATCH;
@@ -444,8 +448,6 @@ void RE_BeginFrame( stereoFrame_t stereoFrame ) {
 			vk_set_stencil_write_mask( ~0U );
 			vk_set_stencil_func( STENCILFUNC_ALWAYS, 0U, ~0U );
 			vk_set_stencil_op( STENCILOP_KEEP, STENCILOP_INCR, STENCILOP_INCR );
-			// the readback's temporary memory, on the thread (RB_SwapBuffers)
-			backEndData->syncAfterIssue = qtrue;
 		}
 		r_measureOverdraw->modified = qfalse;
 	}
@@ -581,8 +583,10 @@ void RE_EndFrame( int *frontEndMsec, int *backEndMsec ) {
 		return;
 	}
 	cmd->commandId = RC_SWAP_BUFFERS;
+	cmd->inputUs = vk_probe_input_time();
 
 	R_IssueRenderCommands( qtrue );
+	vk_probe_frame_end();
 
 	R_InitNextFrame();
 
@@ -618,9 +622,6 @@ void RE_TakeVideoFrame( int width, int height,
 	}
 
 	cmd->commandId = RC_VIDEOFRAME;
-	// the engine's buffers and AVI writer, on the thread: waited for
-	// (R_IssueRenderCommands)
-	backEndData->syncAfterIssue = qtrue;
 
 	cmd->width = width;
 	cmd->height = height;

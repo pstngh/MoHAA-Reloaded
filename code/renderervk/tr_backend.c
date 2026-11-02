@@ -1487,25 +1487,23 @@ const void	*RB_SwapBuffers( const void *data ) {
 	cmd = (const swapBuffersCommand_t *)data;
 
 	// we measure overdraw by reading back the stencil buffer and
-	// counting up the number of increments that have happened
+	// counting up the number of increments that have happened: recorded
+	// here, summed by the readback writer once the GPU has done it
+	// (tr_init.c), nothing waits for it
+	vk_probe_input( cmd->inputUs );
+
 	if ( r_measureOverdraw->integer ) {
-		int i;
-		long sum = 0;
-		unsigned char *stencilReadback;
+		int size[2] = { glConfig.vidWidth, glConfig.vidHeight };
 
-		stencilReadback = ri.Hunk_AllocateTempMemory( glConfig.vidWidth * glConfig.vidHeight );
-		vk_read_pixels( 0, 0, glConfig.vidWidth, glConfig.vidHeight, READ_STENCIL8, stencilReadback );
-
-		for ( i = 0; i < glConfig.vidWidth * glConfig.vidHeight; i++ ) {
-			sum += stencilReadback[i];
-		}
-
-		backEnd.pc.c_overDraw += sum;
-		ri.Hunk_FreeTempMemory( stencilReadback );
+		vk_read_pixels_async( 0, 0, size[0], size[1], READ_STENCIL8, READBACK_OVERDRAW, size, sizeof( size ) );
 	}
 
 
-	if ( !glState.finishCalled ) {
+	// r_finish 1 waits for the GPU once a frame: at the first view, or here
+	// in a frame without one. GL1 waited here in every frame without a view
+	// (menus, loading screens, the console) to keep the driver from queuing
+	// frames; the frame slots' fences bound that already (2 frames in flight)
+	if ( r_finish->integer && !glState.finishCalled ) {
 		vk_finish();
 	}
 

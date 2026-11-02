@@ -43,7 +43,7 @@ static PFN_vkGetInstanceProcAddr qvkGetInstanceProcAddr;
 // when present
 static qboolean vk_khrSurfaceMaintenance1, vk_extSurfaceMaintenance1;
 
-#define VK_MAX_EXTENSIONS 16
+#define VK_MAX_EXTENSIONS 24
 
 /*
 ====================================================================
@@ -526,6 +526,8 @@ static void VK_CreateLogicalDevice( void ) {
 	VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT swapchainFeatures;
 	VkPhysicalDevicePortabilitySubsetFeaturesKHR portabilityFeatures;
 	VkPhysicalDeviceTimelineSemaphoreFeaturesKHR timelineFeatures;
+	VkPhysicalDevicePresentIdFeaturesKHR presentIdFeatures;
+	VkPhysicalDevicePresentWaitFeaturesKHR presentWaitFeatures;
 	qboolean portability;
 	const char *lineExtension, *swapchainExtension;
 	VkDeviceQueueCreateInfo queueInfos[2];
@@ -704,6 +706,52 @@ static void VK_CreateLogicalDevice( void ) {
 			vk.asyncCompute = qtrue;
 		}
 	}
+	// present ids and waits: with FIFO a frame reads its input once the one
+	// before is shown (vk.c, VK_WaitForPresent)
+	Com_Memset( &presentIdFeatures, 0, sizeof( presentIdFeatures ) );
+	presentIdFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR;
+	Com_Memset( &presentWaitFeatures, 0, sizeof( presentWaitFeatures ) );
+	presentWaitFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR;
+	vk.presentWait = qfalse;
+	if ( qvkGetPhysicalDeviceFeatures2 && VK_HasExtension( available, numAvailable, VK_KHR_PRESENT_ID_EXTENSION_NAME )
+		&& VK_HasExtension( available, numAvailable, VK_KHR_PRESENT_WAIT_EXTENSION_NAME ) ) {
+		VK_GetExtensionFeatures( &presentIdFeatures );
+		VK_GetExtensionFeatures( &presentWaitFeatures );
+		if ( presentIdFeatures.presentId && presentWaitFeatures.presentWait ) {
+			VK_AddExtension( extensions, &numExtensions, VK_KHR_PRESENT_ID_EXTENSION_NAME );
+			VK_AddExtension( extensions, &numExtensions, VK_KHR_PRESENT_WAIT_EXTENSION_NAME );
+			vk.presentWait = qtrue;
+		}
+	}
+	// the GPU's timestamps on the CPU's clock, for the latency probe
+	// (r_vkLatency): the device's and the clock SDL's performance counter
+	// reads (CLOCK_MONOTONIC_RAW on Linux, QueryPerformanceCounter on Windows)
+	vk.calibrationDomain = VK_TIME_DOMAIN_MAX_ENUM_KHR;
+	if ( qvkGetPhysicalDeviceCalibrateableTimeDomainsKHR && vk.timestampValidBits ) {
+		const char *name = VK_HasExtension( available, numAvailable, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME ) ? VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME
+			: VK_HasExtension( available, numAvailable, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME ) ? VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME : NULL;
+		VkTimeDomainKHR domains[8];
+		uint32_t numDomains = ARRAY_LEN( domains ), d;
+		qboolean device = qfalse;
+#ifdef _WIN32
+		VkTimeDomainKHR wanted = VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_KHR;
+#else
+		VkTimeDomainKHR wanted = VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_KHR;
+#endif
+		if ( name && qvkGetPhysicalDeviceCalibrateableTimeDomainsKHR( vk.physicalDevice, &numDomains, domains ) >= VK_SUCCESS ) {
+			for ( d = 0; d < numDomains; d++ ) {
+				if ( domains[d] == VK_TIME_DOMAIN_DEVICE_KHR ) {
+					device = qtrue;
+				}
+			}
+			for ( d = 0; d < numDomains && device; d++ ) {
+				if ( domains[d] == wanted ) {
+					VK_AddExtension( extensions, &numExtensions, name );
+					vk.calibrationDomain = wanted;
+				}
+			}
+		}
+	}
 	ri.Hunk_FreeTempMemory( available );
 
 	Com_Memset( queueInfos, 0, sizeof( queueInfos ) );
@@ -739,6 +787,14 @@ static void VK_CreateLogicalDevice( void ) {
 		timelineFeatures.timelineSemaphore = VK_TRUE;
 		timelineFeatures.pNext = (void *)createInfo.pNext;
 		createInfo.pNext = &timelineFeatures;
+	}
+	if ( vk.presentWait ) {
+		presentIdFeatures.presentId = VK_TRUE;
+		presentIdFeatures.pNext = (void *)createInfo.pNext;
+		createInfo.pNext = &presentIdFeatures;
+		presentWaitFeatures.presentWait = VK_TRUE;
+		presentWaitFeatures.pNext = (void *)createInfo.pNext;
+		createInfo.pNext = &presentWaitFeatures;
 	}
 	if ( portability ) {
 		portabilityFeatures.pNext = (void *)createInfo.pNext;
@@ -777,6 +833,25 @@ static void VK_CreateLogicalDevice( void ) {
 	}
 
 	qvkGetDeviceQueue( vk.device, vk.queueFamily, 0, &vk.queue );
+
+	qvkGetCalibratedTimestampsKHR = NULL;
+	if ( vk.calibrationDomain != VK_TIME_DOMAIN_MAX_ENUM_KHR ) {
+		qvkGetCalibratedTimestampsKHR = (PFN_vkGetCalibratedTimestampsKHR)qvkGetDeviceProcAddr( vk.device, "vkGetCalibratedTimestampsKHR" );
+		if ( !qvkGetCalibratedTimestampsKHR ) {
+			qvkGetCalibratedTimestampsKHR = (PFN_vkGetCalibratedTimestampsKHR)qvkGetDeviceProcAddr( vk.device, "vkGetCalibratedTimestampsEXT" );
+		}
+		if ( !qvkGetCalibratedTimestampsKHR ) {
+			vk.calibrationDomain = VK_TIME_DOMAIN_MAX_ENUM_KHR;
+		}
+	}
+
+	qvkWaitForPresentKHR = NULL;
+	if ( vk.presentWait ) {
+		qvkWaitForPresentKHR = (PFN_vkWaitForPresentKHR)qvkGetDeviceProcAddr( vk.device, "vkWaitForPresentKHR" );
+		if ( !qvkWaitForPresentKHR ) {
+			vk.presentWait = qfalse;
+		}
+	}
 
 	qvkWaitSemaphoresKHR = NULL;
 	qvkSignalSemaphoreKHR = NULL;
@@ -1325,6 +1400,12 @@ void VK_CreateSwapchain( void ) {
 
 	VK_CHECK( qvkCreateSwapchainKHR( vk.device, &createInfo, NULL, &vk.swapchain ) );
 	vk.stats.swapchains++;
+
+	// vsync's pacing starts again with two frames queued (vk.c,
+	// VK_WaitForPresentShown); the ids of this swapchain's presents start here
+	Com_Memset( &vk.pacing, 0, sizeof( vk.pacing ) );
+	vk.pacing.firstPresentId = vk.lastPresentId + 1;
+	vk.pacing.depth = 2;
 
 	// the old swapchain and its present semaphores go once its presents
 	// are done

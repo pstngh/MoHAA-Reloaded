@@ -58,7 +58,16 @@ static struct {
 	qboolean		busy;			// a list taken, not finished
 	qboolean		quit;
 	int				backEndMsec;	// of the last list finished
+	int				backEndUs;		// the thread's work on the last list, its waits left out
+
+	// the front end's wait before the next frame's input (R_IssueFrameThreaded)
+	uint64_t		frameStartUs;	// when the front end started the frame (after the wait)
+	float			frontUs, backUs, gpuUs;	// averages of the front end's, the thread's and the GPU's time a frame
 } smp;
+
+static uint64_t R_SmpMicroseconds( void ) {
+	return SDL_GetTicksNS() / 1000;
+}
 
 qboolean R_OnRenderThread( void ) {
 	return smp.thread && SDL_GetCurrentThreadID() == smp.threadId;
@@ -77,16 +86,23 @@ static int SDLCALL R_RenderThreadMain( void *data ) {
 		if ( smp.quit && !smp.pending ) {
 			break;
 		}
+		uint64_t start, waits;
+
 		cmds = smp.pending;
 		smp.pending = NULL;
 		smp.busy = qtrue;
 		SDL_UnlockMutex( smp.lock );
 
+		start = R_SmpMicroseconds();
+		waits = vk_back_end_wait_us();
 		RB_ExecuteRenderCommands( cmds );
+		waits = vk_back_end_wait_us() - waits;
+		start = R_SmpMicroseconds() - start;
 
 		SDL_LockMutex( smp.lock );
 		smp.busy = qfalse;
 		smp.backEndMsec = backEnd.pc.msec;
+		smp.backEndUs = start > waits ? (int)( start - waits ) : 0;
 		SDL_BroadcastCondition( smp.done );
 	}
 	SDL_UnlockMutex( smp.lock );
@@ -139,6 +155,61 @@ void R_IssueRenderCommandsThreaded( const void *cmds ) {
 	smp.pending = cmds;
 	SDL_SignalCondition( smp.wake );
 	SDL_UnlockMutex( smp.lock );
+}
+
+/*
+===============
+R_IssueFrameThreaded
+
+The frame's list (RE_EndFrame): handed over as any list, then what the next
+frame's input should come after is waited for here, as the back end waits
+for it without the thread before the game reads its input:
+
+- with vsync, the thread's frame: its present waits for the display (and
+  until it is shown, vk.c, VK_WaitForPresentShown), so the input is read
+  then. RE_BeginFrame waited for it before, after the input was read.
+- where the GPU is the slowest (its time a frame above the
+  front end's and the thread's together, with a margin), the GPU's frame
+  before the one handed over: the slot the frame after reuses, which the
+  thread would wait for at its first command. The next input is read that
+  much later and its frame shown as soon (about a frame of input lag less);
+  where the CPU limits the fence has signaled already, and where the two
+  are even the wait would cost frame rate (the front end and the thread no
+  longer overlap), so it isn't made.
+===============
+*/
+void R_IssueFrameThreaded( const void *cmds ) {
+	uint64_t now = R_SmpMicroseconds();
+	int front = smp.frameStartUs && now > smp.frameStartUs ? (int)( now - smp.frameStartUs ) : 0;
+	int gpu;
+	qboolean wait;
+
+	R_SyncRenderThread();
+	// the thread is idle: its times and the fence are read now
+	gpu = vk_last_gpu_frame_us();
+	vk_prepare_input_wait();
+	if ( front > 0 ) {
+		smp.frontUs += ( front - smp.frontUs ) * 0.1f;
+	}
+	smp.backUs += ( smp.backEndUs - smp.backUs ) * 0.1f;
+	if ( gpu > 0 ) {
+		smp.gpuUs += ( gpu - smp.gpuUs ) * 0.1f;
+	}
+
+	SDL_LockMutex( smp.lock );
+	smp.pending = cmds;
+	SDL_SignalCondition( smp.wake );
+	SDL_UnlockMutex( smp.lock );
+
+	if ( vk_present_waits() ) {
+		R_SyncRenderThread();
+	} else {
+		wait = smp.gpuUs > ( smp.frontUs + smp.backUs ) * 1.15f + 20.0f;
+		if ( wait ) {
+			vk_input_wait();
+		}
+	}
+	smp.frameStartUs = R_SmpMicroseconds();
 }
 
 int R_RenderThreadBackEndMsec( void ) {

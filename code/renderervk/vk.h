@@ -595,6 +595,24 @@ typedef enum {
 // the frame, RB_TakePendingScreenshots). Depth and stencil read as 0 until
 // the depth buffer is readable, see vk_want_depth_reads.
 void		vk_read_pixels( int x, int y, int width, int height, readFormat_t format, void *buffer );
+// the latency probe (r_vkLatency): the main thread's EndFrame (it returns
+// the end of the last one, when the next frame's input is read after) and
+// the back end's frame (the input time its swap command carries)
+uint64_t	vk_probe_input_time( void );
+void		vk_probe_frame_end( void );
+void		vk_probe_input( uint64_t inputUs );
+// the same without waiting: the back end records the copy and gets a handle
+// (0: too many in flight, dropped); the main thread takes the readbacks
+// once the GPU has done them, in the order they were recorded, with the
+// caller's kind and user data (at most 2 * MAX_OSPATH + 256 bytes): vk_readback_next gives
+// the oldest when it is done, vk_readback_get its pixels (as vk_read_pixels
+// writes them, for the rectangle asked for), vk_readback_free returns it.
+// vk_finish completes every submitted frame's readbacks
+int			vk_read_pixels_async( int x, int y, int width, int height, readFormat_t format, int kind, const void *user, int userSize );
+int			vk_readback_next( int *kind, void **user );
+void		vk_readback_get( int handle, void *buffer );
+void		vk_readback_free( int handle );
+int			vk_readback_dropped( void );
 // the frame being recorded will be read back (a screenshot, a video frame):
 // with HDR output its 3D scene is drawn without the expansion, so the
 // readback is the SDR frame (vk_output.c)

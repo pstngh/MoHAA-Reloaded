@@ -2502,6 +2502,32 @@ Bottom-up RGB (+ line padding), same buffer JPEG screenshots use.
 #pragma GCC diagnostic pop
 #endif
 
+/*
+=================
+RE_EncodePNGFromRGB
+
+RE_SavePNGFromRGB's file in memory (malloc'd: free it with free), for a
+thread that writes it itself; *length its size. NULL on failure
+=================
+*/
+byte *RE_EncodePNGFromRGB(int width, int height, const byte *rgb, int padding, int *length)
+{
+	unsigned char *pngData;
+
+	*length = 0;
+	if (width <= 0 || height <= 0 || !rgb) {
+		return NULL;
+	}
+	stbi_flip_vertically_on_write(1);
+	pngData = stbi_write_png_to_mem((const unsigned char *)rgb, width * 3 + padding, width, height, 3, length);
+	stbi_flip_vertically_on_write(0);
+	if (pngData && *length <= 0) {
+		STBIW_FREE(pngData);
+		pngData = NULL;
+	}
+	return pngData;
+}
+
 void RE_SavePNGFromRGB(const char *filename, int width, int height, const byte *rgb, int padding)
 {
 	unsigned char *pngData;

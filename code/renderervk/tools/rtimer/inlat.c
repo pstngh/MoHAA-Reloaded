@@ -234,6 +234,7 @@ static char					in_displayInfo[256];
 static VkInstance			in_instance;
 static VkDevice				in_device;
 static int					in_presentId;		// VK_KHR_present_id enabled
+static int					in_gamePresentIds;	// the game enabled it and numbers its presents (the Vulkan renderer with VK_KHR_present_wait)
 static uint64_t				in_nextId;
 static PFN_vkCreateDevice				in_createDevice;
 static PFN_vkCreateSwapchainKHR			in_createSwapchain;
@@ -665,9 +666,16 @@ static VkResult VKAPI_CALL IN_CreateDevice( VkPhysicalDevice pd, const VkDeviceC
 	names = calloc( info->enabledExtensionCount + 2, sizeof( *names ) );
 	memcpy( names, info->ppEnabledExtensionNames, info->enabledExtensionCount * sizeof( *names ) );
 	ci.ppEnabledExtensionNames = names;
-	// VK_KHR_present_id: Wayland's WSI asks for presentation feedback only for presents with an id
+	// VK_KHR_present_id: Wayland's WSI asks for presentation feedback only for presents with an id;
+	// a game that enabled it numbers its presents itself, and those ids are used
 	in_presentId = IN_HasDeviceExtension( pd, VK_KHR_PRESENT_ID_EXTENSION_NAME );
-	if ( in_presentId ) {
+	in_gamePresentIds = 0;
+	for ( uint32_t e = 0; e < info->enabledExtensionCount; e++ ) {
+		if ( !strcmp( info->ppEnabledExtensionNames[e], VK_KHR_PRESENT_ID_EXTENSION_NAME ) ) {
+			in_gamePresentIds = 1;
+		}
+	}
+	if ( in_presentId && !in_gamePresentIds ) {
 		names[ci.enabledExtensionCount++] = VK_KHR_PRESENT_ID_EXTENSION_NAME;
 		memset( &idFeatures, 0, sizeof( idFeatures ) );
 		idFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR;
@@ -776,7 +784,15 @@ static VkResult VKAPI_CALL IN_QueuePresent( VkQueue queue, const VkPresentInfoKH
 	pthread_mutex_unlock( &in_lock );
 
 	info = *presentInfo;
-	if ( in_presentId && presentInfo->swapchainCount == 1 ) {
+	if ( in_gamePresentIds ) {
+		const VkBaseInStructure *next;
+
+		for ( next = (const VkBaseInStructure *)presentInfo->pNext; next; next = next->pNext ) {
+			if ( next->sType == VK_STRUCTURE_TYPE_PRESENT_ID_KHR && presentInfo->swapchainCount == 1 ) {
+				r->id = ( (const VkPresentIdKHR *)next )->pPresentIds[0];
+			}
+		}
+	} else if ( in_presentId && presentInfo->swapchainCount == 1 ) {
 		id = r->id = ++in_nextId;
 		memset( &ids, 0, sizeof( ids ) );
 		ids.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR;

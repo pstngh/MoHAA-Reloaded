@@ -45,6 +45,18 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include "vk_local.h"
 
+#include <SDL3/SDL.h>
+
+// pixel readbacks and the latency probe (below)
+static void VK_ReadbacksDone( uint64_t serial );
+static void VK_InitReadbacks( void );
+static void VK_ShutdownReadbacks( void );
+static void VK_ProbeGpuDone( vkFrame_t *frame, uint64_t ticks );
+static void VK_ProbeReport( void );
+#ifndef _WIN32
+#include <time.h>
+#endif
+
 #if defined( _MSC_VER )
 #include <intrin.h>	// _BitScanForward64 (VK_LowestBit)
 #endif
@@ -69,6 +81,7 @@ cvar_t			*r_vkValidation;
 cvar_t			*r_vkBindless;
 cvar_t			*r_vkFallbacks;
 cvar_t			*r_fastSync;
+cvar_t			*r_vkLatency;
 
 // render state recorded by the vk_set_* functions
 typedef struct {
@@ -507,6 +520,8 @@ static void VK_CollectTimestamps( vkFrame_t *frame ) {
 	vk.stats.gpuPresentUs += ( ( ts[VK_TS_PRESENT_END] - ts[VK_TS_PRESENT_START] ) & mask ) * scale;
 	vk.stats.gpuFrameUs += ( ( ts[VK_TS_PRESENT_END] - ts[VK_TS_MAIN_START] ) & mask ) * scale;
 	vk.stats.gpuFrames++;
+	vk.lastGpuFrameUs = (uint32_t)( ( ( ts[VK_TS_PRESENT_END] - ts[VK_TS_MAIN_START] ) & mask ) * scale );
+	VK_ProbeGpuDone( frame, ts[VK_TS_PRESENT_END] );
 	if ( vk_frameLog ) {
 		VK_FrameLogGpu( frame->serial, ts[VK_TS_MAIN_START], ts[VK_TS_MAIN_END], ts[VK_TS_PRESENT_END], mask, scale );
 	}
@@ -560,6 +575,9 @@ void VK_BeginFrameIfNeeded( void ) {
 	}
 	VK_CollectDepthReads( frame );
 	VK_CollectTimestamps( frame );
+	// the pixel readbacks of the frame that used the slot before
+	VK_ReadbacksDone( frame->serial );
+	frame->probeInputUs = 0;
 
 	frame->vertexOffset = 0;
 	frame->stagingOffset = 0;
@@ -883,8 +901,10 @@ static uint32_t VK_EndFrameCommands( VkCommandBuffer *cmds, qboolean endOfFrame 
 }
 
 // one vkQueueSubmit of count batches, timed and counted; the fence, if any,
-// reset first
+// reset first. With the submit thread the queue is locked: the thread may be
+// presenting (the render thread submits its frames itself, vk_submit.c)
 static void VK_QueueSubmit( uint32_t count, const VkSubmitInfo *submits, VkFence fence ) {
+	VkResult result;
 	uint64_t start;
 
 	if ( fence ) {
@@ -892,7 +912,14 @@ static void VK_QueueSubmit( uint32_t count, const VkSubmitInfo *submits, VkFence
 		vk.lastSubmitFence = fence;
 	}
 	start = VK_Microseconds();
-	VK_CHECK( qvkQueueSubmit( vk.queue, count, submits, fence ) );
+	if ( vk.submitThread ) {
+		VK_LockSubmitQueue();
+	}
+	result = qvkQueueSubmit( vk.queue, count, submits, fence );
+	if ( vk.submitThread ) {
+		VK_UnlockSubmitQueue();
+	}
+	VK_CHECK( result );
 	vk.stats.submitUs += VK_Microseconds() - start;
 	vk.stats.submits++;
 }
@@ -964,6 +991,8 @@ void VK_FlushAndWait( void ) {
 	vk.stats.waitUs += start;
 	vk.stats.flushUs += start;
 	vk.stats.flushes++;
+	// the readbacks recorded so far are done
+	VK_ReadbacksDone( vk.frame->serial );
 
 	// the GPU is idle: everything waiting for destruction can go, and the
 	// buffers of the frame can be reused
@@ -979,6 +1008,108 @@ void VK_FlushAndWait( void ) {
 
 /*
 ===============
+VK_ChainPresentId
+
+Gives a present the next present id (VK_KHR_present_id), for
+VK_WaitForPresentShown, in *id (the caller's, until the present); on the
+thread that presents (the main, render or submit thread, one at a time)
+===============
+*/
+void VK_ChainPresentId( VkPresentInfoKHR *presentInfo, VkPresentIdKHR *presentId, uint64_t *id ) {
+	*id = ++vk.lastPresentId;
+	Com_Memset( presentId, 0, sizeof( *presentId ) );
+	presentId->sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR;
+	presentId->pNext = presentInfo->pNext;
+	presentId->swapchainCount = 1;
+	presentId->pPresentIds = id;
+	presentInfo->pNext = presentId;
+}
+
+/*
+===============
+VK_WaitForPresentShown
+
+With vsync (FIFO), right after the present with this id: waits until the
+frames queued for the display are down to vk.pacing.depth (this present
+shown, or the one before), so the next frame reads its input then, instead
+of queuing up to the swapchain's images (about a refresh of input lag less
+each frame not queued: 14.4 to 7.3 ms at 280 Hz). One queued is the least
+lag, but a frame presented once the one before is shown must make the
+compositor's next composition: niri at 280 Hz takes it a refresh later,
+which halves the frame rate. So the pacing starts each swapchain with two
+queued, learns the interval between frames shown, tries one queued once,
+120 frames after the swapchain was made (at startup that is the menu), and
+goes back to two for good when frames take two refreshes (4 of 8): no try
+during play, whose 8 frames at half the rate would be a stutter. At most
+100 ms a wait: a hidden window's frames may never be shown. Called by the thread that presents: nothing else uses the
+swapchain then. Returns VK_SUCCESS, VK_ERROR_OUT_OF_DATE_KHR (also for
+suboptimal and a lost surface: the swapchain is made again) or an error
+===============
+*/
+VkResult VK_WaitForPresentShown( uint64_t id, uint64_t *us ) {
+	VkResult result;
+	uint64_t start, now, target;
+
+	if ( !id || !qvkWaitForPresentKHR
+		|| ( vk.presentMode != VK_PRESENT_MODE_FIFO_KHR && vk.presentMode != VK_PRESENT_MODE_FIFO_RELAXED_KHR ) ) {
+		return VK_SUCCESS;
+	}
+	target = id - ( vk.pacing.depth > 1 ? 1 : 0 );
+	if ( target < vk.pacing.firstPresentId ) {
+		// the first present of the swapchain
+		return VK_SUCCESS;
+	}
+	start = VK_Microseconds();
+	result = qvkWaitForPresentKHR( vk.device, vk.swapchain, target, 100000000ull );
+	now = VK_Microseconds();
+	*us += now - start;
+
+	if ( result == VK_SUCCESS ) {
+		if ( vk.pacing.lastShownUs ) {
+			float interval = (float)( now - vk.pacing.lastShownUs );
+
+			if ( vk.pacing.depth > 1 ) {
+				if ( !vk.pacing.periodUs ) {
+					vk.pacing.periodUs = interval;
+				} else if ( interval < vk.pacing.periodUs * 3.0f ) {
+					vk.pacing.periodUs += ( interval - vk.pacing.periodUs ) * 0.05f;
+				}
+				if ( ++vk.pacing.frames >= 120 && !vk.pacing.tries ) {
+					// one queued: the next wait is for the frame just
+					// presented, a refresh longer, not counted
+					vk.pacing.depth = 1;
+					vk.pacing.window = vk.pacing.misses = 0;
+					vk.pacing.tries++;
+					now = 0;
+				}
+			} else {
+				if ( interval > vk.pacing.periodUs * 1.5f ) {
+					vk.pacing.misses++;
+				}
+				if ( ++vk.pacing.window == 8 ) {
+					if ( vk.pacing.misses >= 4 ) {
+						// two queued for the rest of the swapchain
+						vk.pacing.depth = 2;
+						vk.pacing.frames = 0;
+					}
+					vk.pacing.window = vk.pacing.misses = 0;
+				}
+			}
+		}
+		vk.pacing.lastShownUs = now;
+	}
+	if ( result == VK_TIMEOUT ) {
+		vk.pacing.lastShownUs = 0;
+		return VK_SUCCESS;
+	}
+	if ( result == VK_SUBOPTIMAL_KHR || result == VK_ERROR_SURFACE_LOST_KHR ) {
+		return VK_ERROR_OUT_OF_DATE_KHR;
+	}
+	return result;
+}
+
+/*
+===============
 VK_QueuePresent
 
 Presents the held swapchain image once its present semaphore is signaled,
@@ -989,6 +1120,8 @@ after the previous present (see vk_instance.c)
 static void VK_QueuePresent( uint32_t imageIndex ) {
 	VkPresentInfoKHR presentInfo;
 	VkSwapchainPresentFenceInfoEXT fenceInfo;
+	VkPresentIdKHR presentId;
+	uint64_t id = 0;
 	VkResult result;
 	uint64_t start;
 
@@ -1008,6 +1141,9 @@ static void VK_QueuePresent( uint32_t imageIndex ) {
 		fenceInfo.pFences = &vk.presentFenceSlots[vk.nextPresentFence].fence;
 		presentInfo.pNext = &fenceInfo;
 	}
+	if ( vk.presentWait ) {
+		VK_ChainPresentId( &presentInfo, &presentId, &id );
+	}
 
 	start = VK_Microseconds();
 	vk.stats.frameToPresentUs += start - vk.frameStartUs;
@@ -1023,6 +1159,19 @@ static void VK_QueuePresent( uint32_t imageIndex ) {
 	// queued, also when out of date: the semaphore wait happens and the
 	// fence signals
 	VK_PresentFenceUsed();
+	if ( vk.frame ) {
+		VK_ProbePresent( vk.frame->probeInputUs, start, id );
+	}
+
+	// vsync: until it is shown, before the next frame's input
+	if ( !vk.swapchainOutOfDate ) {
+		result = VK_WaitForPresentShown( id, &vk.stats.presentWaitUs );
+		if ( result == VK_ERROR_OUT_OF_DATE_KHR ) {
+			vk.swapchainOutOfDate = qtrue;
+		} else {
+			VK_CHECK( result );
+		}
+	}
 }
 
 /*
@@ -1119,17 +1268,19 @@ VkPipelineStageFlags VK_PresentCopyStage( void ) {
 
 /*
 ===============
-VK_Present
+VK_SubmitPresentCopy
 
-Frames drawn offscreen: copies the frame to a swapchain image and presents
-it. The frame's commands (cmds, ended) and the copy go in one vkQueueSubmit
-of two batches, only the copy waiting for the image, as on the submit
-thread (vk_submit.c): one submission's driver and kernel cost a frame less.
-Returns qfalse, with nothing submitted, when there is nothing to present to
-(minimized window, out of date)
+Frames drawn offscreen: submits the frame with its copy to a swapchain
+image, which the caller presents. The frame's commands (cmds, ended) and
+the copy go in one vkQueueSubmit of two batches, only the copy waiting for
+the image, as on the submit thread (vk_submit.c): one submission's driver
+and kernel cost a frame less. Returns the image, or -1 with nothing
+submitted when there is nothing to present to (minimized window, out of
+date). With the submit thread it is drained (the swapchain is this
+thread's) and the image it acquired ahead is the held one.
 ===============
 */
-static qboolean VK_Present( vkFrame_t *frame, const VkCommandBuffer *cmds, uint32_t numCmds ) {
+static int VK_SubmitPresentCopy( vkFrame_t *frame, const VkCommandBuffer *cmds, uint32_t numCmds ) {
 	VkPipelineStageFlags waitStage;
 	VkSubmitInfo submits[2];
 	vkAoSubmitChain_t aoChain;
@@ -1146,20 +1297,20 @@ static qboolean VK_Present( vkFrame_t *frame, const VkCommandBuffer *cmds, uint3
 		VK_CreateSwapchain();
 	}
 	if ( !vk.swapchain ) {
-		return qfalse;
+		return -1;
 	}
 
 	result = VK_AcquireNextImage( &vk.stats.acquireUs );
 	if ( result == VK_ERROR_OUT_OF_DATE_KHR ) {
 		VK_CreateSwapchain();
 		if ( !vk.swapchain ) {
-			return qfalse;
+			return -1;
 		}
 		result = VK_AcquireNextImage( &vk.stats.acquireUs );
 	}
 	if ( result == VK_ERROR_OUT_OF_DATE_KHR ) {
 		vk.swapchainOutOfDate = qtrue;
-		return qfalse;
+		return -1;
 	}
 	VK_CHECK( result );
 	imageIndex = vk.heldIndex;
@@ -1186,9 +1337,7 @@ static qboolean VK_Present( vkFrame_t *frame, const VkCommandBuffer *cmds, uint3
 	VK_TemporalTakeAoSubmitInfo( &aoSignal, &aoWait );
 	VK_TemporalAoChainSubmit( &aoChain, &submits[0], aoSignal, aoWait );
 	VK_QueueSubmit( 2, submits, frame->fence );
-
-	VK_QueuePresent( imageIndex );
-	return qtrue;
+	return (int)imageIndex;
 }
 
 static void VK_CreateFrames( void ) {
@@ -2160,7 +2309,7 @@ static void VK_Info_f( void ) {
 		" waitUs=%llu flushUs=%llu submitUs=%llu acquireUs=%llu acquireAheadUs=%llu frameToPresentUs=%llu presentUs=%llu pipelineUs=%llu prebuiltUs=%llu allocationUs=%llu textureUs=%llu"
 		" gpuFrames=%llu gpuMainUs=%llu gpuPresentUs=%llu gpuFrameUs=%llu"
 		" threadWaitUs=%llu threadFrames=%llu threadStartUs=%llu threadSubmits=%llu threadSubmitUs=%llu threadAcquireUs=%llu"
-		" threadPresents=%llu threadPresentUs=%llu threadCopies=%llu"
+		" threadPresents=%llu threadPresentUs=%llu threadCopies=%llu presentWaitUs=%llu threadPresentWaitUs=%llu inputWaits=%llu inputWaitUs=%llu"
 		" vertexBinds=%llu indexBinds=%llu pushConstants=%llu dynamicStates=%llu\n",
 		VK_DELTA( frames ), VK_DELTA( renderPasses ), VK_DELTA( submits ), VK_DELTA( flushes ), VK_DELTA( draws ),
 		VK_DELTA( staticDraws ), VK_DELTA( effectsDraws ), (unsigned long long)( vk_terrain.draws - vk_terrain.reportedDraws ),
@@ -2171,7 +2320,7 @@ static void VK_Info_f( void ) {
 		VK_DELTA( acquireUs ), VK_DELTA( acquireAheadUs ), VK_DELTA( frameToPresentUs ), VK_DELTA( presentUs ), VK_DELTA( pipelineUs ), VK_DELTA( prebuiltUs ), VK_DELTA( allocationUs ), VK_DELTA( textureUs ),
 		VK_DELTA( gpuFrames ), VK_DELTA( gpuMainUs ), VK_DELTA( gpuPresentUs ), VK_DELTA( gpuFrameUs ),
 		VK_DELTA( threadWaitUs ), VK_DELTA( threadFrames ), VK_DELTA( threadStartUs ), VK_DELTA( threadSubmits ),
-		VK_DELTA( threadSubmitUs ), VK_DELTA( threadAcquireUs ), VK_DELTA( threadPresents ), VK_DELTA( threadPresentUs ), VK_DELTA( threadCopies ),
+		VK_DELTA( threadSubmitUs ), VK_DELTA( threadAcquireUs ), VK_DELTA( threadPresents ), VK_DELTA( threadPresentUs ), VK_DELTA( threadCopies ), VK_DELTA( presentWaitUs ), VK_DELTA( threadPresentWaitUs ), VK_DELTA( inputWaits ), VK_DELTA( inputWaitUs ),
 		VK_DELTA( vertexBinds ), VK_DELTA( indexBinds ), VK_DELTA( pushConstants ), VK_DELTA( dynamicStates ) );
 #undef VK_DELTA
 	VK_MemoryBlockInfo( &numBlocks, &blockSize, &blockUsed );
@@ -2182,6 +2331,11 @@ static void VK_Info_f( void ) {
 		vk.liveAllocations, numBlocks, blockSize / ( 1024.0 * 1024.0 ), blockUsed / ( 1024.0 * 1024.0 ), numPipelines, prebuilt, prebuiltUsed,
 		vk.depthReadable ? "" : "not ", vk_skin.words / ( 256.0 * 1024.0 ), VK_SKIN_DATA_WORDS / ( 256 * 1024 ),
 		vk.numPresentFences, vk.numRetiredSwapchains, VK_MAX_FRAMES, vk.submitThread ? " (submit thread)" : "", vk.swapchainImageCount );
+	VK_ProbeReport();
+	if ( vk.presentWait && ( vk.presentMode == VK_PRESENT_MODE_FIFO_KHR || vk.presentMode == VK_PRESENT_MODE_FIFO_RELAXED_KHR ) ) {
+		ri.Printf( PRINT_ALL, "vkinfo: vsync pacing: %d frame%s queued, %.0f us between frames shown, %d tr%s of one queued\n",
+			vk.pacing.depth, vk.pacing.depth > 1 ? "s" : "", vk.pacing.periodUs, vk.pacing.tries, vk.pacing.tries == 1 ? "y" : "ies" );
+	}
 
 	vk.statsReported = vk.stats;
 	vk_terrain.reportedDraws = vk_terrain.draws;
@@ -2220,7 +2374,9 @@ void vk_initialize( void ) {
 	ri.Cvar_SetDescription( r_vkBindless, "1: every texture is in one descriptor set bound once a frame and a draw names its textures by index, instead of a descriptor set bind per texture change (where the device allows it: see the startup line Vulkan ... bindless textures); 0: a set per texture" );
 	r_vkFallbacks = ri.Cvar_Get( "r_vkFallbacks", "0", CVAR_LATCH );
 	r_vkSubmitThread = ri.Cvar_Get( "r_vkSubmitThread", "0", CVAR_ARCHIVE | CVAR_LATCH );
-	ri.Cvar_SetDescription( r_vkSubmitThread, "1: a thread submits and presents the frames and acquires the swapchain images (2: and copies every frame, for tests; see the renderer's README)" );
+	ri.Cvar_SetDescription( r_vkSubmitThread, "1: a thread submits and presents the frames and acquires the swapchain images; with r_smp the render thread submits and the thread presents (2: every frame copied, 3: the render thread's frames handed over whole as before, for tests; see the renderer's README)" );
+	r_vkLatency = ri.Cvar_Get( "r_vkLatency", "0", 0 );
+	ri.Cvar_SetDescription( r_vkLatency, "1: vkinfo reports the time from each frame's input to its present, to the GPU done with it (calibrated timestamps) and with vsync to it shown, and the main thread's frame times, as percentiles since the last vkinfo (tests)" );
 	r_fastSync = ri.Cvar_Get( "r_fastSync", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	ri.Cvar_SetDescription( r_fastSync, "1: without vsync (r_swapInterval 0) the mailbox present mode instead of immediate: no tearing, every refresh shows the newest finished frame, for a few ms more input to display (immediate where there is no mailbox)" );
 	VK_TemporalRegisterCvars();
@@ -2228,6 +2384,7 @@ void vk_initialize( void ) {
 
 	Com_Memset( &vk, 0, sizeof( vk ) );
 	Com_Memset( &vko, 0, sizeof( vko ) );
+	VK_InitReadbacks();
 	VK_ResetState();
 	// 0 is the segment of new textures, which no draw has used
 	vk.segment = 1;
@@ -2239,6 +2396,7 @@ void vk_initialize( void ) {
 	// before the swapchain, whose images it decides
 	if ( r_vkSubmitThread->integer ) {
 		vk.submitThread = VK_StartSubmitThread();
+		vk.submitWhole = r_vkSubmitThread->integer == 3;
 	}
 	VK_CreateFrames();
 	VK_PreparePresentFence();
@@ -2298,6 +2456,7 @@ void vk_shutdown( void ) {
 		VK_DestroyRenderTargets();
 		VK_DestroyBuffer( &vk.readbackBuffer );
 	}
+	VK_ShutdownReadbacks();
 
 	VK_DestroyDevice();
 
@@ -2340,6 +2499,76 @@ static void VK_QueueThreadFrame( vkFrame_t *frame ) {
 	vk.segment++;
 }
 
+/*
+===============
+VK_SubmitUnpresented
+
+The end of a frame that presents nothing (it drew nothing, the window is
+minimized, or the swapchain is out of date): its commands with only the
+fence, which still has to signal for the next use of the frame slot
+===============
+*/
+static void VK_SubmitUnpresented( vkFrame_t *frame, const VkCommandBuffer *cmds, uint32_t numCmds ) {
+	VkSubmitInfo submit;
+	vkAoSubmitChain_t aoChain;
+	uint64_t aoSignal, aoWait;
+
+	Com_Memset( &submit, 0, sizeof( submit ) );
+	submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	submit.commandBufferCount = numCmds;
+	submit.pCommandBuffers = cmds;
+	VK_TemporalTakeAoSubmitInfo( &aoSignal, &aoWait );
+	VK_TemporalAoChainSubmit( &aoChain, &submit, aoSignal, aoWait );
+	VK_QueueSubmit( 1, &submit, frame->fence );
+}
+
+/*
+===============
+VK_SubmitOnRenderThread
+
+With the render thread and the submit thread (vk_submit.c): the render
+thread submits the frame itself and the submit thread only presents it,
+then acquires the next frame's image. A frame drawn into the swapchain
+image is submitted at once; a frame drawn offscreen is copied into the
+image the thread acquired after its last present, once the thread is done
+with it (drained: the swapchain is this thread's then)
+===============
+*/
+static void VK_SubmitOnRenderThread( vkFrame_t *frame ) {
+	VkCommandBuffer cmds[2];
+	uint32_t numCmds;
+	int image;
+
+	// frames handed over whole before are submitted first
+	VK_JoinSubmittingJobs();
+
+	if ( vk.target == VK_TARGET_SWAPCHAIN ) {
+		image = (int)vk.targetIndex;
+		VK_SubmitFrameCommands( frame->fence, vk.presentSemaphores[image], qtrue );
+		vk.heldImage = qfalse;
+		VK_QueuePresentJob( frame, image );
+		return;
+	}
+
+	numCmds = VK_EndFrameCommands( cmds, qtrue );
+	image = -1;
+	if ( vk.target == VK_TARGET_OFFSCREEN ) {
+		VK_DrainSubmitThread();
+		VK_ReclaimSubmitThreadImage();
+		image = VK_SubmitPresentCopy( frame, cmds, numCmds );
+	}
+	if ( image >= 0 ) {
+		vk.heldImage = qfalse;
+		vk.stats.threadCopies++;
+		VK_QueuePresentJob( frame, image );
+	} else {
+		VK_SubmitUnpresented( frame, cmds, numCmds );
+	}
+
+	// draws recorded from now on are in a new segment (see vk_image.c)
+	vk.segment++;
+}
+
 void vk_begin_frame( void ) {
 	if ( !vk.device ) {
 		return;
@@ -2367,7 +2596,9 @@ void vk_end_frame( void ) {
 		vko.sdrFrame = qfalse;
 	}
 
-	if ( vk.submitThread ) {
+	if ( vk.submitThread && !vk.submitWhole && R_OnRenderThread() ) {
+		VK_SubmitOnRenderThread( frame );
+	} else if ( vk.submitThread ) {
 		VK_QueueThreadFrame( frame );
 	} else if ( vk.target == VK_TARGET_SWAPCHAIN ) {
 		VK_SubmitFrameCommands( frame->fence, vk.presentSemaphores[vk.targetIndex], qtrue );
@@ -2390,22 +2621,14 @@ void vk_end_frame( void ) {
 	} else {
 		VkCommandBuffer cmds[2];
 		uint32_t numCmds = VK_EndFrameCommands( cmds, qtrue );
+		int image = vk.target == VK_TARGET_OFFSCREEN ? VK_SubmitPresentCopy( frame, cmds, numCmds ) : -1;
 
 		// a frame that drew nothing presents nothing: the window keeps the
 		// last frame
-		if ( vk.target != VK_TARGET_OFFSCREEN || !VK_Present( frame, cmds, numCmds ) ) {
-			VkSubmitInfo submit;
-			vkAoSubmitChain_t aoChain;
-			uint64_t aoSignal, aoWait;
-
-			// the fence still has to signal for the next use of this frame slot
-			Com_Memset( &submit, 0, sizeof( submit ) );
-			submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-			submit.commandBufferCount = numCmds;
-			submit.pCommandBuffers = cmds;
-			VK_TemporalTakeAoSubmitInfo( &aoSignal, &aoWait );
-			VK_TemporalAoChainSubmit( &aoChain, &submit, aoSignal, aoWait );
-			VK_QueueSubmit( 1, &submit, frame->fence );
+		if ( image >= 0 ) {
+			VK_QueuePresent( (uint32_t)image );
+		} else {
+			VK_SubmitUnpresented( frame, cmds, numCmds );
 		}
 
 		// draws recorded from now on are in a new segment (see vk_image.c)
@@ -2435,17 +2658,70 @@ void vk_end_frame( void ) {
 	// display; the next frame then reads its input once its image is
 	// acquired and is drawn into it, as without the thread. Without vsync
 	// that acquire doesn't wait and the thread works beside the next frame.
+	// On the render thread (r_smp) the game's input isn't read after this
+	// frame: the main thread waits for the frame slot before its input when
+	// that keeps the frame rate (tr_smp.c, R_IssueFrameThreaded), and the render
+	// thread at the next frame's first command; with vsync the main thread
+	// waits for this frame, and so for its present (R_IssueFrameThreaded)
 	if ( vk.submitThread ) {
 		uint64_t start;
 
 		if ( vk.presentMode == VK_PRESENT_MODE_FIFO_KHR || vk.presentMode == VK_PRESENT_MODE_FIFO_RELAXED_KHR ) {
 			VK_JoinSubmitJob( ( vk.frameIndex + VK_MAX_FRAMES - 1 ) % VK_MAX_FRAMES );
 		}
-		VK_JoinSubmitJob( vk.frameIndex );
-		start = VK_Microseconds();
-		VK_CHECK( qvkWaitForFences( vk.device, 1, &vk.frames[vk.frameIndex].fence, VK_TRUE, UINT64_MAX ) );
-		vk.stats.waitUs += VK_Microseconds() - start;
+		if ( !R_OnRenderThread() ) {
+			VK_JoinSubmitJob( vk.frameIndex );
+			start = VK_Microseconds();
+			VK_CHECK( qvkWaitForFences( vk.device, 1, &vk.frames[vk.frameIndex].fence, VK_TRUE, UINT64_MAX ) );
+			vk.stats.waitUs += VK_Microseconds() - start;
+		}
 	}
+}
+
+/*
+===============
+vk_prepare_input_wait, vk_input_wait
+
+The render thread (r_smp, tr_smp.c): the main thread hands a frame over,
+then before the next frame's input it can wait until the GPU has done the
+frame slot that the frame after uses (the frame before the one handed
+over), as the back end would at that frame's first command: the input is
+read that much later and shown as soon. vk_prepare_input_wait takes the
+fence while the render thread is idle, before the hand-over; the render
+thread resets that fence only at the frame after next's submission, which
+comes after the next hand-over. vk_input_wait returns the microseconds
+waited
+===============
+*/
+void vk_prepare_input_wait( void ) {
+	vk.inputWaitFence = vk.device ? vk.frames[( vk.frameIndex + 1 ) % VK_MAX_FRAMES].fence : VK_NULL_HANDLE;
+}
+
+int vk_input_wait( void ) {
+	uint64_t start;
+
+	if ( !vk.device || !vk.inputWaitFence ) {
+		return 0;
+	}
+	start = VK_Microseconds();
+	VK_CHECK( qvkWaitForFences( vk.device, 1, &vk.inputWaitFence, VK_TRUE, UINT64_MAX ) );
+	start = VK_Microseconds() - start;
+	// the main thread's own counters
+	vk.stats.inputWaits++;
+	vk.stats.inputWaitUs += start;
+	return (int)start;
+}
+
+// the GPU time of the last frame whose timestamps were read (0 none); read
+// while the render thread is idle
+int vk_last_gpu_frame_us( void ) {
+	return vk.device ? (int)vk.lastGpuFrameUs : 0;
+}
+
+// the back end's waits so far (the GPU, the submit thread, the display), on
+// the thread that runs it
+uint64_t vk_back_end_wait_us( void ) {
+	return vk.stats.waitUs + vk.stats.threadWaitUs + vk.stats.presentWaitUs;
 }
 
 /*
@@ -2467,6 +2743,8 @@ void vk_finish( void ) {
 	VK_DrainSubmitThread();
 	if ( vk.device && vk.lastSubmitFence ) {
 		VK_CHECK( qvkWaitForFences( vk.device, 1, &vk.lastSubmitFence, VK_TRUE, UINT64_MAX ) );
+		// the readbacks of every frame submitted are done
+		VK_ReadbacksDone( vk.frame ? vk.frame->serial - 1 : vk.frameSerial );
 	}
 	// and for the compute queue's ambient occlusion (r_aoAsync)
 	if ( vk.device ) {
@@ -4531,9 +4809,293 @@ static VkAccessFlags VK_DepthImageWriteAccess( void ) {
 	return access;
 }
 
-void vk_read_pixels( int x, int y, int width, int height, readFormat_t format, void *buffer ) {
-	R_FrontEndSync();
-	VkBufferImageCopy region;
+/*
+====================================================================
+
+LATENCY PROBE (r_vkLatency)
+
+For measurements: each frame's input time is the end of the main thread's
+EndFrame before it (the game reads its input at the start of the next
+Com_Frame; with the render thread after its waits there), carried to the
+back end by the swap command. From it: the present call (the thread that
+presents), the GPU done with the frame (its last timestamp on the CPU's
+clock through calibrated timestamps, when the frame slot is used again),
+with vsync and present ids the frame seen shown (the thread that presents
+looks without waiting after each present, so every pacing depth sees
+it at the same point: up to a refresh late), and the main thread's frame
+times. vkinfo prints their percentiles since the last vkinfo. Each list is
+written by one thread; vkinfo reads them with the render and submit
+threads idle.
+
+====================================================================
+*/
+
+#define VK_PROBE_SAMPLES	131072
+
+typedef struct {
+	uint32_t	us[VK_PROBE_SAMPLES];
+	int			count;
+} vkProbeList_t;
+
+static struct {
+	vkProbeList_t	gpuDone, present, shown, frame;
+	uint64_t		idInput[64];		// the presenting thread's: input times by present id
+	uint64_t		oldestId;			// the oldest present not seen shown
+	uint64_t		calibratedAt;		// the back end's calibration: when (VK_Microseconds), 0 none
+	uint64_t		gpuTicks;
+	double			cpuUs;				// VK_Microseconds at gpuTicks
+	uint64_t		lastFrameEndUs;		// the main thread's
+} vk_probe;
+
+static void VK_ProbeAdd( vkProbeList_t *list, int64_t us ) {
+	if ( list->count < VK_PROBE_SAMPLES ) {
+		list->us[list->count++] = us <= 0 ? 0 : us >= 0xffffffffll ? 0xffffffffu : (uint32_t)us;
+	}
+}
+
+// the GPU's clock against VK_Microseconds, at most once a second
+static qboolean VK_ProbeCalibrate( void ) {
+	VkCalibratedTimestampInfoKHR info[2];
+	uint64_t ts[2], deviation, now = VK_Microseconds();
+	double offset = 0.0;
+
+	if ( vk.calibrationDomain == VK_TIME_DOMAIN_MAX_ENUM_KHR ) {
+		return qfalse;
+	}
+	if ( vk_probe.calibratedAt && now - vk_probe.calibratedAt < 1000000 ) {
+		return qtrue;
+	}
+	Com_Memset( info, 0, sizeof( info ) );
+	info[0].sType = info[1].sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR;
+	info[0].timeDomain = VK_TIME_DOMAIN_DEVICE_KHR;
+	info[1].timeDomain = vk.calibrationDomain;
+	if ( qvkGetCalibratedTimestampsKHR( vk.device, 2, info, ts, &deviation ) != VK_SUCCESS ) {
+		return qfalse;
+	}
+#ifdef _WIN32
+	vk_probe.cpuUs = ts[1] * 1000000.0 / SDL_GetPerformanceFrequency();
+#else
+	{
+		// the domain's clock against VK_Microseconds (SDL's performance
+		// counter, the same clock: the offset is about 0)
+		struct timespec t;
+		uint64_t a = VK_Microseconds(), b;
+
+		clock_gettime( CLOCK_MONOTONIC_RAW, &t );
+		b = VK_Microseconds();
+		offset = ( a + b ) * 0.5 - ( t.tv_sec * 1000000.0 + t.tv_nsec / 1000.0 );
+	}
+	vk_probe.cpuUs = ts[1] / 1000.0 + offset;
+#endif
+	vk_probe.gpuTicks = ts[0];
+	vk_probe.calibratedAt = now;
+	return qtrue;
+}
+
+// the back end, when a frame's timestamps are read: input to GPU done
+static void VK_ProbeGpuDone( vkFrame_t *frame, uint64_t ticks ) {
+	int64_t delta;
+
+	if ( !r_vkLatency->integer || !frame->probeInputUs || !VK_ProbeCalibrate() ) {
+		return;
+	}
+	delta = (int64_t)( ticks - vk_probe.gpuTicks );
+	if ( vk.timestampValidBits < 64 ) {
+		const uint64_t mask = ( 1ull << vk.timestampValidBits ) - 1;
+		uint64_t d = ( ticks - vk_probe.gpuTicks ) & mask;
+
+		delta = d & ( 1ull << ( vk.timestampValidBits - 1 ) ) ? (int64_t)( d | ~mask ) : (int64_t)d;
+	}
+	VK_ProbeAdd( &vk_probe.gpuDone, (int64_t)( vk_probe.cpuUs + delta * vk.deviceProperties.limits.timestampPeriod / 1000.0 ) - (int64_t)frame->probeInputUs );
+}
+
+/*
+===============
+VK_ProbePresent
+
+The thread that presents, right after a present (before any wait for it):
+input to present, and with vsync and present ids the frames seen shown
+since the last look
+===============
+*/
+void VK_ProbePresent( uint64_t inputUs, uint64_t presentAt, uint64_t id ) {
+	uint64_t pid;
+	int looks;
+
+	if ( !r_vkLatency->integer ) {
+		return;
+	}
+	if ( inputUs ) {
+		VK_ProbeAdd( &vk_probe.present, (int64_t)presentAt - (int64_t)inputUs );
+	}
+	if ( !id || !qvkWaitForPresentKHR || ( vk.presentMode != VK_PRESENT_MODE_FIFO_KHR && vk.presentMode != VK_PRESENT_MODE_FIFO_RELAXED_KHR ) ) {
+		return;
+	}
+	vk_probe.idInput[id % ARRAY_LEN( vk_probe.idInput )] = inputUs;
+	if ( vk_probe.oldestId < vk.pacing.firstPresentId ) {
+		vk_probe.oldestId = vk.pacing.firstPresentId;
+	}
+	if ( id - vk_probe.oldestId >= ARRAY_LEN( vk_probe.idInput ) ) {
+		vk_probe.oldestId = id - ARRAY_LEN( vk_probe.idInput ) + 1;
+	}
+	for ( pid = vk_probe.oldestId, looks = 0; pid < id && looks < 8; pid++, looks++ ) {
+		uint64_t *input = &vk_probe.idInput[pid % ARRAY_LEN( vk_probe.idInput )];
+
+		if ( qvkWaitForPresentKHR( vk.device, vk.swapchain, pid, 0 ) != VK_SUCCESS ) {
+			break;
+		}
+		if ( *input ) {
+			VK_ProbeAdd( &vk_probe.shown, (int64_t)VK_Microseconds() - (int64_t)*input );
+		}
+		*input = 0;
+		vk_probe.oldestId = pid + 1;
+	}
+}
+
+uint64_t vk_probe_input_time( void ) {
+	return vk.device && r_vkLatency->integer ? vk_probe.lastFrameEndUs : 0;
+}
+
+void vk_probe_frame_end( void ) {
+	uint64_t now;
+
+	if ( !vk.device || !r_vkLatency->integer ) {
+		vk_probe.lastFrameEndUs = 0;
+		return;
+	}
+	now = VK_Microseconds();
+	if ( vk_probe.lastFrameEndUs ) {
+		VK_ProbeAdd( &vk_probe.frame, (int64_t)( now - vk_probe.lastFrameEndUs ) );
+	}
+	vk_probe.lastFrameEndUs = now;
+}
+
+void vk_probe_input( uint64_t inputUs ) {
+	if ( !vk.device ) {
+		return;
+	}
+	VK_BeginFrameIfNeeded();
+	vk.frame->probeInputUs = inputUs;
+}
+
+static int VK_ProbeCompare( const void *a, const void *b ) {
+	uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+
+	return x < y ? -1 : x > y;
+}
+
+// "name p50 a p90 b p99 c p99.9 d (n)" in ms, and the list emptied
+static const char *VK_ProbePercentiles( const char *name, vkProbeList_t *list ) {
+	static char text[4][160];
+	static int which;
+	char *out = text[which++ & 3];
+	int n = list->count;
+
+	if ( !n ) {
+		Com_sprintf( out, sizeof( text[0] ), "%s -", name );
+		return out;
+	}
+	qsort( list->us, n, sizeof( list->us[0] ), VK_ProbeCompare );
+#define VK_PCT( p ) ( list->us[Q_min( n - 1, (int)( (p) * n ) )] / 1000.0 )
+	Com_sprintf( out, sizeof( text[0] ), "%s p50 %.3f p90 %.3f p99 %.3f p99.9 %.3f (%d)", name, VK_PCT( 0.5 ), VK_PCT( 0.9 ), VK_PCT( 0.99 ), VK_PCT( 0.999 ), n );
+#undef VK_PCT
+	list->count = 0;
+	return out;
+}
+
+static void VK_ProbeReport( void ) {
+	if ( !r_vkLatency->integer ) {
+		return;
+	}
+	ri.Printf( PRINT_ALL, "vkinfo: latency ms: %s; %s\n", VK_ProbePercentiles( "input to GPU done", &vk_probe.gpuDone ),
+		VK_ProbePercentiles( "input to present", &vk_probe.present ) );
+	ri.Printf( PRINT_ALL, "vkinfo: latency ms: %s; %s%s\n", VK_ProbePercentiles( "input to shown", &vk_probe.shown ),
+		VK_ProbePercentiles( "frame time", &vk_probe.frame ),
+		vk.calibrationDomain == VK_TIME_DOMAIN_MAX_ENUM_KHR ? " (no calibrated timestamps: no GPU done)" : "" );
+}
+
+/*
+====================================================================
+
+PIXEL READBACKS
+
+vk_read_pixels waits for the GPU (VK_FlushAndWait). vk_read_pixels_async
+records the same copy into a buffer of a small pool and returns at once;
+the copy is done once the frame that recorded it has completed, which the
+back end learns when it waits for that frame's fence (the frame slot is
+used again, a flush, vk_finish), and the main thread takes the pixels then
+(vk_readback_next, vk_readback_get, vk_readback_free): screenshots, video
+frames and r_measureOverdraw's stencil sums arrive a few frames later, in
+the order they were recorded, and nothing waits for the GPU. The pool's
+slots are taken under a lock: with the render thread (r_smp) the back end
+records on it and the main thread reads.
+
+====================================================================
+*/
+
+// the part of the framebuffer a readback copied and how its texels are laid
+// out; w 0: nothing was copied (outside of the framebuffer, no stencil
+// buffer, the depth image not readable), the pixels read as 0
+typedef struct {
+	int		x0, y0, w, h;
+	int		texelSize;
+	int		red;				// byte of red in a 4-byte color texel
+} vkReadRegion_t;
+
+#define VK_READBACKS		8		// readbacks in flight (a video frame each frame, screenshots)
+#define VK_READBACK_USER	( 2 * MAX_OSPATH + 256 )	// bytes of the caller's data kept with each (a shot's file name and message)
+
+typedef enum {
+	VK_READBACK_FREE,
+	VK_READBACK_RECORDING,			// being recorded by the back end
+	VK_READBACK_RECORDED,			// in a frame the GPU hasn't finished
+	VK_READBACK_READY,				// done, not taken yet
+	VK_READBACK_TAKEN				// taken by the main thread (vk_readback_next), until freed
+} vkReadbackState_t;
+
+typedef struct {
+	vkReadbackState_t	state;
+	uint64_t			sequence;	// in the order recorded
+	uint64_t			serial;		// the frame that recorded it
+	vkBuffer_t			buffer;		// kept from use to use, grown when needed
+	vkReadRegion_t		region;
+	int					x, y, width, height;
+	readFormat_t		format;
+	int					kind;
+	byte				user[VK_READBACK_USER];
+} vkReadback_t;
+
+static struct {
+	SDL_Mutex			*lock;
+	vkReadback_t		slots[VK_READBACKS];
+	uint64_t			nextSequence;
+	int					dropped;	// requests refused, the pool full (vk_readback_dropped)
+} vk_rb;
+
+static int VK_ReadPixelSize( readFormat_t format ) {
+	switch ( format ) {
+	case READ_RGB8:
+		return 3;
+	case READ_DEPTH_FLOAT:
+		return sizeof( float );
+	case READ_STENCIL8:
+	default:
+		return 1;
+	}
+}
+
+/*
+===============
+VK_RecordPixelCopy
+
+Records into the frame the copy of a part of the color target, depth or
+stencil to dest (grown when too small: nothing may use it), with the
+barriers that make it visible to the host once the frame has completed.
+Returns qfalse when nothing was copied (region->w 0)
+===============
+*/
+static qboolean VK_RecordPixelCopy( int x, int y, int width, int height, readFormat_t format, vkBuffer_t *dest, vkReadRegion_t *region ) {
+	VkBufferImageCopy copy;
 	VkImageAspectFlags aspect, barrierAspect;
 	VkImageLayout layout;
 	VkPipelineStageFlags stages;
@@ -4541,41 +5103,25 @@ void vk_read_pixels( int x, int y, int width, int height, readFormat_t format, v
 	VkCommandBuffer cmd;
 	VkImage image;
 	VkDeviceSize size;
-	int pixelSize, texelSize, red, blue;
-	int x0, y0, x1, y1, w, h, row, col;
+	int x0, y0, x1, y1;
 
-	switch ( format ) {
-	case READ_RGB8:
-		pixelSize = 3;
-		break;
-	case READ_DEPTH_FLOAT:
-		pixelSize = sizeof( float );
-		break;
-	case READ_STENCIL8:
-	default:
-		pixelSize = 1;
-		break;
-	}
+	Com_Memset( region, 0, sizeof( *region ) );
 
-	if ( width <= 0 || height <= 0 ) {
-		return;
-	}
 	// pixels outside of the framebuffer read as 0, and stencil without a
 	// stencil buffer
-	Com_Memset( buffer, 0, (size_t)pixelSize * width * height );
-	if ( format == READ_STENCIL8 && !( vk.depthAspect & VK_IMAGE_ASPECT_STENCIL_BIT ) ) {
-		return;
+	if ( !vk.device || width <= 0 || height <= 0 ) {
+		return qfalse;
 	}
-
+	if ( format == READ_STENCIL8 && !( vk.depthAspect & VK_IMAGE_ASPECT_STENCIL_BIT ) ) {
+		return qfalse;
+	}
 	x0 = Q_max( x, 0 );
 	y0 = Q_max( y, 0 );
 	x1 = Q_min( x + width, vk.width );
 	y1 = Q_min( y + height, vk.height );
-	if ( !vk.device || x1 <= x0 || y1 <= y0 ) {
-		return;
+	if ( x1 <= x0 || y1 <= y0 ) {
+		return qfalse;
 	}
-	w = x1 - x0;
-	h = y1 - y0;
 
 	VK_BeginFrameIfNeeded();
 	if ( format == READ_RGB8 ) {
@@ -4586,7 +5132,7 @@ void vk_read_pixels( int x, int y, int width, int height, readFormat_t format, v
 		// zeros until the depth image is readable (vk_want_depth_reads)
 		vk.depthReadSerial = vk.frameSerial;
 		if ( !vk.depthReadable ) {
-			return;
+			return qfalse;
 		}
 	}
 	VK_EndRenderPass();
@@ -4601,7 +5147,9 @@ void vk_read_pixels( int x, int y, int width, int height, readFormat_t format, v
 		layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 		stages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 		access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-		texelSize = vk.colorFormat == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : 4;
+		region->texelSize = vk.colorFormat == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : 4;
+		// B8G8R8A8 targets have red third
+		region->red = vk.colorFormat == VK_FORMAT_B8G8R8A8_UNORM ? 2 : 0;
 	} else {
 		VK_ResolveDepth();
 		image = vk.depthImage;
@@ -4611,49 +5159,67 @@ void vk_read_pixels( int x, int y, int width, int height, readFormat_t format, v
 		stages = VK_DepthImageStages();
 		access = VK_DepthImageWriteAccess();
 		if ( format == READ_STENCIL8 ) {
-			texelSize = 1;
+			region->texelSize = 1;
 		} else if ( vk.depthFormat == VK_FORMAT_D16_UNORM_S8_UINT || vk.depthFormat == VK_FORMAT_D16_UNORM ) {
-			texelSize = 2;
+			region->texelSize = 2;
 		} else {
-			texelSize = 4;
+			region->texelSize = 4;
 		}
 	}
+	region->x0 = x0;
+	region->y0 = y0;
+	region->w = x1 - x0;
+	region->h = y1 - y0;
 
-	size = (VkDeviceSize)w * h * texelSize;
-	if ( vk.readbackBuffer.size < size ) {
-		// readbacks are waited for, nothing uses the old buffer
-		VK_DestroyBuffer( &vk.readbackBuffer );
-		VK_CreateBuffer( &vk.readbackBuffer, PAD( size, 65536 ), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+	size = (VkDeviceSize)region->w * region->h * region->texelSize;
+	if ( dest->size < size ) {
+		VK_DestroyBuffer( dest );
+		VK_CreateBuffer( dest, PAD( size, 65536 ), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_MEMORY_PROPERTY_HOST_CACHED_BIT );
 	}
 
 	VK_ImageBarrier( cmd, image, barrierAspect, layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 		stages, access, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT );
 
-	Com_Memset( &region, 0, sizeof( region ) );
-	region.imageSubresource.aspectMask = aspect;
-	region.imageSubresource.layerCount = 1;
-	region.imageOffset.x = x0;
-	region.imageOffset.y = vk.height - y1;
-	region.imageExtent.width = w;
-	region.imageExtent.height = h;
-	region.imageExtent.depth = 1;
-	qvkCmdCopyImageToBuffer( cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vk.readbackBuffer.buffer, 1, &region );
+	Com_Memset( &copy, 0, sizeof( copy ) );
+	copy.imageSubresource.aspectMask = aspect;
+	copy.imageSubresource.layerCount = 1;
+	copy.imageOffset.x = x0;
+	copy.imageOffset.y = vk.height - y1;
+	copy.imageExtent.width = region->w;
+	copy.imageExtent.height = region->h;
+	copy.imageExtent.depth = 1;
+	qvkCmdCopyImageToBuffer( cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dest->buffer, 1, &copy );
 
 	VK_ImageBarrier( cmd, image, barrierAspect, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, layout,
 		VK_PIPELINE_STAGE_TRANSFER_BIT, 0, stages, access | ( format == READ_RGB8 ? VK_ACCESS_COLOR_ATTACHMENT_READ_BIT : VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT ) );
 
-	VK_HostReadBarrier( cmd, vk.readbackBuffer.buffer );
+	VK_HostReadBarrier( cmd, dest->buffer );
+	return qtrue;
+}
 
-	VK_FlushAndWait();
+/*
+===============
+VK_ConvertPixels
 
-	// the copy has the top row first, the caller wants the bottom row first;
-	// B8G8R8A8 targets have red third
-	red = vk.colorFormat == VK_FORMAT_B8G8R8A8_UNORM ? 2 : 0;
-	blue = 2 - red;
+The copied texels (top row first) into the caller's layout: rows tightly
+packed, bottom row first, RGB for color; what wasn't copied reads as 0
+===============
+*/
+static void VK_ConvertPixels( const vkReadRegion_t *region, const byte *mapped, int x, int y, int width, int height, readFormat_t format, void *buffer ) {
+	int pixelSize = VK_ReadPixelSize( format );
+	int texelSize = region->texelSize;
+	int w = region->w, h = region->h;
+	int red = region->red, blue = 2 - region->red;
+	int row, col;
+
+	Com_Memset( buffer, 0, (size_t)pixelSize * width * height );
+	if ( !w ) {
+		return;
+	}
 	for ( row = 0; row < h; row++ ) {
-		const byte *src = vk.readbackBuffer.mapped + (size_t)( h - 1 - row ) * w * texelSize;
-		byte *dst = (byte *)buffer + ( (size_t)( y0 - y + row ) * width + ( x0 - x ) ) * pixelSize;
+		const byte *src = mapped + (size_t)( h - 1 - row ) * w * texelSize;
+		byte *dst = (byte *)buffer + ( (size_t)( region->y0 - y + row ) * width + ( region->x0 - x ) ) * pixelSize;
 
 		switch ( format ) {
 		case READ_RGB8:
@@ -4691,6 +5257,187 @@ void vk_read_pixels( int x, int y, int width, int height, readFormat_t format, v
 			break;
 		}
 	}
+}
+
+void vk_read_pixels( int x, int y, int width, int height, readFormat_t format, void *buffer ) {
+	vkReadRegion_t region;
+
+	R_FrontEndSync();
+	if ( width <= 0 || height <= 0 ) {
+		return;
+	}
+	// readbacks are waited for: nothing uses the buffer when it is grown
+	if ( VK_RecordPixelCopy( x, y, width, height, format, &vk.readbackBuffer, &region ) ) {
+		VK_FlushAndWait();
+	}
+	VK_ConvertPixels( &region, vk.readbackBuffer.mapped, x, y, width, height, format, buffer );
+}
+
+/*
+===============
+vk_read_pixels_async
+
+On the back end: records the readback in the frame and returns its handle
+(user, userSize bytes, is kept with it for the main thread), or 0 when
+VK_READBACKS are in flight already or user is too large (the request is
+dropped and counted)
+===============
+*/
+int vk_read_pixels_async( int x, int y, int width, int height, readFormat_t format, int kind, const void *user, int userSize ) {
+	vkReadback_t *rb = NULL;
+	int i;
+
+	if ( !vk.device || !vk_rb.lock || width <= 0 || height <= 0 ) {
+		return 0;
+	}
+	SDL_LockMutex( vk_rb.lock );
+	for ( i = 0; i < VK_READBACKS && userSize <= VK_READBACK_USER; i++ ) {
+		if ( vk_rb.slots[i].state == VK_READBACK_FREE ) {
+			rb = &vk_rb.slots[i];
+			rb->state = VK_READBACK_RECORDING;
+			break;
+		}
+	}
+	if ( !rb ) {
+		vk_rb.dropped++;
+	}
+	SDL_UnlockMutex( vk_rb.lock );
+	if ( !rb ) {
+		return 0;
+	}
+
+	rb->x = x;
+	rb->y = y;
+	rb->width = width;
+	rb->height = height;
+	rb->format = format;
+	rb->kind = kind;
+	if ( userSize > 0 ) {
+		Com_Memcpy( rb->user, user, userSize );
+	}
+	// the slot is free: its buffer's last copy has been read
+	VK_BeginFrameIfNeeded();
+	VK_RecordPixelCopy( x, y, width, height, format, &rb->buffer, &rb->region );
+
+	SDL_LockMutex( vk_rb.lock );
+	rb->serial = vk.frame->serial;
+	rb->sequence = vk_rb.nextSequence++;
+	rb->state = VK_READBACK_RECORDED;
+	SDL_UnlockMutex( vk_rb.lock );
+	return (int)( rb - vk_rb.slots ) + 1;
+}
+
+/*
+===============
+VK_ReadbacksDone
+
+On the back end: the frames up to serial have completed, so have their
+readbacks
+===============
+*/
+static void VK_ReadbacksDone( uint64_t serial ) {
+	int i;
+
+	if ( !vk_rb.lock ) {
+		return;
+	}
+	SDL_LockMutex( vk_rb.lock );
+	for ( i = 0; i < VK_READBACKS; i++ ) {
+		vkReadback_t *rb = &vk_rb.slots[i];
+
+		if ( rb->state == VK_READBACK_RECORDED && rb->serial <= serial ) {
+			rb->state = VK_READBACK_READY;
+		}
+	}
+	SDL_UnlockMutex( vk_rb.lock );
+}
+
+/*
+===============
+vk_readback_next
+
+On the main thread: the oldest readback in flight not taken yet, if it is
+done (its handle, kind and user data, valid until vk_readback_free), else
+0: they are taken in the order they were recorded. A taken readback is the
+caller's: another thread may read its pixels (vk_readback_get) and free it
+===============
+*/
+int vk_readback_next( int *kind, void **user ) {
+	vkReadback_t *oldest = NULL;
+	int i, handle = 0;
+
+	if ( !vk_rb.lock ) {
+		return 0;
+	}
+	SDL_LockMutex( vk_rb.lock );
+	for ( i = 0; i < VK_READBACKS; i++ ) {
+		vkReadback_t *rb = &vk_rb.slots[i];
+
+		if ( rb->state == VK_READBACK_FREE || rb->state == VK_READBACK_TAKEN ) {
+			continue;
+		}
+		if ( rb->state == VK_READBACK_RECORDING ) {
+			// its sequence isn't known yet: newer than every other
+			continue;
+		}
+		if ( !oldest || rb->sequence < oldest->sequence ) {
+			oldest = rb;
+		}
+	}
+	if ( oldest && oldest->state == VK_READBACK_READY ) {
+		oldest->state = VK_READBACK_TAKEN;
+		handle = (int)( oldest - vk_rb.slots ) + 1;
+		*kind = oldest->kind;
+		*user = oldest->user;
+	}
+	SDL_UnlockMutex( vk_rb.lock );
+	return handle;
+}
+
+// the pixels of a taken readback, in vk_read_pixels' layout, for the
+// rectangle it was asked for (any thread: the back end leaves it alone)
+void vk_readback_get( int handle, void *buffer ) {
+	vkReadback_t *rb = &vk_rb.slots[handle - 1];
+
+	VK_ConvertPixels( &rb->region, rb->buffer.mapped, rb->x, rb->y, rb->width, rb->height, rb->format, buffer );
+}
+
+void vk_readback_free( int handle ) {
+	SDL_LockMutex( vk_rb.lock );
+	vk_rb.slots[handle - 1].state = VK_READBACK_FREE;
+	SDL_UnlockMutex( vk_rb.lock );
+}
+
+// requests dropped since the last call (the pool was full)
+int vk_readback_dropped( void ) {
+	int dropped;
+
+	if ( !vk_rb.lock ) {
+		return 0;
+	}
+	SDL_LockMutex( vk_rb.lock );
+	dropped = vk_rb.dropped;
+	vk_rb.dropped = 0;
+	SDL_UnlockMutex( vk_rb.lock );
+	return dropped;
+}
+
+static void VK_InitReadbacks( void ) {
+	Com_Memset( &vk_rb, 0, sizeof( vk_rb ) );
+	vk_rb.lock = SDL_CreateMutex();
+}
+
+// at vk_shutdown, the device idle: what wasn't taken is lost
+static void VK_ShutdownReadbacks( void ) {
+	int i;
+
+	for ( i = 0; i < VK_READBACKS; i++ ) {
+		VK_DestroyBuffer( &vk_rb.slots[i].buffer );
+	}
+	if ( vk_rb.lock ) {
+		SDL_DestroyMutex( vk_rb.lock );
+	}
+	Com_Memset( &vk_rb, 0, sizeof( vk_rb ) );
 }
 
 /*

@@ -2028,6 +2028,8 @@ void	R_SkinList_f( void );
 // https://zerowing.idsoftware.com/bugzilla/show_bug.cgi?id=516
 const void *RB_TakeScreenshotCmd( const void *data );
 void RB_TakePendingScreenshots( void );
+void R_ProcessReadbacks( void );
+void R_FlushReadbacks( void );
 void	R_ScreenShot_f( void );
 
 void	R_InitImages( void );
@@ -2754,7 +2756,8 @@ typedef struct {
 } subImageCommand_t;
 
 typedef struct {
-	int		commandId;
+	int			commandId;
+	uint64_t	inputUs;		// r_vkLatency: when the frame's input was read after (vk_probe_input_time)
 } swapBuffersCommand_t;
 
 typedef struct {
@@ -2868,15 +2871,20 @@ typedef struct terrainSlotChange_s {
 
 typedef struct {
 	int commandId;
+	int type;				// shotType_t (tr_init.c)
 	int x;
 	int y;
-	int width;
+	int width;				// a resampled shot: the size of the file
 	int height;
-	char *fileName;
-	qboolean jpeg;
-	qboolean png;
-	const char *message;	// console command run once the file is written, or NULL
+	char fileName[MAX_OSPATH];
+	char message[MAX_OSPATH + 64];	// console command run once the file is written, or empty
 } screenshotCommand_t;
+
+// what a pixel readback of the back end is for (vk_read_pixels_async): the
+// main thread writes it once the GPU has done it (R_ProcessReadbacks)
+#define READBACK_SHOT		1		// a screenshot, levelshot or resampled shot
+#define READBACK_VIDEO		2		// a video frame (RE_TakeVideoFrame)
+#define READBACK_OVERDRAW	3		// r_measureOverdraw's stencil
 
 typedef struct {
 	int						commandId;
@@ -3029,6 +3037,11 @@ void		R_FrontEndSync( void );
 void		R_IssueRenderCommandsThreaded( const void *cmds );
 int			R_RenderThreadBackEndMsec( void );
 qboolean	vk_present_waits( void );					// vk.c: the present waits for the display (vsync)
+void		vk_prepare_input_wait( void );				// vk.c: r_smp's wait before the input (R_IssueFrameThreaded)
+int			vk_input_wait( void );
+int			vk_last_gpu_frame_us( void );
+uint64_t	vk_back_end_wait_us( void );
+void		R_IssueFrameThreaded( const void *cmds );
 void		R_StartRenderThread( void );
 void		R_StopRenderThread( void );
 const void	*RB_2DCommand( const void *data );

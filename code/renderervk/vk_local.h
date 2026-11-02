@@ -93,6 +93,7 @@ FUNCTION POINTERS
 #define VK_INSTANCE_FUNCTIONS_OPTIONAL( X ) \
 	X( vkCreateDebugUtilsMessengerEXT ) \
 	X( vkDestroyDebugUtilsMessengerEXT ) \
+	X( vkGetPhysicalDeviceCalibrateableTimeDomainsKHR ) \
 	X( vkGetPhysicalDeviceFeatures2 ) \
 	X( vkGetPhysicalDeviceProperties2 )
 
@@ -196,10 +197,12 @@ FUNCTION POINTERS
 #define VK_DEVICE_FUNCTIONS_OPTIONAL( X ) \
 	X( vkCmdSetLineStippleEXT ) \
 	X( vkCreateRenderPass2KHR ) \
+	X( vkGetCalibratedTimestampsKHR ) \
 	X( vkGetSemaphoreCounterValueKHR ) \
 	X( vkReleaseSwapchainImagesEXT ) \
 	X( vkSetHdrMetadataEXT ) \
 	X( vkSignalSemaphoreKHR ) \
+	X( vkWaitForPresentKHR ) \
 	X( vkWaitSemaphoresKHR )
 
 #define VK_DECLARE_FUNCTION( name ) extern PFN_##name q##name;
@@ -315,6 +318,7 @@ typedef struct {
 	VkCommandBuffer	uploadCmd;		// texture uploads that need no ordering with draws, submitted first
 	VkCommandBuffer	mainCmd;		// everything else, in the order the renderer issued it
 	VkCommandBuffer	presentCmd;		// copy to the swapchain image (recorded by the submit thread with r_vkSubmitThread)
+	uint64_t		probeInputUs;	// r_vkLatency: when its input was read (VK_Microseconds), 0 unknown
 	VkFence			fence;			// signaled when every submission of the frame has completed
 	VkQueryPool		queryPool;		// VK_NUM_TIMESTAMPS timestamps, when the queue has them
 	uint32_t		timestampsWritten;	// bits of the VK_TS_* recorded in this frame
@@ -388,6 +392,9 @@ typedef struct {
 	uint64_t	acquireAheadUs;		// vkAcquireNextImageKHR right after a present, for the next frame
 	uint64_t	frameToPresentUs;	// from the start of a frame's recording to its present
 	uint64_t	presentUs;			// vkQueuePresentKHR
+	uint64_t	presentWaitUs;		// vkWaitForPresentKHR (FIFO), on the main or render thread
+	uint64_t	inputWaits;			// r_smp: the main thread's waits for the GPU before the input (vk_input_wait)
+	uint64_t	inputWaitUs;
 	uint64_t	pipelineUs;			// vkCreateGraphicsPipelines
 	uint64_t	prebuiltUs;			// vkCreateGraphicsPipelines of those
 	uint64_t	allocationUs;		// vkAllocateMemory
@@ -409,6 +416,7 @@ typedef struct {
 	uint64_t	threadAcquireUs;	// vkAcquireNextImageKHR on the thread
 	uint64_t	threadPresents;		// vkQueuePresentKHR calls of the thread
 	uint64_t	threadPresentUs;
+	uint64_t	threadPresentWaitUs;	// vkWaitForPresentKHR on the thread
 	uint64_t	threadCopies;		// frames drawn offscreen and copied by the thread (no image was acquired at the first render pass)
 } vkStats_t;
 
@@ -453,6 +461,32 @@ typedef struct {
 	qboolean			depthStencilResolve;	// VK_KHR_depth_stencil_resolve (and create_renderpass2), for multisampling
 	// VK_KHR/EXT_swapchain_maintenance1: presents signal fences (vk.presentFences)
 	qboolean			presentFences;
+	// VK_KHR_present_id and VK_KHR_present_wait: every present has an id,
+	// and with FIFO the thread that presents waits until the present is
+	// shown before the next frame reads its input (vk.c, VK_WaitForPresent)
+	qboolean			presentWait;
+	uint64_t			lastPresentId;		// of the last present (its thread's)
+	// how many presented frames the wait leaves queued (1 or 2), learned
+	// from when they are shown (vk.c, VK_WaitForPresentShown); reset with
+	// each swapchain, whose first id is firstPresentId
+	struct {
+		uint64_t		firstPresentId;
+		int				depth;
+		uint64_t		lastShownUs;
+		float			periodUs;		// between frames shown, with two queued
+		int				frames;			// waits with two queued since the last change
+		int				window, misses;	// with one queued: waits, and frames that took more than a refresh
+		int				tries;			// of one queued, on this swapchain (one at most)
+	} pacing;
+	// r_smp: the GPU time of the last frame whose timestamps were read, and
+	// the fence the main thread waits for before the next input (vk.c,
+	// vk_prepare_input_wait); both read while the render thread is idle
+	uint32_t			lastGpuFrameUs;
+	VkFence				inputWaitFence;
+	// VK_KHR/EXT_calibrated_timestamps: the GPU's timestamps on the CPU's
+	// clock (VK_Microseconds), for the latency probe (r_vkLatency, vk.c);
+	// VK_TIME_DOMAIN_MAX_ENUM_KHR: none
+	VkTimeDomainKHR		calibrationDomain;
 	// imageViewFormatSwizzle (always outside of the portability subset): RGB
 	// textures sample alpha 1 from an A = ONE view swizzle, otherwise the
 	// fragment shader sets it (VK_PIPE_TEX*_RGB with every texture env)
@@ -481,6 +515,7 @@ typedef struct {
 	// acquires the swapchain images, and copies a frame drawn offscreen when
 	// no image was acquired by its first render pass (vk_submit.c)
 	qboolean			submitThread;
+	qboolean			submitWhole;		// r_vkSubmitThread 3: the render thread's frames handed over whole, as before Plan 53 (tests)
 
 	// swapchain
 	VkSwapchainKHR		swapchain;
@@ -741,6 +776,13 @@ float		VK_HalfToFloat( uint16_t h );
 qboolean	VK_StartSubmitThread( void );
 void		VK_StopSubmitThread( void );
 void		VK_QueueSubmitJob( vkFrame_t *frame, const VkCommandBuffer *cmds, uint32_t numCmds, qboolean present, int image, VkSemaphore acquired );
+void		VK_QueuePresentJob( vkFrame_t *frame, int image );
+void		VK_ChainPresentId( VkPresentInfoKHR *presentInfo, VkPresentIdKHR *presentId, uint64_t *id );
+void		VK_ProbePresent( uint64_t inputUs, uint64_t presentAt, uint64_t id );
+VkResult	VK_WaitForPresentShown( uint64_t id, uint64_t *us );
+void		VK_JoinSubmittingJobs( void );
+void		VK_LockSubmitQueue( void );
+void		VK_UnlockSubmitQueue( void );
 void		VK_JoinSubmitJob( int slot );
 void		VK_CollectSubmitJobs( void );
 void		VK_DrainSubmitThread( void );
