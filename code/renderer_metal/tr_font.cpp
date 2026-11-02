@@ -548,27 +548,26 @@ void R_LoadFontShader(fontheader_sgl_t* font)
     }
 }
 
+// Scales from the 640x480 virtual screen to the real one. Glyphs are scaled
+// across no more than down, so they keep their shape on a wide screen (where
+// text is narrower than its 640x480 layout width, see UIFont::setVirtualScale).
+static void R_VirtualScreenScale(const float *pvVirtualScreen, float *pfWidthScale, float *pfHeightScale, float *pfGlyphScale) {
+    *pfWidthScale = pvVirtualScreen[0] ? pvVirtualScreen[0] : (double)glConfig.vidWidth / 640.0;
+    *pfHeightScale = pvVirtualScreen[1] ? pvVirtualScreen[1] : (double)glConfig.vidHeight / 480.0;
+    *pfGlyphScale = Q_min(*pfWidthScale, *pfHeightScale);
+}
+
 void R_DrawString_sgl(fontheader_sgl_t* font, const char* text, float x, float y, int maxlen, const float *pvVirtualScreen) {
     float charHeight;
     float startx, starty;
-    int i;
-    float fWidthScale, fHeightScale;
+    int i, v;
+    float fWidthScale, fHeightScale, fGlyphScale;
 
     i = 0;
     startx = x;
     starty = y;
     if (pvVirtualScreen) {
-        if (pvVirtualScreen[0]) {
-            fWidthScale = pvVirtualScreen[0];
-        } else {
-            fWidthScale = (double)glConfig.vidWidth / 640.0;
-        }
-
-        if (pvVirtualScreen[1]) {
-            fHeightScale = pvVirtualScreen[1];
-        } else {
-            fHeightScale = (double)glConfig.vidHeight / 480.0;
-        }
+        R_VirtualScreenScale(pvVirtualScreen, &fWidthScale, &fHeightScale, &fGlyphScale);
     }
 
     if (!font) {
@@ -672,15 +671,12 @@ void R_DrawString_sgl(fontheader_sgl_t* font, const char* text, float x, float y
 
             if (pvVirtualScreen)
             {
-                // scale the string properly if virtual screen
-                tess.xyz[tess.numVertexes][0] *= fWidthScale;
-                tess.xyz[tess.numVertexes][1] *= fHeightScale;
-                tess.xyz[tess.numVertexes + 1][0] *= fWidthScale;
-                tess.xyz[tess.numVertexes + 1][1] *= fHeightScale;
-                tess.xyz[tess.numVertexes + 2][0] *= fWidthScale;
-                tess.xyz[tess.numVertexes + 2][1] *= fHeightScale;
-                tess.xyz[tess.numVertexes + 3][0] *= fWidthScale;
-                tess.xyz[tess.numVertexes + 3][1] *= fHeightScale;
+                // scale the string properly if virtual screen: its start
+                // like the screen, its glyphs keeping their shape
+                for (v = 0; v < 4; v++) {
+                    tess.xyz[tess.numVertexes + v][0] = startx * fWidthScale + (tess.xyz[tess.numVertexes + v][0] - startx) * fGlyphScale;
+                    tess.xyz[tess.numVertexes + v][1] *= fHeightScale;
+                }
             }
 
             x += s_fontGeneralScale * loc->size[0] * 256.0;
@@ -702,7 +698,8 @@ void R_DrawString(fontheader_t* font, const char* text, float x, float y, int ma
     int cursgl;
     float curX, curY;
     float curHeight;
-    
+    float fWidthScale, fHeightScale, fGlyphScale;
+
     if (!font->numPages) {
         if (font->sgl[0]) {
             R_DrawString_sgl(font->sgl[0], text, x, y, maxlen, pvVirtualScreen);
@@ -714,6 +711,13 @@ void R_DrawString(fontheader_t* font, const char* text, float x, float y, int ma
         maxlen = strlen(text);
     }
     
+    // a page's glyphs are drawn narrower than their layout width when they
+    // keep their shape on a wide virtual screen: so is the next page's start
+    fWidthScale = fGlyphScale = 1.f;
+    if (pvVirtualScreen) {
+        R_VirtualScreenScale(pvVirtualScreen, &fWidthScale, &fHeightScale, &fGlyphScale);
+    }
+
     curX = x;
     curY = y;
     curHeight = 0.f;
@@ -764,7 +768,7 @@ void R_DrawString(fontheader_t* font, const char* text, float x, float y, int ma
             buffer[buflen] = 0;
             R_DrawString_sgl(font->sgl[cursgl], buffer, curX, curY, maxlen, pvVirtualScreen);
 
-            curX += curHeight;
+            curX += curHeight * fGlyphScale / fWidthScale;
             curHeight = 0.f;
             buflen = 0;
             ct = &font->charTable[code];

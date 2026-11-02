@@ -273,13 +273,22 @@ UIFont::UIFont()
     color = UBlack;
     setColor(color);
 
-    refHandle = uii.GetRefSequence();
-    name      = "verdana-14";
+    refHandle  = uii.GetRefSequence();
+    name       = "verdana-14";
+    widthRatio = 1.0f;
 }
 
 UIFont::UIFont(const char *fn)
 {
     setFont(fn);
+    widthRatio = 1.0f;
+}
+
+void UIFont::setVirtualScale(const float *virtualScale)
+{
+    // the renderer scales glyphs across no more than down: on a wide screen,
+    // text is narrower than its 640x480 layout width
+    widthRatio = virtualScale[0] > virtualScale[1] ? virtualScale[1] / virtualScale[0] : 1.0f;
 }
 
 void UIFont::setColor(UColor col)
@@ -321,7 +330,8 @@ void UIFont::PrintJustified(
 )
 {
     float       newx, newy;
-    int         textwidth, textheight;
+    float       textwidth;
+    int         textheight;
     UIRect2D    sizedRect;
     const char *source;
     char       *dest;
@@ -413,7 +423,8 @@ void UIFont::PrintOutlinedJustified(
 )
 {
     float       newx, newy;
-    int         textwidth, textheight;
+    float       textwidth;
+    int         textheight;
     UIRect2D    sizedRect;
     const char *source;
     char       *dest;
@@ -534,7 +545,7 @@ int UIFont::getMaxWidthIndex(const char *text, int maxlen)
     return UI_FontStringMaxWidth(m_font, text, maxlen);
 }
 
-int UIFont::getWidth(const char *text, int maxlen)
+float UIFont::getWidth(const char *text, int maxlen)
 {
     CheckRefreshFont();
 
@@ -542,10 +553,10 @@ int UIFont::getWidth(const char *text, int maxlen)
         return 0;
     }
 
-    return UI_FontStringWidth(m_font, text, maxlen);
+    return UI_FontStringWidth(m_font, text, maxlen) * widthRatio;
 }
 
-int UIFont::getCharWidth(unsigned short ch)
+float UIFont::getCharWidth(unsigned short ch)
 {
     int   index;
     int   indirected;
@@ -579,7 +590,7 @@ int UIFont::getCharWidth(unsigned short ch)
         index = 0;
     }
 
-    return m_font->sgl[index]->locations[indirected].size[0] * 256.0 * widthMul;
+    return m_font->sgl[index]->locations[indirected].size[0] * 256.0 * widthMul * widthRatio;
 }
 
 int UIFont::getHeight(const char *text, int maxlen, const float *virtualScale)

@@ -204,7 +204,7 @@ void UIMultiLineEdit::Draw(void)
     for (i = m_vertscroll->getTopItem(), aty = 0; m_lines.IsCurrentValid() && aty < m_frame.size.height;
          m_lines.IterateNext(), i++) {
         str& cur   = m_lines.getCurrent();
-        int  caret = 0;
+        float caret = 0;
 
         if (i < topsel->line || i > botsel->line) {
             // Print regular line without any selection or cursor present
@@ -229,7 +229,7 @@ void UIMultiLineEdit::Draw(void)
             } else if (i != topsel->line) {
                 // part of this line is selected, and selection continues/began above
                 if (i == botsel->line) {                                // sanity check, should always be true
-                    int toplen = m_font->getWidth(cur, botsel->column); // X coord of highlighting end
+                    float toplen = m_font->getWidth(cur, botsel->column); // X coord of highlighting end
                     if (toplen) {
                         // selection contains text from the beginning of the line,
                         // print it with the selection highlight box around it
@@ -257,7 +257,7 @@ void UIMultiLineEdit::Draw(void)
                 }
             } else if (i != botsel->line) {
                 // part of this line is selected, and selection continues/began below
-                int toplen = m_font->getWidth(cur, topsel->column); // X coord of highlighting start
+                float toplen = m_font->getWidth(cur, topsel->column); // X coord of highlighting start
                 if (topsel->column) { // is there any text on this line before the selection?
                     m_font->setColor(m_foreground_color);
                     m_font->Print(0, aty / getVirtualScale()[1], cur, topsel->column, getVirtualScale());
@@ -294,8 +294,8 @@ void UIMultiLineEdit::Draw(void)
                     m_font->Print(0, aty / getVirtualScale()[1], cur, -1, getVirtualScale());
                 } else {
                     // selection starts and ends on this line
-                    int toplen = m_font->getWidth(cur, topsel->column); // X coord of highlighting start
-                    int botlen = toplen
+                    float toplen = m_font->getWidth(cur, topsel->column); // X coord of highlighting start
+                    float botlen = toplen
                                + m_font->getWidth(
                                    &cur[topsel->column], botsel->column - topsel->column
                                ); // X coord of selection end

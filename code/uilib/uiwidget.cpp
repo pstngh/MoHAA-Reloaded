@@ -1933,6 +1933,10 @@ void UIWidget::Display(const UIRect2D& drawframe, float parent_alpha)
     m_local_alpha = m_alpha * parent_alpha;
     set2D();
 
+    if (m_font) {
+        m_font->setVirtualScale(getVirtualScale());
+    }
+
     col[3] = m_local_alpha;
     uii.Rend_SetColor(col);
 
