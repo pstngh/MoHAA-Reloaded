@@ -1,17 +1,21 @@
 //! MoHAA Launcher for Windows and Linux. It starts the game beside it (openmohaa.exe, openmohaa) for the game
-//! picked on the left, with the player's name, the server, the crosshair and the display set here.
+//! picked on the left, with the player's name, the server, the crosshair and the display set here. When the project's
+//! release has a newer build than that game, it offers to update the game's files (update.rs).
 
 #![windows_subsystem = "windows"]
 
 mod logic;
 mod platform;
+mod update;
 
 use crate::logic::*;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::{Duration, SystemTime};
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
 
 slint::include_modules!();
 
@@ -33,6 +37,9 @@ const CVAR_DEFAULTS: [(&str, &str); 11] = [
 /// The launcher's settings, in the game folder
 const SETTINGS_FILE: &str = "mohlauncher.json";
 
+/// Set for the launcher an update started in place of the old one: the commit it updated the game to
+const UPDATED_ENV: &str = "MOHLAUNCHER_UPDATED";
+
 const COLOR_PRESETS: [(&str, u32); 7] = [
     ("White", 0xFFFFFF),
     ("Green", 0x00FF00),
@@ -52,11 +59,26 @@ enum Dialog {
     Rename(usize),
     Remove(usize),
     CustomColor,
+    /// A newer build is out: update?
+    Update,
+    /// The update's progress, with Cancel until the files move
+    Updating,
+}
+
+/// News of an update, from the thread that checks for one or runs it
+enum UpdateEvent {
+    /// A newer build than this game's
+    Found(PathBuf, update::Update),
+    Progress(update::Stage, u64),
+    /// The files replaced or added, or what went wrong
+    Done(Result<Vec<PathBuf>, String>),
 }
 
 struct State {
     /// The launcher's settings: mohlauncher.json in the game folder
     settings: Settings,
+    /// The launcher's own file (an update may replace it) and its folder
+    own_exe: Option<PathBuf>,
     own_folder: PathBuf,
     /// The game folder chosen with the folder dialog, for this session: it's kept nowhere outside the game folder
     chosen: Option<PathBuf>,
@@ -74,6 +96,17 @@ struct State {
     /// The config last read, and when it was written: read again when it changes
     config_seen: (Option<PathBuf>, Option<SystemTime>),
     dialog: Dialog,
+    /// The game last compared with the release: once per start and game
+    update_checked: Option<PathBuf>,
+    /// A newer build than the game's, offered once nothing stands in the way
+    update: Option<update::Update>,
+    /// The update downloading or installing, and what stops it
+    updating: Option<(update::Update, Arc<update::Flags>)>,
+    /// The window was closed while the update's files were moving: it closes once they're in place
+    quit_after_update: bool,
+    /// The update threads' news (update-event says there is some)
+    events: Receiver<UpdateEvent>,
+    events_sender: Sender<UpdateEvent>,
 }
 
 fn modified(path: Option<&Path>) -> Option<SystemTime> {
@@ -83,9 +116,11 @@ fn modified(path: Option<&Path>) -> Option<SystemTime> {
 impl State {
     fn new() -> State {
         let (modes, desktop) = platform::display_sizes();
+        let (events_sender, events) = std::sync::mpsc::channel();
         let mut state = State {
             game: 0,
             settings: Settings::from_json("{}"),
+            own_exe: platform::own_exe(),
             own_folder: platform::own_folder(),
             chosen: None,
             folder: None,
@@ -98,6 +133,12 @@ impl State {
             running: false,
             config_seen: (None, None),
             dialog: Dialog::None,
+            update_checked: None,
+            update: None,
+            updating: None,
+            quit_after_update: false,
+            events,
+            events_sender,
         };
         state.find_game();
         state.load_settings();
@@ -375,6 +416,7 @@ fn show_dialog(ui: &LauncherWindow, st: &mut State, dialog: Dialog, title: &str,
     ui.set_dialog_ok(ok.into());
     ui.set_dialog_cancel(cancel.into());
     ui.set_dialog_input(false);
+    ui.set_dialog_progress(-1.0);
     ui.set_dialog_visible(true);
 }
 
@@ -387,6 +429,7 @@ fn show_input(ui: &LauncherWindow, st: &mut State, dialog: Dialog, title: &str, 
 fn close_dialog(ui: &LauncherWindow, st: &mut State) {
     st.dialog = Dialog::None;
     ui.set_dialog_visible(false);
+    ui.set_dialog_progress(-1.0);
 }
 
 fn select_game(ui: &LauncherWindow, st: &mut State, game: usize) {
@@ -492,7 +535,11 @@ fn start(ui: &LauncherWindow, state: &Shared, connect: bool) {
     }
     st.save();
 
-    let child = std::process::Command::new(&exe).args(build_args(&launch)).current_dir(&folder).spawn();
+    let child = std::process::Command::new(&exe)
+        .args(build_args(&launch))
+        .current_dir(&folder)
+        .env_remove(UPDATED_ENV)
+        .spawn();
     match child {
         Ok(mut child) => {
             st.running = true;
@@ -548,8 +595,153 @@ fn dialog_accepted(ui: &LauncherWindow, st: &mut State) {
                 show_input(ui, st, Dialog::CustomColor, "Crosshair color", text, &value, "Use");
             }
         },
-        Dialog::ChooseFolder | Dialog::Message | Dialog::None => {}
+        Dialog::ChooseFolder | Dialog::Message | Dialog::Update | Dialog::Updating | Dialog::None => {}
     }
+}
+
+/// Passes an update's news to the window's thread
+fn send(sender: &Sender<UpdateEvent>, weak: &slint::Weak<LauncherWindow>, event: UpdateEvent) {
+    if sender.send(event).is_ok() {
+        let _ = weak.upgrade_in_event_loop(|ui| ui.invoke_update_event());
+    }
+}
+
+/// Asks the release, from another thread, whether it has a newer build than the game found: once per start and game,
+/// and not while an update runs. With no network or no answer, nothing is said.
+fn check_for_update(ui: &LauncherWindow, st: &mut State) {
+    let Some(exe) = st.exe.clone() else { return };
+    if st.updating.is_some() || st.update_checked.as_ref() == Some(&exe) {
+        return;
+    }
+    st.update_checked = Some(exe.clone());
+    st.update = None;
+    if let Some(folder) = exe.parent() {
+        update::clean_up(folder);
+    }
+    let (sender, weak) = (st.events_sender.clone(), ui.as_weak());
+    std::thread::spawn(move || {
+        if let Ok(Some(found)) = update::check(&exe) {
+            send(&sender, &weak, UpdateEvent::Found(exe, found));
+        }
+    });
+}
+
+fn short(commit: &str) -> &str {
+    commit.get(..8).unwrap_or(commit)
+}
+
+/// The newer build found, offered when nothing stands in the way: no other question open, and the game not running
+fn offer_update(ui: &LauncherWindow, st: &mut State) {
+    if st.dialog != Dialog::None || st.running || st.updating.is_some() {
+        return;
+    }
+    let (Some(_), Some(exe)) = (&st.update, &st.exe) else { return };
+    if platform::is_running(exe) {
+        return;
+    }
+    let text = "A newer version of MoHAA Reloaded is out. Update now?";
+    show_dialog(ui, st, Dialog::Update, "Update available", text, "Update", "Not now");
+}
+
+/// Yes to the update: it downloads and installs on another thread, the dialog shows how far it has got
+fn start_update(ui: &LauncherWindow, st: &mut State) {
+    let (Some(found), Some(exe)) = (st.update.take(), st.exe.clone()) else { return };
+    if platform::is_running(&exe) {
+        let text =
+            format!("{} is running: once it has quit, MoHAA Launcher offers the update again.", platform::GAME_EXE);
+        st.update = Some(found);
+        show_dialog(ui, st, Dialog::Message, "Close the game first", &text, "OK", "");
+        return;
+    }
+    let flags = Arc::new(update::Flags::default());
+    st.updating = Some((found.clone(), flags.clone()));
+    show_dialog(ui, st, Dialog::Updating, "Updating", &format!("Downloading {}\u{2026}", found.asset), "", "Cancel");
+    ui.set_dialog_progress(0.0);
+    let (sender, weak) = (st.events_sender.clone(), ui.as_weak());
+    std::thread::spawn(move || {
+        // the bar moves a few times a second
+        let mut shown: Option<Instant> = None;
+        let mut report = |stage: update::Stage, done: u64| {
+            if stage != update::Stage::Download || shown.is_none_or(|t| t.elapsed() >= Duration::from_millis(100)) {
+                shown = Some(Instant::now());
+                send(&sender, &weak, UpdateEvent::Progress(stage, done));
+            }
+        };
+        let result = update::run(&found, &exe, &flags, &mut report);
+        send(&sender, &weak, UpdateEvent::Done(result));
+    });
+}
+
+fn show_update_progress(ui: &LauncherWindow, st: &State, stage: update::Stage, done: u64) {
+    let Some((found, flags)) = &st.updating else { return };
+    // after Cancel, only the files moving (it came too late) is news
+    if st.dialog != Dialog::Updating || (flags.stopped() && stage != update::Stage::Install) {
+        return;
+    }
+    let mb = |bytes: u64| bytes as f64 / 1e6;
+    match stage {
+        update::Stage::Download => {
+            let text = format!("Downloading {}: {:.1} of {:.1} MB", found.asset, mb(done), mb(found.size));
+            ui.set_dialog_text(text.into());
+            ui.set_dialog_progress((done as f64 / found.size.max(1) as f64) as f32);
+        }
+        update::Stage::Unpack => {
+            ui.set_dialog_text(format!("Unpacking {}\u{2026}", found.asset).into());
+            ui.set_dialog_progress(1.0);
+        }
+        update::Stage::Install => {
+            ui.set_dialog_text("Putting the new files in place\u{2026}".into());
+            ui.set_dialog_cancel("".into());
+        }
+    }
+}
+
+/// Cancel: the update stops and the dialog closes when it has, unless its files are moving already
+fn cancel_update(ui: &LauncherWindow, st: &State) {
+    let Some((_, flags)) = &st.updating else { return };
+    let text = if flags.stop() { "Cancelling\u{2026}" } else { "Putting the new files in place\u{2026}" };
+    ui.set_dialog_text(text.into());
+    ui.set_dialog_cancel("".into());
+}
+
+/// The update ended. If it replaced MoHAA Launcher itself, the new one starts in its place and says so; otherwise
+/// this one does.
+fn finish_update(ui: &LauncherWindow, st: &mut State, result: Result<Vec<PathBuf>, String>) {
+    let Some((found, _)) = st.updating.take() else { return };
+    close_dialog(ui, st);
+    if std::mem::take(&mut st.quit_after_update) {
+        let _ = slint::quit_event_loop(); // the window was closed while the files moved
+        return;
+    }
+    match result {
+        Ok(changed) => {
+            let folder = st.exe.as_ref().and_then(|exe| exe.parent()).map(Path::to_path_buf);
+            st.find_game();
+            st.update_checked = st.exe.clone(); // the release's build now
+            let replaced_self = st.own_exe.as_ref().is_some_and(|own| {
+                folder.as_ref().and_then(|f| f.canonicalize().ok()) == own.parent().and_then(|p| p.canonicalize().ok())
+                    && own.file_name().is_some_and(|name| changed.iter().any(|c| c.as_os_str() == name))
+            });
+            if let (true, Some(own)) = (replaced_self, &st.own_exe) {
+                let started = std::process::Command::new(own)
+                    .args(std::env::args_os().skip(1))
+                    .env(UPDATED_ENV, &found.commit)
+                    .spawn();
+                if started.is_ok() {
+                    let _ = slint::quit_event_loop();
+                    return;
+                }
+            }
+            show_dialog(ui, st, Dialog::Message, "Updated", &updated_text(&found.commit), "OK", "");
+        }
+        Err(error) if error == update::CANCELLED => {}
+        Err(error) => show_dialog(ui, st, Dialog::Message, "The update didn't finish", &error, "OK", ""),
+    }
+    show_status(ui, st);
+}
+
+fn updated_text(commit: &str) -> String {
+    format!("MoHAA Reloaded is up to date: the game's files are the newest build's, {}.", short(commit))
 }
 
 fn main() -> Result<(), slint::PlatformError> {
@@ -562,7 +754,11 @@ fn main() -> Result<(), slint::PlatformError> {
         // no game data beside the launcher or in the current folder: ask where it is
         if st.folder.is_none() {
             ask_for_folder(&ui, &mut st, "Where is MOHAA?", FIND_GAME_TEXT);
+        } else if let Some(commit) = std::env::var_os(UPDATED_ENV) {
+            // started by the update that replaced the launcher before it
+            show_dialog(&ui, &mut st, Dialog::Message, "Updated", &updated_text(&commit.to_string_lossy()), "OK", "");
         }
+        check_for_update(&ui, &mut st);
     }
 
     // Wires a callback to a closure that gets the window and the state, borrowed (`st`) or not (`shared`: for
@@ -708,19 +904,59 @@ fn main() -> Result<(), slint::PlatformError> {
     on!(on_connect, shared |ui, state| { start(&ui, &state, true) });
     on!(on_dialog_cancelled, |ui, st| {
         let dialog = st.dialog;
+        if dialog == Dialog::Updating {
+            cancel_update(&ui, &st);
+            return;
+        }
         close_dialog(&ui, &mut st);
-        if dialog == Dialog::CustomColor {
-            show_crosshair(&ui, &st); // the color menu shows the color it had
+        match dialog {
+            Dialog::CustomColor => show_crosshair(&ui, &st), // the color menu shows the color it had
+            Dialog::Update => st.update = None,              // asked again at the next start
+            _ => {}
         }
     });
     on!(on_dialog_accepted, shared |ui, state| {
-        if state.borrow().dialog == Dialog::ChooseFolder {
-            close_dialog(&ui, &mut state.borrow_mut());
-            choose_folder(&ui, &state);
-        } else {
-            dialog_accepted(&ui, &mut state.borrow_mut());
+        let dialog = state.borrow().dialog;
+        match dialog {
+            Dialog::ChooseFolder => {
+                close_dialog(&ui, &mut state.borrow_mut());
+                choose_folder(&ui, &state);
+            }
+            Dialog::Update => {
+                let mut st = state.borrow_mut();
+                close_dialog(&ui, &mut st);
+                start_update(&ui, &mut st);
+            }
+            Dialog::Updating => {} // its only button is Cancel
+            _ => dialog_accepted(&ui, &mut state.borrow_mut()),
         }
     });
+    on!(on_update_event, |ui, st| {
+        while let Ok(event) = st.events.try_recv() {
+            match event {
+                UpdateEvent::Found(exe, found) => {
+                    if st.exe.as_ref() == Some(&exe) && st.updating.is_none() {
+                        st.update = Some(found);
+                        offer_update(&ui, &mut st);
+                    }
+                }
+                UpdateEvent::Progress(stage, done) => show_update_progress(&ui, &st, stage, done),
+                UpdateEvent::Done(result) => finish_update(&ui, &mut st, result),
+            }
+        }
+    });
+    // closing the window stops an update, unless its files are moving: then it closes once they're in place
+    {
+        let state = state.clone();
+        ui.window().on_close_requested(move || {
+            let Ok(mut st) = state.try_borrow_mut() else { return slint::CloseRequestResponse::HideWindow };
+            if st.updating.as_ref().is_some_and(|(_, flags)| !flags.stop()) {
+                st.quit_after_update = true;
+                return slint::CloseRequestResponse::KeepWindowShown;
+            }
+            slint::CloseRequestResponse::HideWindow
+        });
+    }
     on!(on_game_exited, |ui, st| {
         st.running = false;
         // the game saved its config: show what it holds now
@@ -737,7 +973,8 @@ fn main() -> Result<(), slint::PlatformError> {
         timer.start(slint::TimerMode::Repeated, Duration::from_millis(1500), move || {
             let Some(ui) = weak.upgrade() else { return };
             let Ok(mut st) = state.try_borrow_mut() else { return };
-            if st.running {
+            // an update's files may be moving
+            if st.running || st.updating.is_some() {
                 return;
             }
             if st.find_game() {
@@ -751,6 +988,9 @@ fn main() -> Result<(), slint::PlatformError> {
                 st.reload_config();
                 show_cvars(&ui, &mut st);
             }
+            // a game found now, and an update the game or a question held back
+            check_for_update(&ui, &mut st);
+            offer_update(&ui, &mut st);
             show_status(&ui, &st);
         });
     }

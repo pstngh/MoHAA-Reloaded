@@ -35,13 +35,32 @@ pub fn engine_homes() -> Vec<PathBuf> {
     homes
 }
 
-/// The folder the launcher is in: the game folder, if the game is beside it (links resolved, as a plain path)
+/// The launcher's own file (links resolved, as a plain path), as it was when it started
+pub fn own_exe() -> Option<PathBuf> {
+    std::env::current_exe().ok().map(|exe| exe.canonicalize().ok().map(|exe| plain_path(&exe)).unwrap_or(exe))
+}
+
+/// The folder the launcher is in: the game folder, if the game is beside it
 pub fn own_folder() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.canonicalize().ok().map(|exe| plain_path(&exe)).or(Some(exe)))
-        .and_then(|exe| exe.parent().map(Path::to_path_buf))
-        .unwrap_or_else(|| PathBuf::from("."))
+    own_exe().and_then(|exe| exe.parent().map(Path::to_path_buf)).unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// A program running from this file (the game, whose files an update would replace): a process of the player's whose
+/// program it is
+#[cfg(not(windows))]
+pub fn is_running(exe: &Path) -> bool {
+    let Ok(exe) = exe.canonicalize() else { return false };
+    let Ok(processes) = std::fs::read_dir("/proc") else { return false };
+    processes.flatten().any(|p| std::fs::read_link(p.path().join("exe")).is_ok_and(|program| program == exe))
+}
+
+/// A program running from this file (the game, whose files an update would replace): Windows doesn't let a running
+/// program's file be opened for writing (nothing is written)
+#[cfg(windows)]
+pub fn is_running(exe: &Path) -> bool {
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    let opened = std::fs::OpenOptions::new().write(true).open(exe);
+    matches!(opened, Err(e) if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION))
 }
 
 /// A data folder (main, mainta, maintt), in any case: retail folders sometimes come as MAIN or MainTA

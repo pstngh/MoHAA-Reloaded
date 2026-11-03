@@ -4,7 +4,7 @@
 //
 // One spacing system throughout (Theme): every field is a block of a label over its control (label-gap apart),
 // and blocks, cards and sections are `gap` apart, with `gap` of padding inside each card and around the window.
-import { Button, LineEdit, SpinBox, ComboBox, ListView, Palette } from "std-widgets.slint";
+import { Button, LineEdit, SpinBox, ComboBox, ListView, Palette, ProgressIndicator } from "std-widgets.slint";
 
 export struct ServerItem {
     name: string,
@@ -384,8 +384,9 @@ export component LauncherWindow inherits Window {
     in property <string> dialog-text;
     in property <bool> dialog-input;
     in-out property <string> dialog-value;
-    in property <string> dialog-ok: "OK";
-    in property <string> dialog-cancel;
+    in property <string> dialog-ok: "OK";     // none: no OK button (Enter does nothing)
+    in property <string> dialog-cancel;       // none: no Cancel button (Esc does what OK does)
+    in property <float> dialog-progress: -1;  // a bar under the text, 0 to 1; none when negative
 
     callback select-game(int);
     callback name-edited(string);
@@ -414,6 +415,8 @@ export component LauncherWindow inherits Window {
     callback dialog-cancelled();
     // the game quit (from the thread that waited for it)
     callback game-exited();
+    // news of an update (from the thread that checks for one, downloads and installs it)
+    callback update-event();
 
     main-layout := VerticalLayout {
         padding: Theme.gap;
@@ -789,6 +792,9 @@ export component LauncherWindow inherits Window {
                         wrap: word-wrap;
                         color: Palette.foreground;
                     }
+                    if root.dialog-progress >= 0: ProgressIndicator {
+                        progress: root.dialog-progress;
+                    }
                     if root.dialog-input: LineEdit {
                         text <=> root.dialog-value;
                         accepted(text) => { root.dialog-accepted(); }
@@ -801,7 +807,7 @@ export component LauncherWindow inherits Window {
                             text: root.dialog-cancel;
                             clicked => { root.dialog-cancelled(); }
                         }
-                        Button {
+                        if root.dialog-ok != "": Button {
                             text: root.dialog-ok;
                             primary: true;
                             clicked => { root.dialog-accepted(); }

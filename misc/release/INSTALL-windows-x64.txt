@@ -27,7 +27,8 @@ Install
    main menu (Single player) or onto a server (Connect), with your name, the server's passwords, the
    crosshair, and the resolution and display mode. The servers you join are kept in its list.
    launch_openmohaa_base.exe (Allied Assault), launch_openmohaa_spearhead.exe and
-   launch_openmohaa_breakthrough.exe start the game directly too.
+   launch_openmohaa_breakthrough.exe start the game directly too. When a newer build is out, MoHAA
+   Launcher offers to update: Update downloads it and replaces the files that changed.
 
 Started from MoHAA Launcher, configs, saves, screenshots, demos and logs go into the game folder, the
 launcher's mohlauncher.json (your servers and their passwords) too: it writes nowhere else, and a

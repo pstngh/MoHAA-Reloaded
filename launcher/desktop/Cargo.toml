@@ -14,6 +14,14 @@ slint = { version = "~1.18", default-features = false, features = ["std", "compa
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rfd = "0.17"
+# updates (src/update.rs): the release over HTTPS with rustls, its own crypto (ring, also the downloads' SHA-256) and
+# Mozilla's root certificates built in, so no OpenSSL or system TLS library; the Linux tarball and the Windows zip
+# (both readers on both systems, so that `cargo test` checks each)
+ureq = { version = "3.5", default-features = false, features = ["rustls"] }
+ring = "0.17"
+flate2 = "1"
+tar = { version = "0.4", default-features = false }
+zip = { version = "7", default-features = false, features = ["deflate-flate2"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

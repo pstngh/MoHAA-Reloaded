@@ -32,7 +32,8 @@ Install
    menu (Single player) or onto a server (Connect), with your name, the server's passwords, the
    crosshair, and the resolution and display mode. The servers you join are kept in its list.
    launch_openmohaa_base (Allied Assault), launch_openmohaa_spearhead and
-   launch_openmohaa_breakthrough start the game directly too.
+   launch_openmohaa_breakthrough start the game directly too. When a newer build is out, MoHAA
+   Launcher offers to update: Update downloads it and replaces the files that changed.
 
 To leave the game folder as it is, start the game from this folder instead:
 
