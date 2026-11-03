@@ -1040,10 +1040,10 @@ semaphore; the fences of the presents to one swapchain signal in present
 order, so a retired swapchain and its semaphores are destroyed once the
 fence of its last present has signaled (checked after every frame's present,
 waited for at shutdown). Without the extension they are destroyed when they
-are retired: that always follows a vkDeviceWaitIdle after their last
-present, and vkQueueWaitIdle waits for the queue operations of presents too
-(the semaphore waits; Vulkan specification, vkQueueWaitIdle and
-vkQueuePresentKHR).
+are retired: that always follows a vkQueueWaitIdle of vk.queue after their
+last present (VK_WaitForSwapchainUse), which waits for the queue operations
+of presents too (the semaphore waits; Vulkan specification, vkQueueWaitIdle
+and vkQueuePresentKHR).
 
 Nothing here waits between a frame's input and its present: the fence of
 the next present is chosen and reset right after a present
@@ -1163,7 +1163,7 @@ static qboolean VK_RetiredSwapchainDone( const vkRetiredSwapchain_t *retired, qb
 	vkPresentFence_t *slot;
 	VkResult result;
 
-	// without present fences a vkDeviceWaitIdle came after its last present
+	// without present fences vk.queue was waited for after its last present
 	if ( !vk.presentFences || retired->lastFence < 0 ) {
 		return qtrue;
 	}
@@ -1220,8 +1220,8 @@ void VK_DestroyRetiredSwapchains( qboolean wait ) {
 VK_RetireSwapchain
 
 The swapchain is replaced or destroyed, and nothing will be presented to
-it; the caller waited for the device after its last present and released
-its held image
+it; the caller waited for vk.queue after its last present
+(VK_WaitForSwapchainUse) and released its held image
 ===============
 */
 static void VK_RetireSwapchain( VkSwapchainKHR swapchain ) {
@@ -1243,7 +1243,7 @@ static void VK_RetireSwapchain( VkSwapchainKHR swapchain ) {
 	vk.numPresentSemaphores = 0;
 	vk.lastPresentFence = -1;
 
-	// usually done already: the device was waited for
+	// usually done already: the queue was waited for
 	VK_DestroyRetiredSwapchains( qfalse );
 }
 
@@ -1278,6 +1278,28 @@ void VK_DestroyPresentFences( void ) {
 	vk.numPresentFences = 0;
 	vk.nextPresentFence = -1;
 	vk.presentFenceScan = 0;
+}
+
+/*
+===============
+VK_WaitForSwapchainUse
+
+Before the swapchain is replaced or destroyed. Only vk.queue draws into,
+copies to and presents its images, so only that queue is waited for, not
+the device: in the middle of a frame (VK_SubmitPresentCopy) the compute
+queue's ambient occlusion of that frame (r_aoAsync, vk_temporal.c) waits for
+the frame's graphics submission, which comes after this, and a wait for the
+device would never return. The queue is locked: the submit thread may use
+it (no lock without the thread).
+===============
+*/
+static VkResult VK_WaitForSwapchainUse( void ) {
+	VkResult result;
+
+	VK_LockSubmitQueue();
+	result = qvkQueueWaitIdle( vk.queue );
+	VK_UnlockSubmitQueue();
+	return result;
 }
 
 /*
@@ -1394,7 +1416,7 @@ void VK_CreateSwapchain( void ) {
 	// nothing may use the old swapchain while it's replaced
 	if ( oldSwapchain ) {
 		VK_ReleaseHeldImage();
-		VK_CHECK( qvkDeviceWaitIdle( vk.device ) );
+		VK_CHECK( VK_WaitForSwapchainUse() );
 		VK_DestroySwapchainTargets();
 	}
 
@@ -1447,7 +1469,7 @@ void VK_DestroySwapchain( void ) {
 		VK_ReleaseHeldImage();
 		// no VK_CHECK: also called by vk_shutdown, which can follow a lost
 		// device, and a second fatal error would skip the window shutdown
-		qvkDeviceWaitIdle( vk.device );
+		VK_WaitForSwapchainUse();
 		VK_DestroySwapchainTargets();
 		VK_RetireSwapchain( vk.swapchain );
 		vk.swapchain = VK_NULL_HANDLE;
