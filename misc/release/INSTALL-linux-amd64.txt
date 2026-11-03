@@ -5,7 +5,7 @@ A Vulkan port of OpenMoHAA for 64-bit Linux PCs (x86-64). It plays Medal of Hono
 Spearhead and Breakthrough on existing MOHAA and OpenMoHAA servers. The game data is not included:
 you need your own retail copy.
 
-https://github.com/pstngh/MoHAA-Reloaded/tree/vulkan
+https://github.com/fortemoh/MoHAA-Reloaded/tree/vulkan
 
 Needs a GPU with a Vulkan 1.1 driver (Mesa's RADV, ANV or NVK, or NVIDIA's driver), glibc 2.34 or
 later (Ubuntu 22.04, Debian 12, Fedora 35 or later), and PulseAudio, PipeWire or ALSA for the sound.
@@ -23,7 +23,7 @@ Install
 
 2. Find your MOHAA game folder: the folder that holds main/ (Pak0.pk3 to Pak6.pk3), plus mainta/ for
    Spearhead and maintt/ for Breakthrough. From the GOG installer you can get it with innoextract:
-   https://github.com/pstngh/MoHAA-Reloaded/blob/vulkan/docs/markdown/01-intro/01-installation.md#linux-and-macos-users
+   https://github.com/fortemoh/MoHAA-Reloaded/blob/vulkan/docs/markdown/01-intro/01-installation.md#linux-and-macos-users
 
 3. Copy everything in this folder into the game folder, next to main/. This folder's main/ only holds
    the headphone sound set (main/sound/prom/hrtf/): let it merge into the game's main/.
@@ -46,7 +46,7 @@ config kept in ~/.config/openmohaa/ is copied over once. Started otherwise, conf
 OpenMoHAA. The settings that matter for this port (cl_movefps, cl_movesubgrid,
 com_maxfps, r_fastSync, r_vkSubmitThread, the crosshair, s_speaker_type for headphones) are
 described in the README:
-https://github.com/pstngh/MoHAA-Reloaded/tree/vulkan#settings-that-matter-here
+https://github.com/fortemoh/MoHAA-Reloaded/tree/vulkan#settings-that-matter-here
 
 Without a Vulkan driver the game stops and says so. There is no OpenGL renderer any more.
 
@@ -63,5 +63,5 @@ MoHAA Launcher (mohlauncher, built with Slint) is free software under the GNU Ge
 version 3 or later (licenses/mohlauncher/COPYING); its source is launcher/desktop.
 
 Built from commit @COMMIT@ of
-https://github.com/pstngh/MoHAA-Reloaded (the full source code of this build) by its CI, with SDL
+https://github.com/fortemoh/MoHAA-Reloaded (the full source code of this build) by its CI, with SDL
 3.4.18, curl 8.12.1 and wolfSSL 5.7.6 from their own repositories.

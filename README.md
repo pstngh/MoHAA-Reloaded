@@ -4,11 +4,11 @@
 
 | Branch | Renderer | Status |
 |---|---|---|
-| `metal` | Metal, macOS on Apple Silicon | [Released](https://github.com/pstngh/MoHAA-Reloaded/releases) |
-| **`vulkan`** (this one) | Vulkan, Linux and Windows | [Released](https://github.com/pstngh/MoHAA-Reloaded/releases/tag/v1.0.0) |
+| `metal` | Metal, macOS on Apple Silicon | [Released](https://github.com/fortemoh/MoHAA-Reloaded/releases) |
+| **`vulkan`** (this one) | Vulkan, Linux and Windows | [Released](https://github.com/fortemoh/MoHAA-Reloaded/releases/tag/v1.0.0) |
 
 > [!IMPORTANT]
-> **This is a fork, not the upstream project.** Problems with this port belong on [this repository's tracker](https://github.com/pstngh/MoHAA-Reloaded/issues) (say which branch: `metal` or `vulkan`), not upstream's tracker or Discord.
+> **This is a fork, not the upstream project.** Problems with this port belong on [this repository's tracker](https://github.com/fortemoh/MoHAA-Reloaded/issues) (say which branch: `metal` or `vulkan`), not upstream's tracker or Discord.
 
 - **Vulkan, drawn its own way.** `renderer_vulkan` starts from upstream's GL1 renderer with every OpenGL call replaced, then redesigned: the world and the static models are uploaded once per map and drawn from GPU memory, soldiers are skinned and lit in the vertex shader, dynamic lights are per pixel, and a map's pipelines are built while it loads, so nothing stalls the first time it is drawn. Vulkan is loaded at run time, and no OpenGL is left: upstream's GL1 and GL2 renderers are gone from the code, the build and the downloads.
 - **Low input latency.** Frames are drawn straight into the swapchain image, with at most two frames in flight and nothing drawn from older input: from reading the input to the present takes 0.47 and 0.83 ms (medians) in two real matches at 1920x1080 uncapped, against 0.66 and 1.31 with upstream's GL1 renderer.
@@ -22,7 +22,7 @@ Needs a GPU with a Vulkan 1.1 driver (on Linux Mesa's RADV, ANV or NVK, or NVIDI
 
 ## Install
 
-1. Download `openmohaa-vulkan-1.0.0-linux-amd64.tar.gz` (64-bit Linux) or `openmohaa-vulkan-1.0.0-windows-x64.zip` (64-bit Windows) from [Releases](https://github.com/pstngh/MoHAA-Reloaded/releases/tag/v1.0.0) and extract it (`tar xf openmohaa-vulkan-1.0.0-linux-amd64.tar.gz`; on Windows, right-click and Extract All).
+1. Download `openmohaa-vulkan-1.0.0-linux-amd64.tar.gz` (64-bit Linux) or `openmohaa-vulkan-1.0.0-windows-x64.zip` (64-bit Windows) from [Releases](https://github.com/fortemoh/MoHAA-Reloaded/releases/tag/v1.0.0) and extract it (`tar xf openmohaa-vulkan-1.0.0-linux-amd64.tar.gz`; on Windows, right-click and Extract All).
 2. Find your MOHAA game folder: the folder with `main/` (`Pak0.pk3` to `Pak6.pk3`; `mainta/` and `maintt/` for the expansions). Upstream's [installation guide](docs/markdown/01-intro/01-installation.md#linux-and-macos-users) shows how to get it from the GOG installer.
 3. Copy everything in the extracted folder into the game folder, next to `main/` (its own `main/` only holds the headphone sound set: let it merge), and start `mohlauncher` (`mohlauncher.exe` on Windows): [MoHAA Launcher](#mohaa-launcher). `launch_openmohaa_base` (or `launch_openmohaa_spearhead`, `launch_openmohaa_breakthrough`; `.exe` on Windows) start a game directly.
 
@@ -34,13 +34,13 @@ On Linux you can also leave the game folder as it is and start the game from the
 
 - **Servers:** the address, the server's password and the RCON password. The servers you join are kept in a list (**Bookmark** keeps one without joining), Forte FFA built into Allied Assault's.
 - **Settings:** your name, the crosshair (with a preview), the resolution and the display mode, and Discord presence (`cl_discordPresence`, off unless you turn it on). Only what you change in the launcher goes to the game, so what you change in the game stays.
-- **Updates:** at each start it asks GitHub whether [the release](https://github.com/pstngh/MoHAA-Reloaded/releases/latest) has a newer build than the game beside it (by the commit in the game's version). If so, it offers to update: **Update** downloads it, checks its SHA-256, and puts the files that changed in place of the old ones, putting the old ones back if one can't be replaced; your settings, configs and saves aren't in the download, so they stay. It waits while the game is running, and starts again if the update replaced it. A build of your own (a commit GitHub doesn't have, or one with changes the release lacks) is never offered one.
+- **Updates:** at each start it asks GitHub whether [the release](https://github.com/fortemoh/MoHAA-Reloaded/releases/latest) has a newer build than the game beside it (by the commit in the game's version). If so, it offers to update: **Update** downloads it, checks its SHA-256, and puts the files that changed in place of the old ones, putting the old ones back if one can't be replaced; your settings, configs and saves aren't in the download, so they stay. It waits while the game is running, and starts again if the update replaced it. A build of your own (a commit GitHub doesn't have, or one with changes the release lacks) is never offered one.
 - **Portable:** it writes only into the game folder. `mohlauncher.json` holds the servers and their passwords; the game is started with its home there (`fs_homepath`), so its configs, saves, screenshots, demos and logs go there too. A config an earlier start kept in `~/.config/openmohaa/` or `%APPDATA%\openmohaa\` is copied over once.
 - It finds the game folder by its `main/Pak0.pk3`, beside it or in the current folder, and asks for it otherwise. It needs nothing installed (on Linux, fontconfig and X11 or Wayland, as any desktop has).
 
 Its source is [`launcher/desktop`](launcher/desktop) (Rust and Slint: `cargo build --release` there); CI builds it with the game.
 
-Builds of newer commits come from [CI on this branch](https://github.com/pstngh/MoHAA-Reloaded/actions/workflows/branches-build.yml?query=branch%3Avulkan) (`out-linux-amd64`, `out-windows-x64`; needs a GitHub login, kept for a few days), or build it yourself (below).
+Builds of newer commits come from [CI on this branch](https://github.com/fortemoh/MoHAA-Reloaded/actions/workflows/branches-build.yml?query=branch%3Avulkan) (`out-linux-amd64`, `out-windows-x64`; needs a GitHub login, kept for a few days), or build it yourself (below).
 
 ## Settings that matter here
 
@@ -51,7 +51,7 @@ seta com_maxfps 250
 seta r_fullscreen 1
 ```
 
-Change settings in the console (`seta name value`) or at launch (`+set name value`). Latched settings take effect after `vid_restart` (sound settings after `snd_restart`). Both ports' settings side by side: [the settings guide](https://github.com/pstngh/MoHAA-Reloaded#settings-guide).
+Change settings in the console (`seta name value`) or at launch (`+set name value`). Latched settings take effect after `vid_restart` (sound settings after `snd_restart`). Both ports' settings side by side: [the settings guide](https://github.com/fortemoh/MoHAA-Reloaded#settings-guide).
 
 **Added by this port:**
 
@@ -84,7 +84,7 @@ Configs saved by earlier builds keep the values they hold: a saved `com_maxfps 8
 ## Online
 
 - The server side is upstream's: this client plays on stock MOHAA and OpenMoHAA servers.
-- Backpedal and strafe move at the original game's speeds (upstream OpenMoHAA's are 25% and 18% faster), in this client's prediction and on a server it hosts. Your movement then matches stock MOHAA servers and servers with the same fix ([openmohaa-server](https://github.com/pstngh/openmohaa-server)); on an upstream OpenMoHAA server, the server corrects you slightly while you backpedal or strafe, until upstream changes too.
+- Backpedal and strafe move at the original game's speeds (upstream OpenMoHAA's are 25% and 18% faster), in this client's prediction and on a server it hosts. Your movement then matches stock MOHAA servers and servers with the same fix ([openmohaa-server](https://github.com/fortemoh/openmohaa-server)); on an upstream OpenMoHAA server, the server corrects you slightly while you backpedal or strafe, until upstream changes too.
 - A player's top speed is truncated as MOHAA 1.11 does it, on a server this build hosts: at the default `sv_dmspeedmult 1.1` an SMG runs at 262 (upstream OpenMoHAA: 264) and a rifle at 257 (258); other weapons are unchanged. It isn't a setting. On other servers your speed is theirs.
 - A server receives `cl_movefps` commands a second (100 by default), each exactly one step long, as from a stock client at that frame rate (at `cl_movefps 0`, one per frame). A shot or a jump in the first half of a step splits that step in two (`cl_movesubgrid`: 5 + 5 ms at 100, the steps of a stock client at 200 frames a second), one more command and packet for it.
 

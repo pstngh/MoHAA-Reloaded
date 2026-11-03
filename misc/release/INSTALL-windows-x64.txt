@@ -5,7 +5,7 @@ A Vulkan port of OpenMoHAA for 64-bit Windows (x64). It plays Medal of Honor: Al
 Spearhead and Breakthrough on existing MOHAA and OpenMoHAA servers. The game data is not included:
 you need your own retail copy.
 
-https://github.com/pstngh/MoHAA-Reloaded/tree/vulkan
+https://github.com/fortemoh/MoHAA-Reloaded/tree/vulkan
 
 Needs Windows 10 or 11 (64-bit), a GPU whose driver has Vulkan 1.1 (any current AMD, NVIDIA or Intel
 driver), and the Microsoft Visual C++ 2015-2022 Redistributable (x64), which most PCs with games
@@ -36,7 +36,7 @@ config kept in %APPDATA%\openmohaa\ is copied over once. Started otherwise, conf
 screenshots and demos go to %APPDATA%\openmohaa\, as with upstream's OpenMoHAA. The settings that
 matter for this port (cl_movefps, cl_movesubgrid, com_maxfps, r_fastSync,
 r_vkSubmitThread, the crosshair, s_speaker_type for headphones) are described in the README:
-https://github.com/pstngh/MoHAA-Reloaded/tree/vulkan#settings-that-matter-here
+https://github.com/fortemoh/MoHAA-Reloaded/tree/vulkan#settings-that-matter-here
 
 Without a Vulkan driver the game stops and says so. There is no OpenGL renderer any more.
 
@@ -53,5 +53,5 @@ MoHAA Launcher (mohlauncher.exe, built with Slint) is free software under the GN
 License, version 3 or later (licenses\mohlauncher\COPYING); its source is launcher\desktop.
 
 Built from commit @COMMIT@ of
-https://github.com/pstngh/MoHAA-Reloaded (the full source code of this build) by its CI, with SDL
+https://github.com/fortemoh/MoHAA-Reloaded (the full source code of this build) by its CI, with SDL
 3.4.18 and curl 8.12.1 from their own repositories.

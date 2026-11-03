@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The repository whose latest release has the downloads
-pub const REPO: &str = "pstngh/MoHAA-Reloaded";
+pub const REPO: &str = "fortemoh/MoHAA-Reloaded";
 
 /// This system's download on the release (its name's start and end): there are x86-64 builds only
 const ASSET: Option<(&str, &str)> = if cfg!(not(target_arch = "x86_64")) {
@@ -590,7 +590,7 @@ mod tests {
             "Built from the `metal` branch at the tagged commit.\n\
              Built by this repository's CI from commit [`aaaaaaaa`](https://github.com/x/y/commit/{}) of the `metal` branch\n\
              | `openmohaa-vulkan-1.0.0-linux-amd64.tar.gz` | 64-bit Linux |\n\
-             Built by this repository's CI from commit [`c2f07c2b`](https://github.com/pstngh/MoHAA-Reloaded/commit/{commit}) \
+             Built by this repository's CI from commit [`c2f07c2b`](https://github.com/fortemoh/MoHAA-Reloaded/commit/{commit}) \
              of the `vulkan` branch, with OpenMoHAA 0.83.0 (upstream `a2f34019`) as its base.\n\
              | File | SHA-256 |\n\
              | `openmohaa-vulkan-1.0.0-linux-amd64.tar.gz` | `EA8E48375fd9d4b1545e4a3f359c754213fa48ea60b8f87bae657a2478671876` |\n\
