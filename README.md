@@ -17,19 +17,19 @@ There are two ports, each on its own branch. This branch, `main`, holds only thi
 
 | Branch | For | Renderer | Status |
 |---|---|---|---|
-| [**`metal`**](https://github.com/pstngh/MoHAA-Reloaded/tree/metal) | macOS on Apple Silicon | Metal | [Released](https://github.com/pstngh/MoHAA-Reloaded/releases) |
-| [**`vulkan`**](https://github.com/pstngh/MoHAA-Reloaded/tree/vulkan) | 64-bit Linux and Windows | Vulkan | [Released](https://github.com/pstngh/MoHAA-Reloaded/releases) |
+| [**`metal`**](https://github.com/fortemoh/MoHAA-Reloaded/tree/metal) | macOS on Apple Silicon | Metal | [Released](https://github.com/fortemoh/MoHAA-Reloaded/releases) |
+| [**`vulkan`**](https://github.com/fortemoh/MoHAA-Reloaded/tree/vulkan) | 64-bit Linux and Windows | Vulkan | [Released](https://github.com/fortemoh/MoHAA-Reloaded/releases) |
 
-Each branch's README has its install steps, settings and limits: [`metal`](https://github.com/pstngh/MoHAA-Reloaded/blob/metal/README.md), [`vulkan`](https://github.com/pstngh/MoHAA-Reloaded/blob/vulkan/README.md).
+Each branch's README has its install steps, settings and limits: [`metal`](https://github.com/fortemoh/MoHAA-Reloaded/blob/metal/README.md), [`vulkan`](https://github.com/fortemoh/MoHAA-Reloaded/blob/vulkan/README.md).
 
 > [!IMPORTANT]
-> **This is a fork, not the upstream project.** Problems with these ports belong on [this repository's tracker](https://github.com/pstngh/MoHAA-Reloaded/issues), with the branch you play (`metal` or `vulkan`), not upstream's tracker or Discord.
+> **This is a fork, not the upstream project.** Problems with these ports belong on [this repository's tracker](https://github.com/fortemoh/MoHAA-Reloaded/issues), with the branch you play (`metal` or `vulkan`), not upstream's tracker or Discord.
 
 ## Which one
 
-- **A Mac with Apple Silicon:** `metal`. Download it from [Releases](https://github.com/pstngh/MoHAA-Reloaded/releases).
-- **A Linux PC:** `vulkan`. Download `openmohaa-vulkan-1.0.0-linux-amd64.tar.gz` from [Releases](https://github.com/pstngh/MoHAA-Reloaded/releases). Any GPU with a Vulkan 1.1 driver; developed on AMD with Mesa's RADV driver, also played on NVIDIA.
-- **Windows:** `vulkan`. Download `openmohaa-vulkan-1.0.0-windows-x64.zip` from [Releases](https://github.com/pstngh/MoHAA-Reloaded/releases).
+- **A Mac with Apple Silicon:** `metal`. Download it from [Releases](https://github.com/fortemoh/MoHAA-Reloaded/releases).
+- **A Linux PC:** `vulkan`. Download `openmohaa-vulkan-1.0.0-linux-amd64.tar.gz` from [Releases](https://github.com/fortemoh/MoHAA-Reloaded/releases). Any GPU with a Vulkan 1.1 driver; developed on AMD with Mesa's RADV driver, also played on NVIDIA.
+- **Windows:** `vulkan`. Download `openmohaa-vulkan-1.0.0-windows-x64.zip` from [Releases](https://github.com/fortemoh/MoHAA-Reloaded/releases).
 
 ## What the two share
 
@@ -132,11 +132,11 @@ seta r_fullscreen 1
 ## Getting the code
 
 ```bash
-git clone -b metal https://github.com/pstngh/MoHAA-Reloaded.git mohaa-reloaded-metal
+git clone -b metal https://github.com/fortemoh/MoHAA-Reloaded.git mohaa-reloaded-metal
 ```
 
 ```bash
-git clone -b vulkan https://github.com/pstngh/MoHAA-Reloaded.git mohaa-reloaded-vulkan
+git clone -b vulkan https://github.com/fortemoh/MoHAA-Reloaded.git mohaa-reloaded-vulkan
 ```
 
 A plain clone gives only `main`: this page.
