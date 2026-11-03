@@ -5,7 +5,7 @@ A native Metal port of OpenMoHAA for Apple Silicon Macs (M1 or later) with macOS
 Medal of Honor: Allied Assault, Spearhead and Breakthrough on existing MOHAA and OpenMoHAA servers.
 The game data is not included: you need your own retail copy.
 
-https://github.com/pstngh/MoHAA-Reloaded
+https://github.com/fortemoh/MoHAA-Reloaded
 
 
 Install
@@ -28,7 +28,7 @@ Install
 
 3. Find your MOHAA game folder: the folder that holds main/ (Pak0.pk3 to Pak6.pk3), plus mainta/ for
    Spearhead and maintt/ for Breakthrough. From the GOG installer you can get it with innoextract:
-   https://github.com/pstngh/MoHAA-Reloaded/blob/metal/docs/markdown/01-intro/01-installation.md#linux-and-macos-users
+   https://github.com/fortemoh/MoHAA-Reloaded/blob/metal/docs/markdown/01-intro/01-installation.md#linux-and-macos-users
 
 4. Copy openmohaa.app and mohlauncher.app into the game folder, next to main/. The game reads its data
    from the folder that holds the app; game.dylib and cgame.dylib are inside the app (any left beside it
@@ -58,7 +58,7 @@ main/configs/omconfig.cfg from another OpenMoHAA build: that one wins (delete it
 The game sends servers no GUID (it keeps no qkey file), as the original game's clients don't. The
 settings that matter for this port (cl_movefps, com_maxfps, the display modes, in_mouseRaw,
 m_filter) are described in the README:
-https://github.com/pstngh/MoHAA-Reloaded/blob/metal/README.md#settings-that-matter-here
+https://github.com/fortemoh/MoHAA-Reloaded/blob/metal/README.md#settings-that-matter-here
 
 
 Licenses and source
@@ -70,4 +70,4 @@ opus, opusfile, zlib, Recast & Detour). This software is based in part on the wo
 JPEG Group.
 
 Built from commit @COMMIT@ of
-https://github.com/pstngh/MoHAA-Reloaded (the full source code of this build).
+https://github.com/fortemoh/MoHAA-Reloaded (the full source code of this build).

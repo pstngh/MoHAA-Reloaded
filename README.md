@@ -4,11 +4,11 @@
 
 | Branch | Renderer | Status |
 |---|---|---|
-| **`metal`** (this one) | Metal, macOS on Apple Silicon | [Released](https://github.com/pstngh/MoHAA-Reloaded/releases) |
-| [`vulkan`](https://github.com/pstngh/MoHAA-Reloaded/tree/vulkan) | Vulkan, Linux and Windows | [Released](https://github.com/pstngh/MoHAA-Reloaded/releases) |
+| **`metal`** (this one) | Metal, macOS on Apple Silicon | [Released](https://github.com/fortemoh/MoHAA-Reloaded/releases) |
+| [`vulkan`](https://github.com/fortemoh/MoHAA-Reloaded/tree/vulkan) | Vulkan, Linux and Windows | [Released](https://github.com/fortemoh/MoHAA-Reloaded/releases) |
 
 > [!IMPORTANT]
-> **This is a fork, not the upstream project.** Problems with this port belong on [this repository's tracker](https://github.com/pstngh/MoHAA-Reloaded/issues) (say which branch: `metal` or `vulkan`), not upstream's tracker or Discord.
+> **This is a fork, not the upstream project.** Problems with this port belong on [this repository's tracker](https://github.com/fortemoh/MoHAA-Reloaded/issues) (say which branch: `metal` or `vulkan`), not upstream's tracker or Discord.
 
 - **Metal only.** Hand-written Metal shaders, no OpenGL, no translation layers (no MoltenVK, ANGLE or similar).
 - **Native macOS.** The window, keyboard and mouse are AppKit and GCMouse (raw mouse input), and the sound is the port's own mixer on Core Audio, playing MOHAA's sound as the PC original did. No SDL, no OpenAL.
@@ -21,7 +21,7 @@ Needs an Apple Silicon Mac (M1 or later) with macOS 26 or later. Developed and m
 
 ## Install
 
-1. Download `openmohaa-metal-<version>-macos-arm64.zip` from [Releases](https://github.com/pstngh/MoHAA-Reloaded/releases) and unzip it.
+1. Download `openmohaa-metal-<version>-macos-arm64.zip` from [Releases](https://github.com/fortemoh/MoHAA-Reloaded/releases) and unzip it.
 2. **Clear the quarantine, once.** The app is signed ad hoc, not notarized by Apple, so macOS refuses to run the download until you do. In Terminal, type `xattr -dr com.apple.quarantine ` (with the trailing space), drag the unzipped folder onto the window and press Return:
    ```bash
    xattr -dr com.apple.quarantine ~/Downloads/openmohaa-metal-1.0.0-macos-arm64
@@ -97,7 +97,7 @@ In exclusive fullscreen, anything animating on another display costs frames (abo
 ## Online
 
 - The server side is upstream's: this client plays on stock MOHAA and OpenMoHAA servers.
-- Backpedal and strafe move at the original game's speeds (upstream OpenMoHAA's are 25% and 18% faster), in this client's prediction and on a server it hosts. Your movement then matches stock MOHAA servers and servers with the same fix ([openmohaa-server](https://github.com/pstngh/openmohaa-server)); on an upstream OpenMoHAA server, the server corrects you slightly while you backpedal or strafe, until upstream changes too.
+- Backpedal and strafe move at the original game's speeds (upstream OpenMoHAA's are 25% and 18% faster), in this client's prediction and on a server it hosts. Your movement then matches stock MOHAA servers and servers with the same fix ([openmohaa-server](https://github.com/fortemoh/openmohaa-server)); on an upstream OpenMoHAA server, the server corrects you slightly while you backpedal or strafe, until upstream changes too.
 - A player's top speed is truncated as MOHAA 1.11 does it, on a server this build hosts: at the default `sv_dmspeedmult 1.1` an SMG runs at 262 (upstream OpenMoHAA: 264) and a rifle at 257 (258); other weapons are unchanged. It isn't a setting. On other servers your speed is theirs.
 - With `cl_movefps` on, a server receives one command per step, each exactly one step long: the steps a stock client at that rate sends on average. A shot or jump with `cl_movesubgrid` splits one step in two (4 + 4 ms at 125, as a stock client at 250 frames a second sends all the time).
 - No GUID: this client sends no `cl_guid`, as the original game's clients don't. Servers that track players by GUID see you without one.

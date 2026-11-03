@@ -53,8 +53,8 @@ final class LauncherModel: ObservableObject {
         .appendingPathComponent("openmohaa", isDirectory: true)
     /// The folder the launcher is in: the game folder, if the game's data is beside it
     nonisolated static let ownFolder = Bundle.main.bundleURL.deletingLastPathComponent()
-    nonisolated static let githubURL = URL(string: "https://github.com/pstngh/MoHAA-Reloaded")!
-    nonisolated static let discordURL = URL(string: "https://dsc.gg/ForteFFA")!
+    nonisolated static let githubURL = URL(string: "https://github.com/fortemoh/MoHAA-Reloaded")!
+    nonisolated static let discordURL = URL(string: "https://dsc.gg/fortemoh")!
 
     @Published private(set) var settings = LauncherSettings()
     @Published private(set) var game = Game.alliedAssault
