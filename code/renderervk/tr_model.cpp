@@ -156,6 +156,10 @@ void RE_FreeModels(void)
 {
     int hModel;
 
+    // r_smp: the render thread may still draw the last frame handed over,
+    // which reads these models (RB_DrawSprite)
+    R_IssuePendingRenderCommands();
+
     for (hModel = 0; hModel < tr.numModels; hModel++) {
         if (!tr.models[hModel].name[0]) {
             continue;
