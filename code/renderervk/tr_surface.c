@@ -933,8 +933,11 @@ void RB_DrawTerrainTris(terrainPatchFrame_t* f) {
 
 	// drawn from tess: the vertexes of the frame's slots from the render
 	// thread's copy of the pool (vk_terrain_shadow_slots, brought up to date
-	// by RB_TerrainPool), which the next frame's tessellation doesn't touch
-	if (f->indexes && RB_TerrainPool()) {
+	// by RB_TerrainPool), which the next frame's tessellation doesn't touch.
+	// Only the render thread keeps that copy: with r_smp 0 it stays zero
+	// (the patch would draw nothing), and the back end runs after the
+	// tessellation anyway, so the patch's own lists are right
+	if (glConfig.smpActive && f->indexes && RB_TerrainPool()) {
 		const float *shadow = vk_terrain_shadow_slots();
 
 		if (shadow) {
@@ -971,7 +974,7 @@ void RB_DrawTerrainTris(terrainPatchFrame_t* f) {
 		}
 	}
 
-	// the patch's own lists (no copy, or no pool)
+	// the patch's own lists (one thread, no copy, or no pool)
 	for (i = p->iVertHead; i; i = g_pVert[i].iNext) {
 		assert(tess.numVertexes < SHADER_MAX_VERTEXES);
 		VectorCopy(g_pVert[i].xyz, tess.xyz[tess.numVertexes]);

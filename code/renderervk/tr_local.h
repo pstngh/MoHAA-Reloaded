@@ -3050,7 +3050,7 @@ void		RB_SetRenderTime( int t, int refdefTime );
 void		RB_Draw_String( fontheader_t *font, const char *text, float x, float y, int maxlen, const float *pvVirtualScreen );
 void		R_TerrainSnapshotChanges( void );
 void		vk_terrain_shadow_all( const float *xyz, const float *st, int stride, int numSlots );
-const float	*vk_terrain_shadow_slots( void );					// the render thread's copy of every slot (7 floats: xyz, 2 st), NULL without a pool
+const float	*vk_terrain_shadow_slots( void );					// r_smp: the render thread's copy of every slot (7 floats: xyz, 2 st), NULL without a pool; never written with r_smp 0
 qboolean	vk_sync_terrain_pool_smp( const terrainSlotChange_t *changes, int count, qboolean all );
 
 void R_AddDrawSurfCmd( drawSurf_t *drawSurfs, int numDrawSurfs );
