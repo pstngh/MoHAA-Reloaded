@@ -23932,9 +23932,16 @@ static ma_result ma_device_init_internal__wasapi(ma_context* pContext, ma_device
                         ma_uint32 desiredPeriodInFrames = pData->periodSizeInFramesOut;
                         ma_uint32 actualPeriodInFrames  = desiredPeriodInFrames;
 
-                        /* Make sure the period size is a multiple of fundamentalPeriodInFrames. */
-                        actualPeriodInFrames = actualPeriodInFrames / fundamentalPeriodInFrames;
-                        actualPeriodInFrames = actualPeriodInFrames * fundamentalPeriodInFrames;
+                        /*
+                        Make sure the period size is a multiple of fundamentalPeriodInFrames.
+                        Changed in MoHAA-Reloaded: rounded up, not down. Rounded down, any period
+                        that isn't already a multiple came out below the desired size, and the check
+                        below then dropped low-latency mode (3 ms = 144 frames, step 32 -> 128).
+                        */
+                        if (fundamentalPeriodInFrames > 0) {
+                            actualPeriodInFrames = (actualPeriodInFrames + fundamentalPeriodInFrames - 1) / fundamentalPeriodInFrames;
+                            actualPeriodInFrames = actualPeriodInFrames * fundamentalPeriodInFrames;
+                        }
 
                         /* The period needs to be clamped between minPeriodInFrames and maxPeriodInFrames. */
                         actualPeriodInFrames = ma_clamp(actualPeriodInFrames, minPeriodInFrames, maxPeriodInFrames);
