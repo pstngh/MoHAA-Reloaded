@@ -2031,6 +2031,7 @@ void RB_TakePendingScreenshots( void );
 void R_ProcessReadbacks( void );
 void R_FlushReadbacks( void );
 void	R_ScreenShot_f( void );
+void	R_ScreenShotPNG_f( void );
 
 void	R_InitImages( void );
 void	R_FreeImage(image_t* image);

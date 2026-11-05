@@ -19,7 +19,8 @@ The list file has one directive per line ('#' starts a comment):
 Each shot teleports the player (noclip, god mode, no HUD, no view weapon) to
 the position, sets the view angles, waits 2 s of game time (or [wait]
 milliseconds, e.g. to catch a fade), pauses the game and takes the
-screenshot <name>. The game runs with `fixedtime 16`: every
+screenshot <name> (`screenshot screenshots/<name>.tga`: the game writes
+TGAs for a path, PNGs for a bare name). The game runs with `fixedtime 16`: every
 frame advances the game by 16 ms whatever the real frame time, and `wait`
 counts game milliseconds, so every run reaches each screenshot after the
 same number of frames at the same game time (sway, animated shaders, sky,
@@ -80,7 +81,7 @@ def main():
             shot, pos, ang = parts[0], parts[1:4], parts[4:7]
             wait = parts[7] if len(parts) > 7 else "2000"
             out += [f"tele {' '.join(pos)}", f"face {' '.join(ang)}", f"wait {wait}",
-                    "pause", "wait 300", f"echo shot {shot}", f"screenshot {shot}", "wait 100", 'centerprint " "',
+                    "pause", "wait 300", f"echo shot {shot}", f"screenshot screenshots/{shot}.tga", "wait 100", 'centerprint " "',
                     "pause", "wait 100"]
         elif cmd == "menu":
             parts = rest.split()
@@ -90,11 +91,11 @@ def main():
             push = [f"pushmenu {menu}"] if menu else []
             pop = ["popmenu 0"] if menu else []
             if started:
-                out += ["pause", "wait 300"] + push + [f"wait {wait}", f"echo shot {shot}", f"screenshot {shot}",
+                out += ["pause", "wait 300"] + push + [f"wait {wait}", f"echo shot {shot}", f"screenshot screenshots/{shot}.tga",
                         "wait 100"] + pop + ['centerprint " "', "pause", "wait 100"]
             else:
                 out += ([] if menus else ["wait 6000"]) + push + [f"wait {wait}", f"echo shot {shot}",
-                        f"screenshot {shot}", "wait 300"] + pop + ["wait 300"]
+                        f"screenshot screenshots/{shot}.tga", "wait 300"] + pop + ["wait 300"]
             menus += 1
         elif cmd == "mask":
             pass

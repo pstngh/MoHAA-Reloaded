@@ -450,6 +450,7 @@ vanilla q3 .. baseq3/screenshots/ *.tga
 team arena .. missionpack/screenshots/ *.tga
 
 two commands: "screenshot" and "screenshotJPEG"
+(here "screenshot" writes PNGs, as "screenshotPNG": see R_ScreenShot_f)
 we use statics to store a count and start writing the first screenshot/screenshot????.tga (.jpg) available
 (with FS_FileExists / FS_FOpenFileWrite calls)
 FIXME: the statics don't get a reinit between fs_game changes
@@ -591,31 +592,6 @@ void R_TakeScreenshot( int x, int y, int width, int height, char *name, qboolean
 R_ScreenshotFilename
 ================== 
 */  
-void R_ScreenshotFilename( int lastNumber, char *fileName ) {
-	int		a,b,c,d;
-
-	if ( lastNumber < 0 || lastNumber > 9999 ) {
-		Com_sprintf( fileName, MAX_OSPATH, "screenshots/shot9999.tga" );
-		return;
-	}
-
-	a = lastNumber / 1000;
-	lastNumber -= a*1000;
-	b = lastNumber / 100;
-	lastNumber -= b*100;
-	c = lastNumber / 10;
-	lastNumber -= c*10;
-	d = lastNumber;
-
-	Com_sprintf( fileName, MAX_OSPATH, "screenshots/shot%i%i%i%i.tga"
-		, a, b, c, d );
-}
-
-/* 
-================== 
-R_ScreenshotFilename
-================== 
-*/  
 void R_ScreenshotFilenameJPEG( int lastNumber, char *fileName ) {
 	int		a,b,c,d;
 
@@ -697,78 +673,49 @@ screenshot
 screenshot [silent]
 screenshot [levelshot]
 screenshot [filename]
+screenshot <path or filename> <width> <height>
 
-Doesn't print the pacifier message if there is a second arg
+Screenshots are PNGs: "screenshot" and "screenshot [silent|filename]" run
+screenshotPNG, so old configs that bind "screenshot" get PNGs too. Two
+uses stay TGA, what the game reads back: levelshots (levelshots/<map>.tga)
+and a shot given a path (with a '/') or a size, the savegame picture that
+saveshot takes (<save>.tga at 256x256, shown by the load menu)
 ================== 
 */  
 void R_ScreenShot_f(void) {
 	char	checkname[MAX_OSPATH];
-	static int	lastNumber = -1;
+	const char	*name;
 	int		width, height;
-	qboolean	silent;
 
 	if (!strcmp(ri.Cmd_Argv(1), "levelshot")) {
 		R_LevelShot();
 		return;
 	}
 
-	if (!strcmp(ri.Cmd_Argv(1), "silent")) {
-		silent = qtrue;
+	if (ri.Cmd_Argc() < 2 || (ri.Cmd_Argc() == 2 && !strchr(ri.Cmd_Argv(1), '/'))) {
+		R_ScreenShotPNG_f();
+		return;
+	}
+
+	name = ri.Cmd_Argv(1);
+	if (strchr(name, '/')) {
+		Q_strncpyz(checkname, name, sizeof(checkname));
 	} else {
-		silent = qfalse;
+		Com_sprintf(checkname, MAX_OSPATH, "screenshots/%s.tga", name);
 	}
 
 	width = 0;
 	height = 0;
-
-	if (ri.Cmd_Argc() >= 2 && !silent) {
-		// explicit filename
-		const char* name = ri.Cmd_Argv(1);
-		if (strchr(name, '/')) {
-			Q_strncpyz(checkname, name, sizeof(checkname));
-		} else {
-			Com_sprintf(checkname, MAX_OSPATH, "screenshots/%s.tga", ri.Cmd_Argv(1));
-		}
-
-		if (ri.Cmd_Argc() > 2) {
-			width = atoi(ri.Cmd_Argv(2));
-			height = atoi(ri.Cmd_Argv(3));
-		}
-	} else {
-		// scan for a free filename
-
-		// if we have saved a previous screenshot, don't scan
-		// again, because recording demo avis can involve
-		// thousands of shots
-		if (lastNumber == -1) {
-			lastNumber = 0;
-		}
-		// scan for a free number
-		for (; lastNumber <= 9999; lastNumber++) {
-			R_ScreenshotFilename(lastNumber, checkname);
-
-			if (!ri.FS_FileExists(checkname))
-			{
-				break; // file doesn't exist
-			}
-		}
-
-		if (lastNumber >= 9999) {
-			ri.Printf(PRINT_ALL, "ScreenShot: Couldn't create a file\n");
-			return;
-		}
-
-		lastNumber++;
+	if (ri.Cmd_Argc() > 2) {
+		width = atoi(ri.Cmd_Argv(2));
+		height = atoi(ri.Cmd_Argv(3));
 	}
 
 	if (!width || !height) {
 		char message[MAX_OSPATH + 64];
 
-		message[0] = 0;
-		if (!silent) {
-			Com_sprintf(message, sizeof(message), "centerprint \"%s %s\"\n", ri.LV_ConvertString("Wrote"), checkname);
-		}
-		R_TakeScreenshot(0, 0, glConfig.vidWidth, glConfig.vidHeight, checkname, qfalse, message[0] ? message : NULL);
+		Com_sprintf(message, sizeof(message), "centerprint \"%s %s\"\n", ri.LV_ConvertString("Wrote"), checkname);
+		R_TakeScreenshot(0, 0, glConfig.vidWidth, glConfig.vidHeight, checkname, qfalse, message);
 	} else {
 		R_ResampledScreenShot(checkname, width, height);
 	}
