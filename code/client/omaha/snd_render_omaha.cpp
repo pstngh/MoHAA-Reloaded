@@ -383,10 +383,11 @@ static ma_channel s_map[OM_OUT_MAX];
  * shots 100 ms apart were heard 90 to 110 ms apart. The ALSA plugin follows
  * s_period_ms, so a sound starts within one period.
  */
+#ifndef _WIN32
 static std::atomic<unsigned> s_underruns{0}; /* ALSA EPIPE on write: the device ran dry */
-static qboolean              s_lowLatency;  /* WASAPI granted its low-latency shared mode */
 static unsigned              s_underrunsShown;
 static int                   s_underrunPrinted;
+#endif
 
 /*
  * Added in Omaha: device loss recovery. Changed: a device is lost when its
@@ -3191,11 +3192,18 @@ static qboolean Om_LoadHrtf(void)
 /*
  * Added in Omaha: device callback length in ms (s_period_ms, 1..20). Changed:
  * 3 by default. A sound starts at the next callback, so this is the step shots
- * are heard on (stock's Miles mixer stepped 8 ms).
+ * are heard on (stock's Miles mixer stepped 8 ms). Windows keeps 5: its audio
+ * is as it was before the 3 ms change (995929b6), which brought hiss there.
  */
+#ifdef _WIN32
+#define OM_PERIOD_MS_DEFAULT 5
+#else
+#define OM_PERIOD_MS_DEFAULT 3
+#endif
+
 static int Om_PeriodMs(void)
 {
-	int ms = s_period_ms ? s_period_ms->integer : 3;
+	int ms = s_period_ms ? s_period_ms->integer : OM_PERIOD_MS_DEFAULT;
 	if (ms < 1) {
 		ms = 1;
 	} else if (ms > 20) {
@@ -3204,23 +3212,20 @@ static int Om_PeriodMs(void)
 	return ms;
 }
 
+#ifndef _WIN32
 /*
- * Added: miniaudio posts these at debug level. ALSA: a write into a drained
- * device (EPIPE, heard as a click), audio thread. WASAPI: the low-latency
- * shared mode was granted, during ma_device_init.
+ * Added: miniaudio posts this at debug level, from the audio thread: a write
+ * into a drained ALSA device (EPIPE, heard as a click). Not on Windows, whose
+ * audio is as it was before 995929b6.
  */
 static void Om_MaLog(void *userData, ma_uint32 level, const char *message)
 {
 	(void)userData;
-	if (level != MA_LOG_LEVEL_DEBUG || !message) {
-		return;
-	}
-	if (!strncmp(message, "EPIPE (write)", 13)) {
+	if (level == MA_LOG_LEVEL_DEBUG && message && !strncmp(message, "EPIPE (write)", 13)) {
 		s_underruns.fetch_add(1, std::memory_order_relaxed);
-	} else if (!strncmp(message, "[WASAPI] Using IAudioClient3", 28)) {
-		s_lowLatency = qtrue;
 	}
 }
+#endif
 
 /* Opens and starts the playback device on s_context. */
 static qboolean Om_StartDevice(const ma_device_id *id)
@@ -3237,25 +3242,14 @@ static qboolean Om_StartDevice(const ma_device_id *id)
 	/* Changed in Omaha: s_period_ms x 3. HRTF stays on 128-sample blocks via the mix stash. */
 	dcfg.periodSizeInMilliseconds = (ma_uint32)Om_PeriodMs();
 	dcfg.periods                  = 3;
-#ifdef _WIN32
+#ifndef _WIN32
 	/*
-	 * Added: Windows converts the mixer's rate to the device's, not miniaudio.
-	 * miniaudio's converter interpolates linearly and folds the treble back
-	 * down (44.1 to 48 kHz: a 10 kHz tone gets a false tone at -21 dB, 15 kHz
-	 * at -12 dB), heard as hiss; whatever its filter order. So WASAPI's
-	 * low-latency mode, which follows s_period_ms, runs only when the mixer
-	 * has the device's rate (headphones, or s_khz 48 on a 48 kHz device).
-	 * Otherwise Windows wakes the stream every 10 ms, and the buffer asked for
-	 * stays at least 15 ms (5 ms x 3 before the 3 ms default); low-latency
-	 * mode doesn't use the period count.
+	 * Added: where miniaudio converts the rate (a device refusing the mixer's),
+	 * the highest filter order. Windows: as it was before 995929b6, where
+	 * miniaudio converting the rate brought hiss.
 	 */
-	dcfg.periods = (ma_uint32)((15 + Om_PeriodMs() - 1) / Om_PeriodMs());
-	if (dcfg.periods < 3) {
-		dcfg.periods = 3;
-	}
-#endif
-	/* Added: where miniaudio converts the rate (a device refusing the mixer's), the highest filter order. */
 	dcfg.resampling.linear.lpfOrder = MA_MAX_FILTER_ORDER;
+#endif
 	if (ma_device_init(&s_context, &dcfg, &s_device) != MA_SUCCESS) {
 		return qfalse;
 	}
@@ -3305,8 +3299,6 @@ static void Om_LogStarted(void)
 
 	if (s_nullDevice) {
 		backend = "null";
-	} else if (s_lowLatency) {
-		backend = "WASAPI low-latency";
 	} else if (s_device.pContext) {
 		backend = ma_get_backend_name(s_device.pContext->backend);
 	}
@@ -3354,9 +3346,10 @@ static qboolean Om_OpenDevice(const sndDeviceConfig_t *cfg, qboolean nullBackend
 		ma_context_uninit(&s_context);
 		s_contextReady = qfalse;
 	}
+#ifndef _WIN32
 	s_underruns.store(0, std::memory_order_relaxed);
-	s_lowLatency = qfalse;
 	s_underrunsShown = 0;
+#endif
 #if defined(__linux__) && !defined(__ANDROID__)
 	/* Added: the default output through PipeWire first; a device named in s_device keeps the default backends. */
 	if (!nullBackend && !(cfg && cfg->deviceName && cfg->deviceName[0])) {
@@ -3377,7 +3370,9 @@ static qboolean Om_OpenDevice(const sndDeviceConfig_t *cfg, qboolean nullBackend
 		return qfalse;
 	}
 	s_contextReady = qtrue;
+#ifndef _WIN32
 	ma_log_register_callback(ma_context_get_log(&s_context), ma_log_callback_init(Om_MaLog, NULL));
+#endif
 	if (!nullBackend && developer && developer->integer) {
 		Om_LogDevices();
 	}
@@ -3523,7 +3518,7 @@ static qboolean Om_Init(const sndDeviceConfig_t *cfg)
 	Om_BuildSinc();
 	Om_BuildStereoPair();
 	/* Added in Omaha: playback callback length in ms. Takes effect on snd_restart. */
-	s_period_ms         = Cvar_Get("s_period_ms", "3", CVAR_ARCHIVE | CVAR_SOUND_LATCH);
+	s_period_ms         = Cvar_Get("s_period_ms", XSTRING(OM_PERIOD_MS_DEFAULT), CVAR_ARCHIVE | CVAR_SOUND_LATCH);
 	Cvar_CheckRange(s_period_ms, 1, 20, qtrue);
 	s_limiter           = Cvar_Get("s_limiter", "1", CVAR_ARCHIVE);
 	s_limiter_threshold = Cvar_Get("s_limiter_threshold", "-3.6", CVAR_ARCHIVE);
@@ -3946,6 +3941,7 @@ static void Om_Update(void)
 	Om_SnapshotCvars();
 	Om_Reclaim();
 	Om_FlushSpill();
+#ifndef _WIN32
 	{
 		/* Added: report the device running dry (once a second at most). */
 		const unsigned underruns = s_underruns.load(std::memory_order_relaxed);
@@ -3958,6 +3954,7 @@ static void Om_Update(void)
 			s_underrunPrinted = now;
 		}
 	}
+#endif
 	if (s_deviceReady && Om_DeviceStalled(now, OM_DEVICE_STALL_MS)) {
 		s_deviceLost = true;
 	}
