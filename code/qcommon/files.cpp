@@ -3772,19 +3772,6 @@ FS_Startup
 */
 static void FS_Startup(const char* gameName)
 {
-	cvar_t *fs_homepath = Cvar_Get("fs_homepath", "", CVAR_INIT|CVAR_PROTECTED);
-	const char *configPath = Sys_DefaultHomeConfigPath();
-	const char *dataPath = Sys_DefaultHomeDataPath();
-	const char *statePath = Sys_DefaultHomeStatePath();
-
-	if(*(fs_homepath)->string) {
-		// Setting fs_homepath manually overrides everything else
-		configPath = dataPath = statePath = fs_homepath->string;
-	} else if(!*configPath || !*dataPath || !*statePath) {
-		// #shouldneverhappen; just a sensible fallback
-		configPath = dataPath = statePath = Sys_DefaultInstallPath();
-	}
-
 	Com_Printf( "----- FS_Startup -----\n" );
 
 	fs_debug = Cvar_Get( "fs_debug", "0", 0 );
@@ -3793,9 +3780,15 @@ static void FS_Startup(const char* gameName)
 #endif
 	fs_basepath = Cvar_Get("fs_basepath", Sys_DefaultInstallPath(), CVAR_INIT | CVAR_PROTECTED);
 	fs_basegame = Cvar_Get ("fs_basegame", "", CVAR_INIT );
-	fs_homeconfigpath = Cvar_Get ("fs_homeconfigpath", configPath, CVAR_INIT|CVAR_PROTECTED );
-	fs_homedatapath = Cvar_Get ("fs_homedatapath", dataPath, CVAR_INIT|CVAR_PROTECTED );
-	fs_homestatepath = Cvar_Get ("fs_homestatepath", statePath, CVAR_INIT|CVAR_PROTECTED );
+
+	// Configs, saves, screenshots, logs and caches default to the game
+	// folder instead of a per-user folder (AppData, ~/.local, ~/.config...).
+	// Setting fs_homepath, or any of the three paths below, still overrides.
+	cvar_t *fs_homepath = Cvar_Get("fs_homepath", "", CVAR_INIT|CVAR_PROTECTED);
+	const char *homePath = fs_homepath->string[0] ? fs_homepath->string : fs_basepath->string;
+	fs_homeconfigpath = Cvar_Get ("fs_homeconfigpath", homePath, CVAR_INIT|CVAR_PROTECTED );
+	fs_homedatapath = Cvar_Get ("fs_homedatapath", homePath, CVAR_INIT|CVAR_PROTECTED );
+	fs_homestatepath = Cvar_Get ("fs_homestatepath", homePath, CVAR_INIT|CVAR_PROTECTED );
 	fs_gamedirvar = Cvar_Get ("fs_game", "", CVAR_INIT|CVAR_SYSTEMINFO );
 	fs_restrict = Cvar_Get( "fs_restrict", "", CVAR_INIT );
 	fs_steampath = Cvar_Get ("fs_steampath", Sys_SteamPath(), CVAR_INIT|CVAR_PROTECTED );
