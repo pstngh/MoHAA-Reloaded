@@ -8157,7 +8157,18 @@ selects the sample count (see Implementation notes).
   record). A batch with effects is one instance (no merging: the record is
   the model's), and is only drawn from the static geometry when the frame
   data has room for the records of all its draws, else on the CPU, so
-  nothing is ever left out. Differences from JayRewd's version:
+  nothing is ever left out. Every draw of such a batch is an effects draw,
+  the stages that need nothing of it too (2026-11-05, `tess.staticFxBatch`):
+  a later stage tests its depth against an earlier one's (`depthFunc`
+  lequal or equal), and two different vertex shaders needn't round the
+  same positions the same way (GLSL's invariance holds for the same code
+  and control flow, and `effects.vert` runs the deforms' loop first). With
+  `frenchfloor_wood1`'s reflection (`tcGen environment`, effects) under its
+  wood (generic), a player's game showed the reflection over the floor in
+  patches, with streaks where they meet; a build that moves the effects
+  shader's clip positions by one rounding step made the same frames here.
+  NVIDIA, RADV and lavapipe give both shaders the same bits, so the frames
+  are unchanged. Differences from JayRewd's version:
   a stage with a constant color and `distFade` (the pulsing objective
   highlights, `rgbGen wave` with `alphaGen distFade`) got the alpha of
   whatever vertex `tess` held from an earlier batch there, it gets the
@@ -8709,7 +8720,7 @@ selects the sample count (see Implementation notes).
   constant color when `RB_StaticStageColor` can give one; the static
   geometry with the effects shader, for a stage it can draw: the shader's
   deforms, a bundle's `tcGen` or `tcMod`, `distFade`, a lit static model's
-  `rgbGen`; skinned), the
+  `rgbGen`, and every stage of a shader where one can be; skinned), the
   fog (off, or the stage's `GLS_FOG_ENABLED`, since `R_State` keeps the
   previous fog when that bit doesn't change and `Set2DWindow` turns it
   off: both, the map's fog isn't known before its first frame), dynamic

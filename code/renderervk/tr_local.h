@@ -2159,6 +2159,7 @@ typedef struct shaderCommands_s
 	qboolean	staticTerrain;		// terrain patches, drawn from the terrain pool (RB_TerrainPool)
 	qboolean	staticNeedsOpaque;	// a stage takes the vertex colors with alpha 255
 	qboolean	staticMergeable;	// more static models can join the batch (RB_StaticMerge)
+	qboolean	staticFxBatch;		// a stage needs the effects shader: every draw of the batch has a record (RB_StaticDraw)
 	int			numStaticInstances;
 	staticInstance_t	staticInstances[MAX_STATIC_INSTANCES];
 	int			staticCopiedIndexes;	// in indexes

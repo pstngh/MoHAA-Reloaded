@@ -213,15 +213,15 @@ static qboolean R_StageMayBeConstant( const shaderStage_t *pStage ) {
 
 /*
 ===============
-R_StageMayBeEffects
+R_StageNeedsEffects
 
-Whether a stage can be drawn from the static geometry with the effects
-shader in some batch (RB_StaticBatchAllowed, RB_StaticDraw): the shader's
-deforms, the texture coordinates of a bundle, distFade, or the lighting of
-a static model with dynamic lights near it
+Whether a stage can need the effects shader to be drawn from the static
+geometry in some batch (RB_StaticBatchAllowed): the shader's deforms, the
+texture coordinates of a bundle, distFade, or the lighting of a static
+model with dynamic lights near it
 ===============
 */
-static qboolean R_StageMayBeEffects( const shader_t *shader, const shaderStage_t *pStage, qboolean vertexLit ) {
+static qboolean R_StageNeedsEffects( const shader_t *shader, const shaderStage_t *pStage, qboolean vertexLit ) {
 	int b;
 
 	if ( shader->numDeforms ) {
@@ -239,6 +239,30 @@ static qboolean R_StageMayBeEffects( const shader_t *shader, const shaderStage_t
 
 		if ( ( ( bundle->numTexMods && bundle->texMods[0].type != TMOD_NONE )
 			|| ( bundle->tcGen != TCGEN_TEXTURE && bundle->tcGen != TCGEN_LIGHTMAP ) ) && RB_StaticFxBundle( bundle, qtrue ) ) {
+			return qtrue;
+		}
+	}
+	return qfalse;
+}
+
+/*
+===============
+R_StageMayBeEffects
+
+Whether a stage can be drawn with the effects shader: when it or another
+stage of its shader needs it, as every draw of such a batch is
+(RB_StaticDraw)
+===============
+*/
+static qboolean R_StageMayBeEffects( const shader_t *shader, const shaderStage_t *pStage, qboolean vertexLit ) {
+	int i;
+
+	// the vertex-lit iterator draws one stage
+	if ( vertexLit ) {
+		return R_StageNeedsEffects( shader, pStage, qtrue );
+	}
+	for ( i = 0; i < MAX_SHADER_STAGES && shader->unfoggedStages[i]; i++ ) {
+		if ( R_StageNeedsEffects( shader, shader->unfoggedStages[i], qfalse ) ) {
 			return qtrue;
 		}
 	}
