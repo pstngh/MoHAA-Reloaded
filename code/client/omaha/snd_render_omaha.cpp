@@ -3237,13 +3237,25 @@ static qboolean Om_StartDevice(const ma_device_id *id)
 	/* Changed in Omaha: s_period_ms x 3. HRTF stays on 128-sample blocks via the mix stash. */
 	dcfg.periodSizeInMilliseconds = (ma_uint32)Om_PeriodMs();
 	dcfg.periods                  = 3;
+#ifdef _WIN32
 	/*
-	 * Added: Windows wakes a shared stream every 10 ms unless it runs at the
-	 * device's own rate, where its low-latency mode follows s_period_ms. So
-	 * miniaudio converts the rate, not Windows; with the highest filter order.
+	 * Added: Windows converts the mixer's rate to the device's, not miniaudio.
+	 * miniaudio's converter interpolates linearly and folds the treble back
+	 * down (44.1 to 48 kHz: a 10 kHz tone gets a false tone at -21 dB, 15 kHz
+	 * at -12 dB), heard as hiss; whatever its filter order. So WASAPI's
+	 * low-latency mode, which follows s_period_ms, runs only when the mixer
+	 * has the device's rate (headphones, or s_khz 48 on a 48 kHz device).
+	 * Otherwise Windows wakes the stream every 10 ms, and the buffer asked for
+	 * stays at least 15 ms (5 ms x 3 before the 3 ms default); low-latency
+	 * mode doesn't use the period count.
 	 */
-	dcfg.wasapi.noAutoConvertSRC      = MA_TRUE;
-	dcfg.resampling.linear.lpfOrder   = MA_MAX_FILTER_ORDER;
+	dcfg.periods = (ma_uint32)((15 + Om_PeriodMs() - 1) / Om_PeriodMs());
+	if (dcfg.periods < 3) {
+		dcfg.periods = 3;
+	}
+#endif
+	/* Added: where miniaudio converts the rate (a device refusing the mixer's), the highest filter order. */
+	dcfg.resampling.linear.lpfOrder = MA_MAX_FILTER_ORDER;
 	if (ma_device_init(&s_context, &dcfg, &s_device) != MA_SUCCESS) {
 		return qfalse;
 	}
