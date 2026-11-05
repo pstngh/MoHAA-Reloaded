@@ -481,6 +481,7 @@ typedef struct {
 
 static consoleCommand_t commands[] = {
     {"useweaponclass",         &CG_UseWeaponClass_f        },
+    {"useprimary",             &CG_UsePrimaryWeapon_f      },
     {"weapnext",               &CG_NextWeapon_f            },
     {"weapprev",               &CG_PrevWeapon_f            },
     {"uselast",                &CG_UseLastWeapon_f         },
@@ -623,11 +624,52 @@ void CG_PushMenuWeaponSelect_f(void)
     cgi.Cmd_Execute(EXEC_NOW, "pushmenu SelectPrimaryWeapon\n");
 }
 
+/*
+ * useprimary: switch to the primary weapon (rifle, smg, mg or heavy) in hand, else to the last one used
+ * if still carried (single player can carry several), else to the first one carried.
+ */
+void CG_UsePrimaryWeapon_f(void)
+{
+    static const int classes[]  = {WEAPON_CLASS_RIFLE, WEAPON_CLASS_SMG, WEAPON_CLASS_MG, WEAPON_CLASS_HEAVY};
+    static const int useCommands[] = {
+        WEAPON_COMMAND_USE_RIFLE, WEAPON_COMMAND_USE_SMG, WEAPON_COMMAND_USE_MG, WEAPON_COMMAND_USE_HEAVY};
+    static const int primary = WEAPON_CLASS_RIFLE | WEAPON_CLASS_SMG | WEAPON_CLASS_MG | WEAPON_CLASS_HEAVY;
+    static int       last; // index of the last primary used
+    int              bits;
+    int              i;
+
+    if (!cg.snap) {
+        return;
+    }
+
+    bits = cg.snap->ps.stats[STAT_EQUIPPED_WEAPON] & primary;
+    if (!bits) {
+        bits = cg.snap->ps.stats[STAT_WEAPONS] & classes[last];
+    }
+    if (!bits) {
+        bits = cg.snap->ps.stats[STAT_WEAPONS] & primary;
+    }
+
+    for (i = 0; i < 4; i++) {
+        if (bits & classes[i]) {
+            last                  = i;
+            cg.iWeaponCommand     = useCommands[i];
+            cg.iWeaponCommandSend = 0;
+            return;
+        }
+    }
+}
+
 void CG_UseWeaponClass_f(void)
 {
     const char *cmd;
 
     cmd = cgi.Argv(1);
+
+    if (!Q_stricmp(cmd, "primary")) {
+        CG_UsePrimaryWeapon_f();
+        return;
+    }
 
     if (!Q_stricmp(cmd, "pistol")) {
         cg.iWeaponCommand = WEAPON_COMMAND_USE_PISTOL;
