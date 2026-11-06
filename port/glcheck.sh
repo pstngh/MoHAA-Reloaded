@@ -22,8 +22,6 @@ import re, sys
 pattern = re.compile(sys.argv[1], re.I)
 # (file regex, allowed text regex): the allowed text is removed from the line before testing it again
 allowed = [
-	# vendored CI files of recastnavigation (they installed GL for the RecastDemo app, deleted in Phase 4)
-	(r"^code/thirdparty/recastnavigation/\.github/", r".*"),
 	# a false positive in vendored code: the Qt qglobal.h guard
 	(r"^code/thirdparty/jpeg-[^/]*/jmorecfg\.h$", r"QGLOBAL_H|qglobal\.h"),
 	# shader script keywords (blendFunc GL_ONE GL_ZERO ... in the retail .shader files)
