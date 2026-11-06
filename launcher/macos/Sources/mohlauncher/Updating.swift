@@ -395,7 +395,9 @@ extension LauncherModel {
     #if MOHL_TEST_HOOKS
     /// A test build's hooks (bundle.sh with MOHL_TEST_HOOKS=1; release.sh refuses a launcher that has them), from
     /// mohl-test-hooks.txt in the game folder, a line each: corrupt-zip, kill-at <step>, pause-at <step> <seconds>,
-    /// slow-download <ms per chunk>. The steps are UpdateInstaller's failpoints. Returns the download's delay in µs.
+    /// slow-download <ms per chunk>, use-launcher <bundle in the folder> (it goes in the download's launcher's place:
+    /// today's release has no updater to take over), keep-launcher (as if the source were the same). The steps are
+    /// UpdateInstaller's failpoints. Returns the download's delay in µs.
     static func testHooks(_ hooks: inout UpdateHooks, folder: URL) -> UInt32 {
         let file = folder.appendingPathComponent("mohl-test-hooks.txt")
         guard let text = try? String(contentsOf: file, encoding: .utf8) else { return 0 }
@@ -411,6 +413,21 @@ extension LauncherModel {
                     try? handle.seek(toOffset: 1000)
                     try? handle.write(contentsOf: Data([0xFF, 0x00, 0xFF, 0x00]))
                     try? handle.close()
+                }
+            case "use-launcher" where parts.count == 2:
+                let source = folder.appendingPathComponent(parts[1])
+                let previous = hooks.beforeInstall
+                hooks.beforeInstall = { staged in
+                    previous?(&staged)
+                    let target = staged.stage.appendingPathComponent(UpdateNames.launcher)
+                    try? FileManager.default.removeItem(at: target)
+                    try? FileManager.default.copyItem(at: source, to: target)
+                }
+            case "keep-launcher":
+                let previous = hooks.beforeInstall
+                hooks.beforeInstall = { staged in
+                    previous?(&staged)
+                    staged.replaceLauncher = false
                 }
             case "kill-at" where parts.count == 2: kills.insert(parts[1])
             case "pause-at" where parts.count == 3: pauses[parts[1]] = UInt32(parts[2]) ?? 0

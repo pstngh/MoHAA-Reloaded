@@ -1145,6 +1145,7 @@ public func gameIsRunning(folder: URL) -> Bool {
 /// What a test build's hooks can do to an update; a release has none (bundle.sh, release.sh)
 public struct UpdateHooks {
     public var afterDownload: ((URL) -> Void)?
+    public var beforeInstall: ((inout StagedUpdate) -> Void)?
     public var failpoint: UpdateInstaller.Failpoint = { _ in }
     public init() {}
 }
@@ -1177,7 +1178,8 @@ public func runUpdate(_ offer: UpdateOffer, folder: URL, flags: UpdateFlags, hoo
         }
         if flags.stopped { throw UpdateError.cancelled }
         report(.unpack)
-        let staged = try unpackUpdate(zip: zip, asset: offer.asset, commit: offer.commit, folder: folder, verify: verify)
+        var staged = try unpackUpdate(zip: zip, asset: offer.asset, commit: offer.commit, folder: folder, verify: verify)
+        hooks.beforeInstall?(&staged)
         if gameIsRunning(folder: folder) { throw UpdateError.gameRunning }
         guard flags.beginInstall() else { throw UpdateError.cancelled }
         report(.install)
