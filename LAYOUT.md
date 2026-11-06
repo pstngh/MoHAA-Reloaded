@@ -19,6 +19,5 @@
 | code/tiki            | Complete TIKI engine                                             |
 | code/uilib           | UI library (Ubertools stuff)                                     |
 | code/{win32,unix}    | Platform-specific code                                           |
-| docker               | Docker files, for compiling on various linux versions            |
 | docs                 | Documentation stuff                                              |
 | misc/                | Project stuff, definition files and various resources stuff.     |

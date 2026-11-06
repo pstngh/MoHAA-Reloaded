@@ -1001,9 +1001,7 @@ the CI workflows (`.github/workflows`: Linux x64 and Windows x64 only, the
 renderer shipping as the `renderer_vulkan` library next to the executable;
 artifacts kept 3 days; since 2026-10-23 the Windows job uploads only the
 game's files, no symbols or installer; the unit tests build without the
-renderer) and the Windows installer
-(`misc/setup/windows/app/Package.wxs` lists `renderer_vulkan.dll`; CI no
-longer builds it), and the client's `cl_renderer` (`vulkan`, the only
+renderer), and the client's `cl_renderer` (`vulkan`, the only
 renderer: `code/client/cl_main.cpp`), and the removal of OpenGL (see
 Implementation notes, No OpenGL), and `m_filter`'s removal
 (`code/client/cl_input.cpp`, `cl_main.cpp`, `client.h`), and the soundtrack
