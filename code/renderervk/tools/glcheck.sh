@@ -33,14 +33,12 @@ allowed = [
 	(r"^code/renderervk/tools/glcheck\.sh$", r".*"),
 	# vendored code: SDL 3s own API headers (SDL_video.h declares SDL_GL_*;
 	# its GL, GLES and EGL headers are left out), miniaudio comments on
-	# coordinate systems, a Qt guard in libjpeg, the CI files of
-	# recastnavigation (they installed GL for its demo, deleted)
+	# coordinate systems, a Qt guard in libjpeg
 	(r"^code/thirdparty/SDL3-[^/]*/include/", r".*"),
 	# update-libs.sh leaves those GL headers out by name
 	(r"^misc/update-libs\.sh$", r"OpenGL( ES)?|opengl"),
 	(r"^code/thirdparty/miniaudio/miniaudio\.h$", r"OpenGL"),
 	(r"^code/thirdparty/jpeg-[^/]*/jmorecfg\.h$", r"QGLOBAL_H|qglobal\.h"),
-	(r"^code/thirdparty/recastnavigation/\.github/", r".*"),
 	# shader script keywords of the retail .shader files (blendFunc GL_ONE
 	# GL_ZERO ...), also in the test shaders of the view lists
 	(r"^code/renderervk/tr_shader\.c$", r"\"GL_[A-Z_]+\"|substituting GL_ONE"),
@@ -50,8 +48,9 @@ allowed = [
 	(r"^code/renderervk/tr_image\.c$", r"\{\"GL_[A-Z_]+\", TEXFILTER_"),
 	(r"^code/renderervk/tr_init\.c$", r"\"gl_linear_mipmap_linear\"|\"GL_BACK\""),
 	(r"^code/renderervk/tr_cmds\.c$", r"\"GL_FRONT\""),
-	# GLSL built-ins of the Vulkan shaders (and comments naming them)
-	(r"^code/renderervk/", r"\bgl_(Position|ClipDistance|InstanceIndex|VertexIndex|FrontFacing)\b"),
+	# GLSL built-ins of the Vulkan shaders (and comments naming them), and the
+	# glslang extension behind their #include lines
+	(r"^code/renderervk/", r"\bgl_(Position|ClipDistance|InstanceIndex|VertexIndex|FrontFacing|FragCoord|GlobalInvocationID|LocalInvocationID|LocalInvocationIndex|WorkGroupID)\b|\bGL_GOOGLE_include_directive\b"),
 	# false positives: the "sgl" font header type, the glue flag of the game,
 	# a UI event of the LAN game list
 	(r"^code/", r"fontheader_sgl_[st]"),
@@ -65,6 +64,8 @@ allowed = [
 	(r"^code/qcommon/q_math\.c$", r"the OpenGL order"),
 	# CL_InitRef resets an old configs cl_renderer opengl1 to vulkan
 	(r"^code/client/cl_main\.cpp$", r"OpenGL renderers are gone: an old config.s opengl1|\"opengl\", 6|no OpenGL renderer any more"),
+	# the downloads tell players the OpenGL renderers are gone
+	(r"^misc/release/INSTALL-[^/]*\.txt$", r"There is no OpenGL renderer any more"),
 ]
 allowed = [(re.compile(f), re.compile(t)) for f, t in allowed]
 for line in sys.stdin:

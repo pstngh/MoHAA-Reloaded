@@ -179,6 +179,10 @@ jobs:
         if [ -d ${{github.workspace}}/install/bin ]; then cp -r ${{github.workspace}}/install/bin/openmohaa/. '${{github.workspace}}/package'; fi
         if [ -d ${{github.workspace}}/install/lib ]; then cp -r ${{github.workspace}}/install/lib/openmohaa/. '${{github.workspace}}/package'; fi
 
+    # The source and the binaries, see the script
+    - name: Run glcheck
+      run: source/code/renderervk/tools/glcheck.sh '${{github.workspace}}/package'
+
     ###
     # MoHAA Launcher (launcher/desktop: Rust and Slint), beside the game
     ###
