@@ -492,7 +492,7 @@ Client interface
 
 void CL_Discord_Init(void)
 {
-    cl_discordPresence = Cvar_Get("cl_discordPresence", "1", CVAR_ARCHIVE);
+    cl_discordPresence = Cvar_Get("cl_discordPresence", "0", CVAR_ARCHIVE);
     Cvar_SetDescription(cl_discordPresence, "Show what you are playing on your Discord profile.");
 
 #ifdef _WIN32

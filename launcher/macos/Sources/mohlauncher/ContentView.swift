@@ -239,7 +239,13 @@ struct PlayerAndServers: View {
         VStack(spacing: Metrics.gap) {
             Grid(horizontalSpacing: Metrics.gap, verticalSpacing: Metrics.gap) {
                 GridRow {
-                    Field("Player name") {
+                    Field("Player name", accessory: {
+                        LabelAction(systemImage: model.discordPresence ? "checkmark.square.fill" : "square",
+                                    title: "Discord presence", active: model.discordPresence) {
+                            model.discordPresence.toggle()
+                        }
+                        .help("Show what you play on your Discord profile while Discord runs (cl_discordPresence)")
+                    }) {
                         TextField("Player name", text: model.name, prompt: Text("UnnamedSoldier"))
                     }
                     Field("Server", accessory: {

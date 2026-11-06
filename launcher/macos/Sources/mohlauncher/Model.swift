@@ -26,6 +26,7 @@ struct ResolutionEntry: Hashable, Identifiable {
 final class LauncherModel: ObservableObject {
     nonisolated static let cvarDefaults: [(String, String)] = [
         ("name", ""),
+        ("cl_discordPresence", "0"),
         ("cg_crosshair_length", "8"),
         ("cg_crosshair_gap", "4"),
         ("cg_crosshair_thickness", "2"),
@@ -308,6 +309,12 @@ final class LauncherModel: ObservableObject {
 
     var name: Binding<String> {
         Binding(get: { self.edits.get("name") }, set: { self.edits.set("name", $0) })
+    }
+
+    /// cl_discordPresence: what the player plays, on their Discord profile while Discord runs
+    var discordPresence: Bool {
+        get { (Int(edits.get("cl_discordPresence")) ?? 0) != 0 }
+        set { edits.set("cl_discordPresence", newValue ? "1" : "0") }
     }
 
     func number(_ cvar: String, _ range: ClosedRange<Int>) -> Binding<Int> {
