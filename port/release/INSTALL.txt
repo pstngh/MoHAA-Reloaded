@@ -22,8 +22,10 @@ Install
 
    For example: xattr -dr com.apple.quarantine ~/Downloads/openmohaa-metal-@VERSION@-macos-arm64
 
-   "Open Anyway" in System Settings > Privacy & Security is not enough for this game: macOS then runs
-   the app from a temporary read-only copy, where it can't find your game data. The game then stops
+   Or, instead of Terminal: open mohlauncher.app from the folder you copied it to in step 4, and allow it
+   with "Open Anyway" in System Settings > Privacy & Security. MoHAA Launcher then clears the quarantine
+   on the download's files itself and restarts. Open Anyway on openmohaa.app itself is not enough: macOS
+   runs the game from a temporary read-only copy, where it can't find your game data, and the game stops
    and shows the line to run, with your folder's path.
 
 3. Find your MOHAA game folder: the folder that holds main/ (Pak0.pk3 to Pak6.pk3), plus mainta/ for
@@ -40,7 +42,8 @@ Install
    crosshair, and the resolution and display mode. The servers you join are kept in its list. If the
    game folder is on an external drive (or in a folder macOS protects, such as Documents or Desktop),
    macOS asks whether the launcher and the game may access files there: click Allow. It asks again after each update (the permission belongs to that
-   exact build), as step 2 is needed again.
+   exact build). MoHAA Launcher offers new versions itself when it starts, and replaces the apps safely: if
+   anything goes wrong, your files stay as they were. By hand, a new download needs step 2 again.
 
    openmohaa.app starts directly too: Allied Assault by default. For Spearhead or Breakthrough, open
    Terminal in the game folder and run one of:

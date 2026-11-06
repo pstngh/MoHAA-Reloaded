@@ -52,6 +52,10 @@ mkdir -p "$STAGE/licenses"
 ditto "$APP" "$STAGE/openmohaa.app"
 # MoHAA Launcher, beside the game: built and signed ad hoc here (Swift's build files in the output dir)
 MOHL_SCRATCH="$OUT/mohlauncher-build" "$ROOT/launcher/macos/bundle.sh" "$STAGE" > /dev/null
+# the updater's test hooks never go out (MOHL_TEST_HOOKS, launcher/macos/bundle.sh), and neither does a launcher that
+# can't say which source it came from: the updater would replace it every time
+! strings -a "$STAGE/mohlauncher.app/Contents/MacOS/mohlauncher" | grep -q 'mohl-test-hooks' || die "mohlauncher has the test hooks"
+/usr/libexec/PlistBuddy -c 'Print MOHLauncherSource' "$STAGE/mohlauncher.app/Contents/Info.plist" > /dev/null || die "mohlauncher has no source stamp"
 cp "$ROOT/COPYING.txt" "$STAGE/"
 for l in "${LICENSES[@]}"; do
 	mkdir -p "$STAGE/licenses/${l%%:*}"

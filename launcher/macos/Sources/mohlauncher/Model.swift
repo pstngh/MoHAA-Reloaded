@@ -75,6 +75,25 @@ final class LauncherModel: ObservableObject {
     @Published var renaming: Int?
     @Published var renameText = ""
     @Published var removing: Int?
+    /// The update's dialog and its state (Updating.swift)
+    @Published var updateDialog = UpdateDialog.none
+    @Published var updateText = ""
+    @Published var updateProgress = 0.0
+    @Published var updateCanCancel = true
+    /// An update runs, or an earlier one is still being put right: the game can't start
+    @Published var updateBusy = true
+    var updaterOff = false
+    var updating = false
+    var recovering = false
+    var recoveryPending = false
+    var updateChecked = false
+    var updateDeclined = false
+    var quitAfterUpdate = false
+    var updateOffer: UpdateOffer?
+    var updateFlags: UpdateFlags?
+    var updateLock: UpdateLock?
+    /// For the app delegate: one model per process
+    static weak var current: LauncherModel?
 
     /// The game folder chosen with the folder dialog, for this session: it's kept nowhere outside the game folder
     private var chosen: URL?
@@ -91,7 +110,10 @@ final class LauncherModel: ObservableObject {
         listedSizes = resolutionList(desktop: desktop)
         findGame()
         loadSettings()
-        askForFolder = folder == nil
+        // a temporary copy (Open Anyway) restarts from the real folder first: the question would be for nothing
+        if case .no = translocation(of: Bundle.main.bundleURL) { askForFolder = folder == nil }
+        LauncherModel.current = self
+        startUpdater()
         // the game folder or its contents changed, or its config (the game saved it): show it
         ticker = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
@@ -130,7 +152,7 @@ final class LauncherModel: ObservableObject {
     }
 
     var running: Bool { gameApp.map { !$0.isTerminated } ?? false }
-    var canStart: Bool { folder != nil && gameAppURL != nil && !running && !starting }
+    var canStart: Bool { folder != nil && gameAppURL != nil && !running && !starting && (!updateBusy || updaterOff) }
     var canConnect: Bool { canStart && !trimmed(address).isEmpty }
     /// Something stands in the way: no game, or a game folder that can't be written
     var problem: Bool { folder == nil || gameAppURL == nil || unwritable }
@@ -418,7 +440,7 @@ final class LauncherModel: ObservableObject {
     // MARK: Starting the game
 
     func start(connect: Bool) {
-        guard !running, !starting else { return }
+        guard !running, !starting, !updateBusy || updaterOff else { return }
         findGame()
         guard let folder else {
             askForFolder = true
@@ -499,6 +521,7 @@ final class LauncherModel: ObservableObject {
 
     /// The game folder found again (its own settings if it changed), or its config read again if it changed
     func tick() {
+        updaterTick()
         if running { return }
         gameApp = nil
         if findGame() {

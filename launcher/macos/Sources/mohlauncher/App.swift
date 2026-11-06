@@ -39,6 +39,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        MainActor.assumeIsolated { LauncherModel.current?.shouldTerminate() ?? .terminateNow }
+    }
+
     @MainActor
     private static func writeSnapshot(to url: URL) -> Bool {
         guard let view = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil })?.contentView,

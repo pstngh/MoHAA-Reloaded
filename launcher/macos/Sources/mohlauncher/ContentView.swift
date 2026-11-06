@@ -63,6 +63,9 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             model.save()
         }
+        .sheet(isPresented: Binding(get: { model.updateDialog != .none }, set: { _ in })) {
+            UpdateSheet().environmentObject(model)
+        }
         .alert("Where is MOHAA?", isPresented: $model.askForFolder) {
             Button("Choose Folder…") {
                 Task { @MainActor in model.chooseGameFolder() }

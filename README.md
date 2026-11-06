@@ -26,7 +26,7 @@ Needs an Apple Silicon Mac (M1 or later) with macOS 26 or later. Developed and m
    ```bash
    xattr -dr com.apple.quarantine ~/Downloads/openmohaa-metal-1.0.0-macos-arm64
    ```
-   "Open Anyway" in System Settings isn't enough: macOS then runs a read-only copy that can't find your game data, and the game stops and shows this line for your folder.
+   Open Anyway on `mohlauncher.app` works too: it then clears the quarantine itself and restarts. On the game itself "Open Anyway" in System Settings isn't enough: macOS then runs a read-only copy that can't find your game data, and the game stops and shows this line for your folder.
 3. Copy `openmohaa.app` and `mohlauncher.app` into your MOHAA folder, next to `main/` (`Pak0.pk3` to `Pak6.pk3`; `mainta/` and `maintt/` for the expansions). Upstream's [installation guide](docs/markdown/01-intro/01-installation.md#linux-and-macos-users) shows how to get the data from the GOG installer.
 4. Start `mohlauncher.app`: [MoHAA Launcher](#mohaa-launcher). If the game folder is on an external drive or in Documents or Desktop, allow the access prompts (they come back after each update). `openmohaa.app` starts directly too: Spearhead and Breakthrough with `open openmohaa.app --args +set com_target_game 1` (or `2`) in Terminal, in the game folder.
 
