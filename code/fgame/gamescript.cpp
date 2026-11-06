@@ -698,6 +698,7 @@ void GameScript::Close(void)
     }
 
     m_CatchBlocks.FreeObjectList();
+    m_StateScripts.FreeObjectList();
 
     if (m_ProgToSource) {
         delete m_ProgToSource;
