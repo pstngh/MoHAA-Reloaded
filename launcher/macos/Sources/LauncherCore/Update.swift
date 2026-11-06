@@ -1146,17 +1146,20 @@ public func gameIsRunning(folder: URL) -> Bool {
 public struct UpdateHooks {
     public var afterDownload: ((URL) -> Void)?
     public var beforeInstall: ((inout StagedUpdate) -> Void)?
+    public var downloadURL: URL?
     public var failpoint: UpdateInstaller.Failpoint = { _ in }
     public init() {}
 }
 
 /// The update: downloaded into the game folder's work folder, unpacked and checked there, then moved in. True if it
 /// replaced the launcher. The caller holds the UpdateLock.
-public func runUpdate(_ offer: UpdateOffer, folder: URL, flags: UpdateFlags, hooks: UpdateHooks = UpdateHooks(),
+public func runUpdate(_ found: UpdateOffer, folder: URL, flags: UpdateFlags, hooks: UpdateHooks = UpdateHooks(),
                       configuration: URLSessionConfiguration? = nil,
                       verify: @escaping (URL) -> Bool = codesignVerifies,
                       report: @escaping @Sendable (UpdateStage) -> Void) async throws -> Bool {
     let fm = FileManager.default
+    var offer = found
+    if let url = hooks.downloadURL { offer.url = url }
     if gameIsRunning(folder: folder) { throw UpdateError.gameRunning }
     let installer = UpdateInstaller(folder: folder, failpoint: hooks.failpoint, verify: verify)
     let work = installer.work

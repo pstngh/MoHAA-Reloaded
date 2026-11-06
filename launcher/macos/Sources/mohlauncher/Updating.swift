@@ -396,7 +396,8 @@ extension LauncherModel {
     /// A test build's hooks (bundle.sh with MOHL_TEST_HOOKS=1; release.sh refuses a launcher that has them), from
     /// mohl-test-hooks.txt in the game folder, a line each: corrupt-zip, kill-at <step>, pause-at <step> <seconds>,
     /// slow-download <ms per chunk>, use-launcher <bundle in the folder> (it goes in the download's launcher's place:
-    /// today's release has no updater to take over), keep-launcher (as if the source were the same). The steps are
+    /// today's release has no updater to take over), keep-launcher (as if the source were the same), download-url <url>
+    /// (a local address that refuses or breaks the connection, with the network left on). The steps are
     /// UpdateInstaller's failpoints. Returns the download's delay in µs.
     static func testHooks(_ hooks: inout UpdateHooks, folder: URL) -> UInt32 {
         let file = folder.appendingPathComponent("mohl-test-hooks.txt")
@@ -423,6 +424,8 @@ extension LauncherModel {
                     try? FileManager.default.removeItem(at: target)
                     try? FileManager.default.copyItem(at: source, to: target)
                 }
+            case "download-url" where parts.count == 2:
+                hooks.downloadURL = URL(string: parts[1])
             case "keep-launcher":
                 let previous = hooks.beforeInstall
                 hooks.beforeInstall = { staged in
