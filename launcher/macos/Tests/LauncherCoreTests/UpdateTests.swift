@@ -181,9 +181,31 @@ final class UpdateCheckTests: XCTestCase {
 private let fm = FileManager.default
 
 private func tempFolder(_ name: String) throws -> URL {
-    let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("mohl-\(name)-\(UUID().uuidString.prefix(8))")
+    // TMPDIR as port/env.sh sets it, on the SSD: Foundation's own answer would be the internal disk
+    let base = ProcessInfo.processInfo.environment["TMPDIR"] ?? NSTemporaryDirectory()
+    let url = URL(fileURLWithPath: base).appendingPathComponent("mohl-\(name)-\(UUID().uuidString.prefix(8))")
     try fm.createDirectory(at: url, withIntermediateDirectories: true)
     return URL(fileURLWithPath: String(cString: realpath(url.path, nil)))
+}
+
+/// A program that really runs from the game's path: a copy of a system program wouldn't, macOS kills it for its signature
+private func makeStandInGame(_ exe: URL) throws {
+    try fm.createDirectory(at: exe.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let source = exe.deletingLastPathComponent().appendingPathComponent("standin.c")
+    try "#include <unistd.h>\nint main(void) { sleep(30); return 0; }\n".write(to: source, atomically: false, encoding: .utf8)
+    let built = runTool("/usr/bin/cc", ["-o", exe.path, source.path])
+    XCTAssertEqual(built.status, 0, built.output)
+    try fm.removeItem(at: source)
+}
+
+/// Runs it and waits until it's past exec, so that what's looked for is a live program
+private func startStandInGame(_ process: Process, _ exe: URL, folder: URL) throws {
+    process.executableURL = exe
+    try process.run()
+    let deadline = Date().addingTimeInterval(5)
+    while !gameIsRunning(folder: folder), Date() < deadline { usleep(20_000) }
+    usleep(100_000)
+    XCTAssertTrue(process.isRunning, "macOS killed the stand-in game")
 }
 
 private func write(_ url: URL, _ text: String) throws {
@@ -650,15 +672,11 @@ final class UpdateSwapTests: XCTestCase {
     func testFindsARunningGame() throws {
         let folder = try tempFolder("running")
         defer { try? fm.removeItem(at: folder) }
-        let macos = folder.appendingPathComponent("\(UpdateNames.game)/Contents/MacOS")
-        try fm.createDirectory(at: macos, withIntermediateDirectories: true)
-        let exe = macos.appendingPathComponent("openmohaa")
-        try fm.copyItem(atPath: "/bin/sleep", toPath: exe.path)
+        let exe = folder.appendingPathComponent("\(UpdateNames.game)/Contents/MacOS/openmohaa")
+        try makeStandInGame(exe)
         XCTAssertFalse(gameIsRunning(folder: folder))
         let process = Process()
-        process.executableURL = exe
-        process.arguments = ["30"]
-        try process.run()
+        try startStandInGame(process, exe, folder: folder)
         defer { process.terminate() }
         XCTAssertTrue(gameIsRunning(folder: folder))
         process.terminate()
@@ -970,14 +988,17 @@ final class UpdateRunTests: XCTestCase {
     func testAGameStartedDuringTheDownloadStopsIt() async throws {
         let exe = folder.appendingPathComponent("\(UpdateNames.game)/Contents/MacOS/openmohaa")
         try fm.removeItem(at: exe)
-        try fm.copyItem(atPath: "/bin/sleep", toPath: exe.path)
+        try makeStandInGame(exe)
         let process = Process()
         process.executableURL = exe
-        process.arguments = ["30"]
         defer { if process.isRunning { process.terminate() } }
         let before = try binarySafeSnapshot()
         var hooks = UpdateHooks()
-        hooks.afterDownload = { _ in try? process.run() }
+        hooks.afterDownload = { _ in
+            try? process.run()
+            usleep(200_000)
+            XCTAssertTrue(process.isRunning, "macOS killed the stand-in game")
+        }
         let result = await update(hooks: hooks)
         guard case .failure(let error) = result else { return XCTFail("it succeeded") }
         XCTAssertEqual(error as? UpdateError, .gameRunning)
@@ -987,11 +1008,9 @@ final class UpdateRunTests: XCTestCase {
     func testARunningGameStopsIt() async throws {
         let exe = folder.appendingPathComponent("\(UpdateNames.game)/Contents/MacOS/openmohaa")
         try fm.removeItem(at: exe)
-        try fm.copyItem(atPath: "/bin/sleep", toPath: exe.path)
+        try makeStandInGame(exe)
         let process = Process()
-        process.executableURL = exe
-        process.arguments = ["30"]
-        try process.run()
+        try startStandInGame(process, exe, folder: folder)
         defer { process.terminate() }
         let before = try binarySafeSnapshot()
         let result = await update()
