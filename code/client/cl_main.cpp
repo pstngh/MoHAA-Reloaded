@@ -29,8 +29,6 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "../qcommon/localization.h"
 #include "../qcommon/bg_compat.h"
 #include "../sys/sys_local.h"
-#include "../sys/sys_update_checker.h"
-#include "../uilib/uimessage.h"
 
 extern "C" {
 	#include "../sys/sys_loadlib.h"
@@ -175,7 +173,6 @@ void CL_ServerStatus_f(void);
 void CL_ServerStatusResponse( netadr_t from, msg_t *msg );
 
 static qboolean cl_bCLSystemStarted = qfalse;
-static qboolean cl_updateNotified = qfalse;
 
 /*
 ===============
@@ -791,9 +788,6 @@ CL_ShutdownAll
 */
 void CL_ShutdownAll(qboolean shutdownRef) {
 
-#ifdef USE_CURL
-	CL_cURL_Shutdown();
-#endif
 	// clear sounds
 #if defined(NO_MODERN_DMA) && NO_MODERN_DMA
 	S_DisableSounds();
@@ -1808,23 +1802,6 @@ Called when all downloading has been completed
 */
 void CL_DownloadsComplete( void ) {
 
-#ifdef USE_CURL
-	// if we downloaded with cURL
-	if(clc.cURLUsed) {
-		clc.cURLUsed = qfalse;
-		CL_cURL_Shutdown();
-		if( clc.cURLDisconnected ) {
-			if(clc.downloadRestart) {
-				FS_Restart(clc.checksumFeed);
-				clc.downloadRestart = qfalse;
-			}
-			clc.cURLDisconnected = qfalse;
-			CL_Reconnect_f();
-			return;
-		}
-	}
-#endif
-
 	// if we downloaded files we need to restart the file system
 	if (clc.downloadRestart) {
 		clc.downloadRestart = qfalse;
@@ -1896,7 +1873,6 @@ A download completed or failed
 void CL_NextDownload(void) {
 	char *s;
 	char *remoteName, *localName;
-	qboolean useCURL = qfalse;
 
 	// We are looking to start a download here
 	if (*clc.downloadList) {
@@ -1920,47 +1896,15 @@ void CL_NextDownload(void) {
 			*s++ = 0;
 		else
 			s = localName + strlen(localName); // point at the nul byte
-#ifdef USE_CURL
-		if(!(cl_allowDownload->integer & DLF_NO_REDIRECT)) {
-			if(clc.sv_allowDownload & DLF_NO_REDIRECT) {
-				Com_Printf("WARNING: server does not "
-					"allow download redirection "
-					"(sv_allowDownload is %d)\n",
-					clc.sv_allowDownload);
-			}
-			else if(!*clc.sv_dlURL) {
-				Com_Printf("WARNING: server allows "
-					"download redirection, but does not "
-					"have sv_dlURL set\n");
-			}
-			else if(!CL_cURL_Init()) {
-				Com_Printf("WARNING: could not load "
-					"cURL library\n");
-			}
-			else {
-				CL_cURL_BeginDownload(localName, va("%s/%s",
-					clc.sv_dlURL, remoteName));
-				useCURL = qtrue;
-			}
-		}
-		else if(!(clc.sv_allowDownload & DLF_NO_REDIRECT)) {
-			Com_Printf("WARNING: server allows download "
-				"redirection, but it disabled by client "
-				"configuration (cl_allowDownload is %d)\n",
+		if((cl_allowDownload->integer & DLF_NO_UDP)) {
+			Com_Error(ERR_DROP, "UDP Downloads are "
+				"disabled on your client. "
+				"(cl_allowDownload is %d)",
 				cl_allowDownload->integer);
+			return;
 		}
-#endif /* USE_CURL */
-		if(!useCURL) {
-			if((cl_allowDownload->integer & DLF_NO_UDP)) {
-				Com_Error(ERR_DROP, "UDP Downloads are "
-					"disabled on your client. "
-					"(cl_allowDownload is %d)",
-					cl_allowDownload->integer);
-				return;
-			}
-			else {
-				CL_BeginDownload( localName, remoteName );
-			}
+		else {
+			CL_BeginDownload( localName, remoteName );
 		}
 		clc.downloadRestart = qtrue;
 
@@ -2643,36 +2587,6 @@ void CL_SetFrameNumber(int frameNumber) {
 
 /*
 ==================
-CL_VerifyUpdate
-
-Check for a new version and display a message box
-when a new version is available
-==================
-*/
-void CL_VerifyUpdate() {
-    if (cl_updateNotified) {
-        return;
-    }
-
-    int lastMajor, lastMinor, lastPatch;
-    if (updateChecker.CheckNewVersion(lastMajor, lastMinor, lastPatch)) {
-        cl_updateNotified = true;
-
-        const char *updateText =
-            va("A new update is available!\n"
-               "The latest version is v%d.%d.%d (you are running v%s).\n"
-               "Check https://github.com/openmoh/openmohaa for more.",
-               lastMajor,
-               lastMinor,
-               lastPatch,
-               PRODUCT_VERSION_NUMBER_STRING);
-
-        UIMessageDialog::ShowMessageBox("Update available", updateText);
-    }
-}
-
-/*
-==================
 CL_Frame
 
 ==================
@@ -2683,24 +2597,6 @@ void CL_Frame ( int msec ) {
 		return;
 	}
 
-#ifdef USE_CURL
-	if(clc.downloadCURLM) {
-		CL_cURL_PerformDownload();
-		// we can't process frames normally when in disconnected
-		// download mode since the ui vm expects clc.state to be
-		// CA_CONNECTED
-		if(clc.cURLDisconnected) {
-			cls.realFrametime = msec;
-			cls.frametime = msec;
-			cls.realtime += cls.frametime;
-			SCR_UpdateScreen();
-			S_Update();
-			cls.framecount++;
-			return;
-		}
-	}
-#endif
-
 	if (CL_FinishedIntro()) {
 		if (clc.state == CA_DISCONNECTED) {
 			if (!UI_MenuActive() && !com_sv_running->integer) {
@@ -2709,8 +2605,6 @@ void CL_Frame ( int msec ) {
 				S_TriggeredMusic_PlayIntroMusic();
 				UI_MenuEscape("main");
 			}
-
-            CL_VerifyUpdate();
 		} else if (clc.state == CA_CINEMATIC) {
 			UI_ForceMenuOff(qtrue);
 		}
@@ -3640,9 +3534,6 @@ void CL_Init( void ) {
 	cl_showMouseRate = Cvar_Get ("cl_showmouserate", "0", 0);
 
 	cl_allowDownload = Cvar_Get ("cl_allowDownload", "0", CVAR_ARCHIVE);
-#ifdef USE_CURL
-	cl_cURLLib = Cvar_Get("cl_cURLLib", DEFAULT_CURL_LIB, CVAR_ARCHIVE);
-#endif
 
 	cl_altbindings = Cvar_Get( "cl_altbindings", "0", CVAR_ARCHIVE );
 	cl_ctrlbindings = Cvar_Get( "cl_altbindings", "0", CVAR_ARCHIVE );

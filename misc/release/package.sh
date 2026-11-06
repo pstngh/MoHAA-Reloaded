@@ -2,7 +2,7 @@
 #
 # The v1.0.0 release's Linux and Windows downloads from CI's build artifacts (out-linux-amd64, out-windows-x64):
 # the build's files without the dedicated server, plus COPYING.txt, this folder's INSTALL-<platform>.txt as INSTALL.txt (with the commit) and
-# this folder's licenses/ (licenses-linux/ too on Linux: wolfSSL is only in the Linux build). The download must hold
+# this folder's licenses/. The download must hold
 # exactly the files in files-<platform>.txt, so a build that adds or drops a file stops here instead of shipping.
 #
 #   misc/release/package.sh <linux-amd64|windows-x64> <artifact dir> <output dir> <commit>
@@ -37,7 +37,6 @@ cp -R "$here/licenses" "$stage/"
 
 case $platform in
 linux-amd64)
-	cp -R "$here/licenses-linux/." "$stage/licenses/"
 	sed "s/@COMMIT@/$commit/" "$here/INSTALL-$platform.txt" > "$stage/INSTALL.txt"
 	;;
 windows-x64)

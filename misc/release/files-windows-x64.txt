@@ -7,12 +7,9 @@ game.dll
 launch_openmohaa_base.exe
 launch_openmohaa_breakthrough.exe
 launch_openmohaa_spearhead.exe
-libcurl.dll
 licenses
 licenses/SDL3
 licenses/SDL3/LICENSE.txt
-licenses/curl
-licenses/curl/COPYING
 licenses/jpeg
 licenses/jpeg/README
 licenses/libmad

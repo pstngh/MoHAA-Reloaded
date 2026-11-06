@@ -18,7 +18,7 @@
 - **The Omaha sound mixer** (JayRewd's) instead of OpenAL: miniaudio for the device, gains per kind of sound, ducking, sounds behind walls muffled, and HRTF for headphones.
 - **Same game online.** The network protocol, the server-side game code and the data formats are upstream's, except that backpedal and strafe move at the original game's speeds, and a server it hosts caps SMGs and rifles at the original's top speeds.
 
-Needs a GPU with a Vulkan 1.1 driver (on Linux Mesa's RADV, ANV or NVK, or NVIDIA's driver; on Windows any current AMD, NVIDIA or Intel driver). The Linux build needs glibc 2.34 or later (Ubuntu 22.04, Debian 12, Fedora 35 or later), the Windows build the [Microsoft Visual C++ 2015–2022 Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe), which most PCs with games already have; SDL 3 and libcurl come with both (the Linux build uses the SDL 3 next to it, so distributions without one, like Ubuntu 22.04 and 24.04, need nothing). On a Wayland desktop the game is a native Wayland client (`SDL_VIDEODRIVER=x11` runs it under Xwayland). Developed and measured on an AMD Radeon 780M with Mesa's RADV driver under KDE Plasma (Wayland); also played on an NVIDIA RTX 4070 Ti.
+Needs a GPU with a Vulkan 1.1 driver (on Linux Mesa's RADV, ANV or NVK, or NVIDIA's driver; on Windows any current AMD, NVIDIA or Intel driver). The Linux build needs glibc 2.34 or later (Ubuntu 22.04, Debian 12, Fedora 35 or later), the Windows build the [Microsoft Visual C++ 2015–2022 Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe), which most PCs with games already have; SDL 3 comes with both (the Linux build uses the SDL 3 next to it, so distributions without one, like Ubuntu 22.04 and 24.04, need nothing). On a Wayland desktop the game is a native Wayland client (`SDL_VIDEODRIVER=x11` runs it under Xwayland). Developed and measured on an AMD Radeon 780M with Mesa's RADV driver under KDE Plasma (Wayland); also played on an NVIDIA RTX 4070 Ti.
 
 ## Install
 
@@ -90,10 +90,10 @@ Configs saved by earlier builds keep the values they hold: a saved `com_maxfps 8
 
 ## Building
 
-Linux needs CMake 3.25 or later, Ninja, Clang or GCC, Flex, Bison, SDL 3 (3.2.0 or later; the downloads and CI use 3.4.18), libcurl and the Vulkan headers 1.4 (Khronos' Vulkan-Headers; distributions' packages may be too old: Ubuntu 22.04's are):
+Linux needs CMake 3.25 or later, Ninja, Clang or GCC, Flex, Bison, SDL 3 (3.2.0 or later; the downloads and CI use 3.4.18) and the Vulkan headers 1.4 (Khronos' Vulkan-Headers; distributions' packages may be too old: Ubuntu 22.04's are):
 
 ```bash
-sudo apt-get install -y cmake ninja-build clang lld flex bison libcurl4-openssl-dev
+sudo apt-get install -y cmake ninja-build clang lld flex bison
 ```
 
 SDL 3 is `libsdl3-dev` on Ubuntu 25.04 and later and Debian 13 (`SDL3-devel` on Fedora). Ubuntu 22.04 and 24.04 have none: build SDL 3.4.18 as CI does, with the X11 and Wayland development files (without them SDL can't open a window):

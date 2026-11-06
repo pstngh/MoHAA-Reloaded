@@ -14,7 +14,6 @@ set(CLIENT_SOURCES
     ${SOURCE_DIR}/client/cl_cgame.cpp
     ${SOURCE_DIR}/client/cl_cin.cpp
     ${SOURCE_DIR}/client/cl_consolecmds.cpp
-    ${SOURCE_DIR}/client/cl_curl.c
     ${SOURCE_DIR}/client/cl_input.cpp
     ${SOURCE_DIR}/client/cl_instantAction.cpp
     ${SOURCE_DIR}/client/cl_inv.cpp
@@ -88,10 +87,6 @@ endif()
 
 # the renderer is loaded at run time: renderer_<cl_renderer> (renderer_vulkan)
 list(APPEND CLIENT_DEFINITIONS USE_RENDERER_DLOPEN)
-
-if(USE_HTTP)
-    list(APPEND CLIENT_DEFINITIONS USE_HTTP)
-endif()
 
 if(USE_VOIP)
     list(APPEND CLIENT_DEFINITIONS USE_VOIP)

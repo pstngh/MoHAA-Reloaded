@@ -45,7 +45,7 @@ Licenses and source
 -------------------
 
 OpenMoHAA is free software under the GNU General Public License, version 2 (COPYING.txt). The
-libraries built into it or shipped with it keep their own licenses, in licenses\ (SDL 3, curl, libmad,
+libraries built into it or shipped with it keep their own licenses, in licenses\ (SDL 3, libmad,
 the IJG JPEG library, libogg, libvorbis, opus, opusfile, zlib, Recast & Detour) and in
 OMAHA-SOUND-LICENSES.txt (miniaudio, libmysofa, PFFFT); the headphone sound set's license is in
 main\sound\prom\hrtf\. This software is based in part on the work of the Independent JPEG Group.
@@ -54,4 +54,4 @@ License, version 3 or later (licenses\mohlauncher\COPYING); its source is launch
 
 Built from commit @COMMIT@ of
 https://github.com/fortemoh/MoHAA-Reloaded (the full source code of this build) by its CI, with SDL
-3.4.18 and curl 8.12.1 from their own repositories.
+3.4.18 from its own repository.

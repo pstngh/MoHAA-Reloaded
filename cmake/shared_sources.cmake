@@ -44,7 +44,6 @@ add_git_dependency(${SOURCE_DIR}/qcommon/common.c)
 
 set(SYSTEM_SOURCES
     ${SOURCE_DIR}/sys/con_log.c
-    ${SOURCE_DIR}/sys/sys_autoupdater.c
     ${SOURCE_DIR}/sys/sys_main.c
     ${SYSTEM_PLATFORM_SOURCES}
 )
@@ -65,8 +64,6 @@ list(APPEND SYSTEM_SOURCES
     ${SOURCE_DIR}/sys/new/sys_main_new.c
     ${SOURCE_DIR}/sys/win_bounds.cpp
     ${SOURCE_DIR}/sys/win_localization.cpp
-    ${SOURCE_DIR}/sys/sys_curl.c
-    ${SOURCE_DIR}/sys/sys_update_checker.cpp
 )
 
 # Append TIKI sources

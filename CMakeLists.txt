@@ -18,7 +18,6 @@ option(BUILD_GAME_LIBRARIES "Build game module libraries" ON)
 option(BUILD_GAME_QVMS "Build game module qvms" ON)
 option(BUILD_STANDALONE "Build binaries for standalone games" OFF)
 
-option(USE_HTTP "HTTP download support" ON)
 option(USE_CODEC_VORBIS "Ogg Vorbis support" ON)
 option(USE_CODEC_OPUS "Ogg Opus support" ON)
 option(USE_CODEC_MAD "MP3 support" ON)

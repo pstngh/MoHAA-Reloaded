@@ -8,28 +8,21 @@ The following tools are required for all platforms:
 - A C++11 compiler
 - [SDL2](https://github.com/libsdl-org/SDL/tree/SDL2)
 
-The following tools may be useful:
-- [cURL](https://github.com/curl/curl)
-
 The installation directory can be set to the MOHAA directory with `-DCMAKE_INSTALL_PREFIX=/path/to/mohaa`.
 
 Compiling debug binaries will result in a `-dbg` suffix appended to the name of the binaries to avoid mixing debug/release code.
-
-> [!NOTE]
-> OpenMoHAA is loosely coupled to libcurl, meaning the library is not required for the game to work normally. Currently it only checks for update, it can be used for more features.
 
 ## Compiling for Linux
 
 These are the tools required on Linux :
 - Clang >= 7.0.1 or GCC >= 9.4.0
 - libsdl2-dev
-- libcurl4-openssl-dev
 
 **clang-7** and **gcc-9** are the minimum required versions. These are EOLs, the project is built using currently maintained compiler versions, which are recommended.
 
 1 line install command with clang:
 ```sh
-sudo apt-get install -y cmake ninja-build clang lld flex bison libsdl2-dev libcurl4-openssl-dev
+sudo apt-get install -y cmake ninja-build clang lld flex bison libsdl2-dev
 ```
 
 Example with **CMake** and **ninja-build** installed:
@@ -49,14 +42,6 @@ Other compilers can be specified by appending `-DCMAKE_C_COMPILER=/path/to/compi
 Visual Studio (2019-2026) is generally preferred.
 
 - Get Flex/Bison: https://github.com/lexxmark/winflexbison/releases/latest
-- Get cURL: https://github.com/curl/curl
-
-Optionally, The cURL library can be compiled with the following CMake commands:
-```
-cmake -DCMAKE_INSTALL_PREFIX="C:\source\openmohaa\thirdparty\curl\build\install" -DCURL_USE_LIBPSL=OFF -DCURL_USE_SCHANNEL=ON -B build
-cmake --build build --config Release
-cmake --install build --config Release
-```
 
 Append `-DFLEX_EXECUTABLE=...\win_flex.exe -DBISON_EXECUTABLE=...\win_bison.exe` to the CMake command-line to compile the project.
 
@@ -69,8 +54,6 @@ cmake --install .
 ```
 
 Usually binaries get installed inside the `Program Files (x86)` folder.
-
-afterwards you can can append `-DCURL_ROOT=path\to\curl\install` to specify the install path to cURL.
 
 ## Tweaking the build
 

@@ -34,8 +34,6 @@ jobs:
     runs-on: ${{ matrix.architecture.os }}
     environment: ${{ inputs.environment }}
     env:
-        wolfssl-version: 'v5.7.6-stable'
-        curl-version: '8_12_1'
         sdl3-branch: 'release-3.4.18'
         vulkan-headers-version: 'v1.4.341'
 
@@ -142,74 +140,6 @@ jobs:
         cmake --install ./build
 
     ###
-    # WolfSSL
-    ###
-    - name: Cache WolfSSL
-      id: cache-wolfssl
-      uses: actions/cache@v4
-      with:
-        path: 'thirdparties/wolfssl/install'
-        key: ${{ runner.os }}-${{ matrix.architecture.name }}-wolfssl-${{ env.wolfssl-version }}-v1
-
-    # WolfSSL setup
-    - name: Checkout WolfSSL
-      if: steps.cache-wolfssl.outputs.cache-hit != 'true'
-      uses: actions/checkout@v4
-      with:
-        repository: 'wolfssl/wolfssl'
-        path: 'thirdparties/wolfssl'
-        ref: '${{ env.wolfssl-version }}'
-
-    # WolfSSL build
-    - name: Configure and install wolfssl
-      if: steps.cache-wolfssl.outputs.cache-hit != 'true'
-      working-directory: ${{github.workspace}}/thirdparties/wolfssl
-      run: |
-        cmake -B ./build \
-            -DCMAKE_INSTALL_PREFIX='${{github.workspace}}/thirdparties/wolfssl/install' \
-            -DCMAKE_C_FLAGS="$CFLAGS -fPIC" \
-            -DCMAKE_CXX_FLAGS="$CFLAGS -fPIC" \
-            -DBUILD_SHARED_LIBS=OFF -DWOLFSSL_OPENSSLEXTRA=ON -DWOLFSSL_ASM=OFF -DWOLFSSL_EXAMPLES=OFF -DWOLFSSL_CURL=ON
-        cmake --build ./build --config Release --parallel
-        cmake --install ./build --config Release
-
-    ###
-    # cURL
-    ###
-    - name: Cache cURL
-      id: cache-curl
-      uses: actions/cache@v4
-      with:
-        path: 'thirdparties/curl/install'
-        key: ${{ runner.os }}-${{ matrix.architecture.name }}-curl-${{ env.curl-version }}-v1
-
-    # cURL setup
-    - name: Checkout cURL
-      if: steps.cache-curl.outputs.cache-hit != 'true'
-      uses: actions/checkout@v4
-      with:
-        repository: 'curl/curl'
-        path: 'thirdparties/curl'
-        ref: 'curl-${{ env.curl-version }}'
-
-    # cURL build
-    - name: Configure and install curl
-      if: steps.cache-curl.outputs.cache-hit != 'true'
-      working-directory: ${{github.workspace}}/thirdparties/curl
-      run: |
-        cmake -B ./build \
-            -DCMAKE_INSTALL_PREFIX='${{github.workspace}}/thirdparties/curl/install' \
-            -DCURL_USE_LIBPSL=OFF \
-            -DCURL_USE_WOLFSSL=ON \
-            -DCURL_ZLIB="" \
-            -DCURL_BROTLI="" \
-            -DCURL_ZSTD="" \
-            -DCMAKE_SHARED_LINKER_FLAGS="-lm" \
-            -DWolfSSL_ROOT='${{github.workspace}}/thirdparties/wolfssl/install'
-        cmake --build ./build --config Release --parallel
-        cmake --install ./build --config Release
-
-    ###
     # Project
     ###
 
@@ -223,7 +153,6 @@ jobs:
         -DCMAKE_INSTALL_PREFIX='${{github.workspace}}/install' \
         -DUSE_INTERNAL_SDL=OFF \
         -DSDL3_DIR='${{github.workspace}}/thirdparties/SDL3/install/lib/cmake/SDL3' \
-        -DCURL_ROOT='${{github.workspace}}/thirdparties/curl/install' \
         -DBUILD_RENDERER_VULKAN=ON \
         -DVulkanHeaders_DIR='${{github.workspace}}/thirdparties/Vulkan-Headers/install/share/cmake/VulkanHeaders' \
         -DGIT_REVISION_BUILD_NUMBER=${{ github.run_number }} \
@@ -247,7 +176,6 @@ jobs:
         # Copy libraries
         mkdir ${{github.workspace}}/package
         cp -l ${{github.workspace}}/thirdparties/SDL3/install/lib/libSDL3.so.0 '${{github.workspace}}/package/'
-        cp -l ${{github.workspace}}/thirdparties/curl/install/lib*/libcurl.so.4 '${{github.workspace}}/package/'
         if [ -d ${{github.workspace}}/install/bin ]; then cp -r ${{github.workspace}}/install/bin/openmohaa/. '${{github.workspace}}/package'; fi
         if [ -d ${{github.workspace}}/install/lib ]; then cp -r ${{github.workspace}}/install/lib/openmohaa/. '${{github.workspace}}/package'; fi
 

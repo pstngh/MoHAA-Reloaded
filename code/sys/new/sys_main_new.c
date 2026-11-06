@@ -23,8 +23,6 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "../sys_local.h"
 #include "../win_localization.h"
 #include "../sys_loadlib.h"
-#include "../sys_curl.h"
-#include "../sys_update_checker.h"
 
 // a pointer to the last piece of data retrieved from the clipboard is stored here,
 // so that it can be cleaned up when new data is retrieved, preventing memory leaks
@@ -304,17 +302,4 @@ void VM_Forced_Unload_Done(void) {
 void Sys_InitEx()
 {
     Sys_InitLocalization();
-    Sys_InitCurl();
-    Sys_UpdateChecker_Init();
-}
-
-void Sys_ShutdownEx()
-{
-    Sys_UpdateChecker_Shutdown();
-    Sys_ShutdownCurl();
-}
-
-void Sys_ProcessBackgroundTasks()
-{
-    Sys_UpdateChecker_Process();
 }

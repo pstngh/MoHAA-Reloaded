@@ -8,10 +8,6 @@ list(APPEND SYSTEM_PLATFORM_SOURCES ${SOURCE_DIR}/sys/sys_unix.c)
 
 list(APPEND SYSTEM_PLATFORM_SOURCES ${SOURCE_DIR}/sys/con_tty.c)
 
-#if(USE_HTTP)
-#    list(APPEND CLIENT_PLATFORM_SOURCES ${SOURCE_DIR}/client/cl_http_curl.c)
-#endif()
-
 list(APPEND COMMON_LIBRARIES
     ${CMAKE_DL_LIBS}    # Dynamic loader
     m                   # Math library

@@ -43,17 +43,6 @@ Flood protection prevents spam but can sometimes interfere with rapid actions li
 
 For more details on preventing message spamming, check out the [Chat](#chat) section below.
 
-### Updates
-
-The game periodically checks for new versions in the GitHub project page in the background. Updates are not applied automatically, they must be downloaded and installed manually.
-
-Update checking is enabled by default, but can be disabled with:
-- `set net_enabled 0`, disables networking as mentioned aboe
-- `set com_updatechecker_enabled 0`
-- Compiling the project without libcurl support
-
-If disabled, remember to check the project page for new versions. Updates can improve security and provide important fixes against exploits.
-
 ## Server configuration
 
 ### Optimization / Antichams

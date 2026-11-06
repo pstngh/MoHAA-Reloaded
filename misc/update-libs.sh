@@ -68,10 +68,6 @@ prepare "https://www.ijg.org/files/jpegsrc.v${JPEG_VERSION}.tar.gz" \
     "\./\(j.*\.c\|.*\.h\)" \
     "\./\(jmem\(ansi\|dos\|mac\|name\)\|jpegtran\)\.c"
 
-prepare "https://curl.se/download/curl-${CURL_VERSION}.tar.gz" \
-    "./configure --with-openssl" \
-    "\.*/include/.*\.h"
-
 # SDL 3's API headers, without its OpenGL, OpenGL ES and EGL headers (no
 # OpenGL in this branch, see tools/glcheck.sh)
 prepare "https://github.com/libsdl-org/SDL/releases/download/release-${SDL_VERSION}/SDL3-${SDL_VERSION}.tar.gz" \
