@@ -135,8 +135,8 @@ final class CoreTests: XCTestCase {
         // a 1080p screen: the common sizes up to its own, nothing larger, none of the display's odd modes
         let list = resolutionList(desktop: Resolution(1920, 1080))
         XCTAssertEqual(list, [(1920, 1080), (1680, 1050), (1600, 900), (1440, 1080), (1440, 900), (1366, 768),
-                              (1280, 1024), (1280, 960), (1280, 720), (1152, 864), (1024, 768), (800, 600),
-                              (640, 480)].map { Resolution($0.0, $0.1) })
+                              (1280, 1024), (1280, 960), (1280, 720), (1152, 864), (1024, 768), (960, 720),
+                              (800, 600), (640, 480)].map { Resolution($0.0, $0.1) })
         // QHD and 4K where the screen is that large; a screen's own odd size first (a MacBook's, in points)
         XCTAssertTrue(resolutionList(desktop: Resolution(2560, 1440)).contains(Resolution(2560, 1440)))
         XCTAssertFalse(resolutionList(desktop: Resolution(2560, 1440)).contains(Resolution(3840, 2160)))

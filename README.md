@@ -127,7 +127,7 @@ The install signs `install/lib/openmohaa/openmohaa.app` ad hoc (the game librari
 
 ## Looks and limits
 
-- **Looks like GL1**, except on purpose: foliage drawn after walls (a few tie pixels), all of 32+ dynamic lights lighting the world (MOHAA lit nothing on arm64), doors and lifts lit by every dynamic light, models at full detail, walls and windows you lean into kept whole (`r_depthClamp`), the chat and game messages kept clear of the compass at every resolution, and `r_gamma` applied in the final pass instead of the display's gamma table.
+- **Looks like GL1**, except on purpose: foliage drawn after walls (a few tie pixels), all of 32+ dynamic lights lighting the world (MOHAA lit nothing on arm64), doors and lifts lit by every dynamic light, models at full detail, walls and windows you lean into kept whole (`r_depthClamp`), the chat and game messages kept clear of the compass at every resolution, no team icon beside the health bar in team games, and `r_gamma` applied in the final pass instead of the display's gamma table.
 - **Tested on one Mac.** Reports from other Macs and ProMotion displays are welcome.
 - **Not notarized**, hence the quarantine step.
 - **At low frame caps** (about 60 or less) with `cl_movefps` on, the game keeps a CPU core busy between frames to send each command on time.

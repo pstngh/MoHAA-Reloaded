@@ -880,35 +880,6 @@ static qhandle_t CG_TeamHudShader(int team)
     return cgs.media.teamHudShaders[i];
 }
 
-void CG_DrawPlayerTeam()
-{
-    qhandle_t handle;
-    if (!cg_hud->integer) {
-        return;
-    }
-
-    if (!cg.snap || cgs.gametype <= GT_FFA) {
-        return;
-    }
-
-    handle = CG_TeamHudShader(cg.snap->ps.stats[STAT_TEAM]);
-
-    if (handle) {
-        cgi.R_SetColor(NULL);
-        cgi.R_DrawStretchPic(
-            96.0 * cgs.uiHiResScale[0],
-            cgs.glconfig.vidHeight - 46 * cgs.uiHiResScale[1],
-            24.0 * cgs.uiHiResScale[0],
-            24.0 * cgs.uiHiResScale[1],
-            0.0,
-            0.0,
-            1.0,
-            1.0,
-            handle
-        );
-    }
-}
-
 void CG_DrawPlayerEntInfo()
 {
     int         iClientNum;
@@ -1522,7 +1493,6 @@ void CG_Draw2D(void)
     CG_DrawIcons();
     CG_DrawStopwatch();
     CG_DrawSpectatorView();
-    CG_DrawPlayerTeam();
     CG_DrawPlayerEntInfo();
     CG_UpdateAttackerDisplay();
     CG_DrawVote();
