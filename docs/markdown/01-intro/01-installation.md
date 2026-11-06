@@ -90,7 +90,7 @@ Alternatively, you can also use [WINE](https://www.winehq.org/) to install the g
 
 **Notes:**
 
-1. For servers, only `omohaaded.*`, `game.*`, and `curl` binaries from the archive are required.
+1. For servers, only `omohaaded.*` and `game.*` binaries from the archive are required.
 
 ## Appendix
 

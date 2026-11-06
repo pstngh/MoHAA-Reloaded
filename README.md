@@ -136,6 +136,6 @@ The install signs `install/lib/openmohaa/openmohaa.app` ad hoc (the game librari
 ## More
 
 - The full record of the port (every decision, measurement and session): [`docs/METAL_PORT_PLAN.md`](docs/METAL_PORT_PLAN.md).
-- Upstream, its documentation and community: [openmoh/openmohaa](https://github.com/openmoh/openmohaa). Its guides in [`docs/markdown`](docs/markdown) apply here except for Windows, Linux, the launchers, the update checker, where configs go (above) and building.
+- Upstream, its documentation and community: [openmoh/openmohaa](https://github.com/openmoh/openmohaa). Its guides in [`docs/markdown`](docs/markdown) apply here except for Windows, Linux, the launchers, where configs go (above) and building.
 - Thanks to the OpenMoHAA team for the engine (built on [ioquake3](https://github.com/ioquake/ioq3) and the F.A.K.K SDK), to JayRewd, whose ideas were measured and re-implemented here, and to notuern for the sub-grid.
 - OpenMoHAA is GPL-2.0 ([`COPYING.txt`](COPYING.txt)). It is an independent project, not affiliated with or endorsed by Electronic Arts.

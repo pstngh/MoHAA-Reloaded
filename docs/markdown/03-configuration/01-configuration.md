@@ -4,8 +4,6 @@
 
 This documentation currently only lists new changes that were introduced in OpenMoHAA. For a list of known settings, see [Server configuration](02-configuration-server.md).
 
-If you want to use containers, see [Creating a Docker image](../02-running/04-docker.md).
-
 ### Home directory
 
 OpenMoHAA uses a dedicated home directory by default for user data and mods. This behavior can be customized:
@@ -42,17 +40,6 @@ Flood protection is turned off by default in OpenMoHAA (`sv_floodProtection 0`).
 Flood protection prevents spam but can sometimes interfere with rapid actions like reloading and checking scores within a short period of time. It can be disabled with `set sv_floodProtection 0`.
 
 For more details on preventing message spamming, check out the [Chat](#chat) section below.
-
-### Updates
-
-The game periodically checks for new versions in the GitHub project page in the background. Updates are not applied automatically, they must be downloaded and installed manually.
-
-Update checking is enabled by default, but can be disabled with:
-- `set net_enabled 0`, disables networking as mentioned aboe
-- `set com_updatechecker_enabled 0`
-- Compiling the project without libcurl support
-
-If disabled, remember to check the project page for new versions. Updates can improve security and provide important fixes against exploits.
 
 ## Server configuration
 

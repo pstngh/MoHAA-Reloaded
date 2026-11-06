@@ -7,8 +7,6 @@ This guide assume you have already acquired and installed a copy of MOH:AA on yo
 1. Download the [latest release](https://github.com/openmoh/openmohaa/releases) that matches your server's platform.
 2. Extract files from the archive into your MOH:AA directory
 
-You can also use Docker, see [Creating a Docker image](04-docker.md).
-
 ## Preparing the server settings
 
 Inside the **main** directory of your game folder, create a `server_opm.cfg` file with the following content:
