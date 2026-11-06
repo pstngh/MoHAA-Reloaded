@@ -83,7 +83,6 @@ extension LauncherModel {
     private func refuseTranslocated() {
         updaterOff = true
         updateBusy = false
-        askForFolder = folder == nil
         showUpdateFailure(error: .translocated)
     }
 
@@ -92,14 +91,19 @@ extension LauncherModel {
     /// started this one, quitting) or a game runs from it.
     func runRecovery() {
         guard !updaterOff, !recovering, !updating else { return }
-        guard let folder = updateFolder(launcherBundle: launcherBundle) else {
-            // not the pair side by side: nothing to look after, nothing to offer
-            updaterOff = true
-            updateBusy = false
-            return
-        }
-        guard let lock = UpdateLock(folder: folder) else {
+        if let wait = nextRecovery, wait > Date() { return }
+        // The launcher's own folder, whatever is in it: an interrupted update may have one of the apps away, or this
+        // may be the old launcher under the name it waits by. There's nothing to do unless the work folder is there.
+        let folder = launcherBundle.deletingLastPathComponent()
+        let lock: UpdateLock
+        switch UpdateLock.take(folder: folder) {
+        case .locked(let taken):
+            lock = taken
+        case .busy:
             recoveryPending = true
+            return
+        case .noAccess:
+            finishRecovery(.noAccess, folder: folder)
             return
         }
         recovering = true
@@ -116,14 +120,22 @@ extension LauncherModel {
 
     private func finishRecovery(_ outcome: RecoveryOutcome, folder: URL) {
         recoveryPending = false
+        findGame() // an app that was away may be back
         switch outcome {
         case .gameRunning:
             recoveryPending = true
             return
         case .stuck:
-            updateBusy = false
-            updaterOff = true
-            showUpdateFailure(error: .interrupted)
+            // A half pair isn't for starting. Tried again now and then: the player may put fresh apps in (the message
+            // says so), and that clears it. Said once.
+            updateBusy = true
+            updateStuck = true
+            recoveryPending = true
+            nextRecovery = Date().addingTimeInterval(15)
+            if !stuckShown {
+                stuckShown = true
+                showUpdateFailure(error: .interrupted)
+            }
             return
         case .noAccess:
             // macOS's folder access was refused: nothing can be known, and the game can't run from there either
@@ -135,15 +147,23 @@ extension LauncherModel {
         case .undone(let launcherReplaced):
             if launcherReplaced {
                 // the bundle this one came from was just swapped out: the right one takes over
-                restartLauncher(arguments: ["--update-undone"], folder: folder)
+                restartLauncher(arguments: ["--update-undone"], folder: folder,
+                                ifNot: "The update was undone: open MoHAA Launcher again.")
                 return
             }
             showUpdateFailure(title: "The update didn't finish", text: "The update was interrupted, so the game's files are as they were.")
         case .nothing, .cleaned:
             break
         }
+        updateStuck = false
+        nextRecovery = nil
         updateBusy = false
-        checkForNewerBuild(folder: folder)
+        guard let pair = updateFolder(launcherBundle: launcherBundle) else {
+            // not the pair side by side: nothing to offer
+            updaterOff = true
+            return
+        }
+        checkForNewerBuild(folder: pair)
     }
 
     /// Asks the release once per start. With no network or no answer, nothing is said.
@@ -186,15 +206,26 @@ extension LauncherModel {
             updateDialog = .none
             return
         }
+        // another game in the folder since the offer: it may be newer than what's offered
+        guard installedCommit(folder: folder) == stale.installed else {
+            updateOffer = nil
+            updateDialog = .none
+            return
+        }
         if running || gameIsRunning(folder: folder) {
             showUpdateFailure(title: "Close the game first", text: UpdateError.gameRunning.message)
             return
         }
-        guard let lock = UpdateLock(folder: folder) else {
-            showUpdateFailure(error: .tryLater)
+        switch UpdateLock.take(folder: folder) {
+        case .locked(let lock):
+            updateLock = lock
+        case .busy:
+            showUpdateFailure(error: .busy)
+            return
+        case .noAccess:
+            showUpdateFailure(error: .unwritable)
             return
         }
-        updateLock = lock
         let flags = UpdateFlags()
         updateFlags = flags
         updating = true
@@ -210,12 +241,21 @@ extension LauncherModel {
         let slow: UInt32 = 0
         #endif
         Task { @MainActor in
-            // The offer may be hours old, and CI may have moved on. With no fresh answer the old one goes on: offline
-            // that's the network's message, and against a replaced zip the size or the hash says try later.
-            let fresh = await Task.detached { () -> UpdateOffer? in
-                await checkForUpdate(installed: installedCommit(folder: folder), fetch: { try await githubFetch($0) })
+            // The offer may be hours old, and CI may have moved on. With no answer the old one goes on: offline that's
+            // the network's message, and against a replaced zip the size or the hash says try later. GitHub saying it's
+            // not newer any more ends it.
+            let fresh = await Task.detached { () -> UpdateCheck in
+                await checkRelease(installed: stale.installed, fetch: { try await githubFetch($0) })
             }.value
-            let offer = fresh ?? stale
+            let offer: UpdateOffer
+            switch fresh {
+            case .newer(let newer): offer = newer
+            case .noAnswer: offer = stale
+            case .notNewer:
+                finishUpdate(.failure(UpdateError.cancelled), offer: stale, folder: folder)
+                updateOffer = nil
+                return
+            }
             let frozenHooks = hooks
             let result = await Task.detached { () -> Result<Bool, Error> in
                 do {
@@ -273,7 +313,8 @@ extension LauncherModel {
             updateOffer = nil
             findGame()
             if replacedLauncher {
-                restartLauncher(arguments: ["--updated", offer.commit], folder: folder)
+                restartLauncher(arguments: ["--updated", offer.commit], folder: folder,
+                                ifNot: "MoHAA Reloaded is updated: open MoHAA Launcher again.")
             } else {
                 showUpdated(commit: offer.commit)
             }
@@ -298,7 +339,7 @@ extension LauncherModel {
 
     /// The new launcher in this one's place, and this one gone. It's a new instance: the running one has this bundle
     /// identifier too, and without that Launch Services would only bring it to the front.
-    private func restartLauncher(arguments: [String], folder: URL) {
+    private func restartLauncher(arguments: [String], folder: URL, ifNot message: String) {
         save()
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.createsNewApplicationInstance = true
@@ -311,7 +352,7 @@ extension LauncherModel {
                     NSApp.terminate(nil)
                 } else {
                     self.updateBusy = false
-                    self.showUpdateMessage(title: "Updated", text: "MoHAA Reloaded is updated: open MoHAA Launcher again.")
+                    self.showUpdateMessage(title: "MoHAA Launcher", text: message)
                 }
             }
         }
@@ -331,6 +372,12 @@ extension LauncherModel {
 
     private func showUpdateFailure(title: String, text: String) {
         updateDialog = .message(title: title, text: text, releasePage: true)
+    }
+
+    /// OK: the question about the folder, if one was waiting for this dialog (one sheet or alert at a time)
+    func closeUpdateMessage() {
+        updateDialog = .none
+        if folder == nil, !recovering { askForFolder = true }
     }
 
     func openReleasePage() {
@@ -431,7 +478,7 @@ struct UpdateSheet: View {
                     if releasePage {
                         Button("Open Release Page") { model.openReleasePage() }
                     }
-                    Button("OK") { model.updateDialog = .none }
+                    Button("OK") { model.closeUpdateMessage() }
                         .keyboardShortcut(.defaultAction)
                 case .none:
                     EmptyView()

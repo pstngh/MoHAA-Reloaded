@@ -38,7 +38,8 @@ private func fakeGitHub(release: Data = releaseJSON(), compare: String = "ahead"
         if path.hasSuffix("/git/tags/\(tagSha)") {
             return (200, json(["object": ["sha": tagCommit, "type": "commit"]]))
         }
-        if path.contains("/compare/") { return (200, json(["status": compare])) }
+        // base, then head: the game's commit, then the tag's
+        if path.contains("/compare/"), path.hasSuffix("...\(tagCommit)") { return (200, json(["status": compare])) }
         return (404, Data())
     }
 }
@@ -83,6 +84,7 @@ final class UpdateCheckTests: XCTestCase {
         XCTAssertEqual(offer?.commit, commitA)
         XCTAssertEqual(offer?.size, 4_000_000)
         XCTAssertEqual(offer?.sha256, hashA)
+        XCTAssertEqual(offer?.installed, older)
         // a lightweight tag works as well
         let plain = await checkForUpdate(installed: older, fetch: fakeGitHub(tagObject: "commit"))
         XCTAssertEqual(plain?.commit, commitA)
@@ -120,6 +122,22 @@ final class UpdateCheckTests: XCTestCase {
         await none(older, fakeGitHub(tagCommit: "short"), "a tag without a full commit")
     }
 
+    func testTellsNoAnswerFromNotNewer() async {
+        let older = "cdce4088"
+        var result = await checkRelease(installed: older, fetch: fakeGitHub(compare: "behind"))
+        XCTAssertEqual(result, .notNewer)
+        result = await checkRelease(installed: String(commitA.prefix(8)), fetch: fakeGitHub())
+        XCTAssertEqual(result, .notNewer)
+        result = await checkRelease(installed: nil, fetch: fakeGitHub())
+        XCTAssertEqual(result, .notNewer)
+        result = await checkRelease(installed: older, fetch: fakeGitHub(failing: "/releases/"))
+        XCTAssertEqual(result, .noAnswer)
+        result = await checkRelease(installed: older, fetch: fakeGitHub(failing: "/compare/", status: 403))
+        XCTAssertEqual(result, .noAnswer)
+        result = await checkRelease(installed: older, fetch: fakeGitHub(release: releaseJSON(row: nil)))
+        XCTAssertEqual(result, .noAnswer, "CI at work")
+    }
+
     func testZipPaths() {
         let top = "openmohaa-metal-1.0.0-macos-arm64"
         let good = ["\(top)/", "\(top)/COPYING.txt", "\(top)/openmohaa.app/", "\(top)/openmohaa.app/Contents/MacOS/openmohaa",
@@ -151,7 +169,7 @@ final class UpdateCheckTests: XCTestCase {
         XCTAssertEqual(updateError(from: NSError(domain: NSCocoaErrorDomain, code: NSFileWriteOutOfSpaceError)), .diskFull)
         let wrapped = NSError(domain: NSCocoaErrorDomain, code: 1, userInfo: [NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: Int(EPERM))])
         XCTAssertEqual(updateError(from: wrapped), .blocked)
-        for e in [UpdateError.cancelled, .tryLater, .network, .diskFull, .unwritable, .blocked, .gameRunning, .translocated, .interrupted, .failed] {
+        for e in [UpdateError.cancelled, .tryLater, .network, .diskFull, .unwritable, .blocked, .gameRunning, .translocated, .interrupted, .failed, .busy] {
             XCTAssertFalse(e.message.contains("\n"))
             XCTAssertTrue(e.message.hasSuffix("."))
         }
@@ -408,7 +426,7 @@ final class UpdateSwapTests: XCTestCase {
     func testAFailedUndoingIsLeftForTheNextStart() throws {
         for forceRename in [false, true] {
             let undoing = try undoSteps(forceRename: forceRename)
-            for step in undoing where step.contains(".app") {
+            for step in undoing {
                 let why = "\(step), rename \(forceRename)"
                 let folder = try tempFolder("undofail")
                 defer { try? fm.removeItem(at: folder) }
@@ -426,7 +444,9 @@ final class UpdateSwapTests: XCTestCase {
                 XCTAssertThrowsError(try installer.install(staged), why) { XCTAssertEqual($0 as? UpdateError, .interrupted, why) }
                 XCTAssertTrue(fm.fileExists(atPath: installer.work.path), why)
                 let next = UpdateInstaller(folder: folder, verify: { _ in false }) // so that it undoes
-                XCTAssertEqual(try next.recover(), .undone(launcherReplaced: step.contains(UpdateNames.launcher)), why)
+                // by the game's own step the launcher is back already, and by the last step both are
+                let launcherAway = step.contains(UpdateNames.launcher) || step.hasPrefix("undo-file")
+                XCTAssertEqual(try next.recover(), .undone(launcherReplaced: launcherAway), why)
                 XCTAssertEqual(try snapshot(folder), before, why)
             }
         }
@@ -447,12 +467,104 @@ final class UpdateSwapTests: XCTestCase {
         try run(step: "swap:\(UpdateNames.launcher)", forceRename: false, failure: UpdateCrash()) { folder, installer, _, _ in
             let game = folder.appendingPathComponent(UpdateNames.game)
             try fm.removeItem(at: game)
-            try makeApp(game, id: gameID, exe: "openmohaa", tag: "someone else's")
+            try makeApp(game, id: "some.other.game", exe: "openmohaa", tag: "someone else's")
             let there = try snapshot(folder)
             XCTAssertEqual(try installer.recover(), .stuck)
             XCTAssertEqual(try snapshot(folder), there)
             XCTAssertTrue(fm.fileExists(atPath: installer.work.path))
+            // and the app simply gone
+            try fm.removeItem(at: game)
+            XCTAssertEqual(try installer.recover(), .stuck)
         }
+    }
+
+    /// What the message tells a stuck player to do: fresh apps in place. That ends it.
+    func testAReinstallClearsAnInterruptedUpdate() throws {
+        for forceRename in [false, true] {
+            for step in [forceRename ? "place:\(UpdateNames.launcher)" : "swap:\(UpdateNames.launcher)", "file-aside:INSTALL.txt"] {
+                try run(step: step, forceRename: forceRename, failure: UpdateCrash()) { folder, installer, _, _ in
+                    for (name, id, exe) in [(UpdateNames.game, gameID, "openmohaa"), (UpdateNames.launcher, launcherID, "mohlauncher")] {
+                        let app = folder.appendingPathComponent(name)
+                        try? fm.removeItem(at: app)
+                        try makeApp(app, id: id, exe: exe, tag: "fresh")
+                    }
+                    let picky = UpdateInstaller(folder: folder, forceRename: forceRename, verify: { _ in true })
+                    let outcome = try picky.recover()
+                    XCTAssertNotEqual(outcome, .stuck, step)
+                    XCTAssertEqual(tag(folder, UpdateNames.game), "fresh", step)
+                    XCTAssertEqual(tag(folder, UpdateNames.launcher), "fresh", step)
+                    XCTAssertFalse(fm.fileExists(atPath: installer.work.path), step)
+                    XCTAssertFalse(fm.fileExists(atPath: folder.appendingPathComponent(UpdateNames.launcherAside).path), step)
+                }
+            }
+        }
+    }
+
+    /// Without a swap there's a moment with no mohlauncher.app: the old one can still be opened, by another name
+    func testAVisibleLauncherAcrossTheGap() throws {
+        try run(step: "place:\(UpdateNames.launcher)", forceRename: true, failure: UpdateCrash()) { folder, installer, _, before in
+            XCTAssertFalse(fm.fileExists(atPath: folder.appendingPathComponent(UpdateNames.launcher).path))
+            XCTAssertEqual(tag(folder, UpdateNames.launcherAside), "old")
+            XCTAssertEqual(try installer.recover(), .undone(launcherReplaced: true))
+            XCTAssertEqual(try snapshot(folder), before)
+        }
+        // and it's gone once the update is done
+        let folder = try tempFolder("aside")
+        defer { try? fm.removeItem(at: folder) }
+        try makeGameFolder(folder)
+        let staged = try makeStage(folder)
+        let installer = UpdateInstaller(folder: folder, forceRename: true, verify: { _ in true })
+        try installer.install(staged)
+        XCTAssertEqual(tag(folder, UpdateNames.launcherAside), "old", "this one may be running")
+        XCTAssertEqual(try installer.recover(), .finished(commit: commitA))
+        XCTAssertFalse(fm.fileExists(atPath: folder.appendingPathComponent(UpdateNames.launcherAside).path))
+        try assertAllNew(folder, "done")
+    }
+
+    /// A journal that can't be written at the end of the undoing, as on a full disk: the undoing needs none
+    func testTheUndoingEndsWithoutWriting() throws {
+        let folder = try tempFolder("full")
+        defer { try? fm.removeItem(at: folder) }
+        try makeGameFolder(folder)
+        let before = try snapshot(folder)
+        let staged = try makeStage(folder)
+        let work = folder.appendingPathComponent(UpdateNames.workFolder)
+        let installer = UpdateInstaller(folder: folder, failpoint: {
+            if $0 == "commit" { throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC)) }
+            // nothing more can be created in the work folder from here
+            if $0.hasPrefix("undo-file"), !fm.fileExists(atPath: work.appendingPathComponent("journal.tmp").path) {
+                try fm.createDirectory(at: work.appendingPathComponent("journal.tmp"), withIntermediateDirectories: true)
+            }
+        }, verify: { _ in true })
+        XCTAssertThrowsError(try installer.install(staged)) { XCTAssertEqual($0 as? UpdateError, .diskFull) }
+        XCTAssertEqual(try snapshot(folder), before)
+        XCTAssertFalse(fm.fileExists(atPath: work.path))
+    }
+
+    /// No journal, yet old files: the moves reached the disk and it didn't. They aren't for removing.
+    func testOldFilesWithoutAJournalAreLeftAlone() throws {
+        let folder = try tempFolder("nojournal")
+        defer { try? fm.removeItem(at: folder) }
+        try makeGameFolder(folder)
+        let installer = UpdateInstaller(folder: folder)
+        try write(installer.work.appendingPathComponent("old/openmohaa.app/Contents/x"), "the old game")
+        XCTAssertEqual(try installer.recover(), .stuck)
+        XCTAssertTrue(fm.fileExists(atPath: installer.work.appendingPathComponent("old/openmohaa.app/Contents/x").path))
+        // only folders there: what a finished undoing leaves
+        try fm.removeItem(at: installer.work.appendingPathComponent("old/openmohaa.app/Contents/x"))
+        XCTAssertEqual(try installer.recover(), .cleaned)
+    }
+
+    /// The game started just before the first move
+    func testAGameStartedAfterTheLastCheck() throws {
+        let folder = try tempFolder("late")
+        defer { try? fm.removeItem(at: folder) }
+        try makeGameFolder(folder)
+        let before = try snapshot(folder)
+        let staged = try makeStage(folder)
+        let installer = UpdateInstaller(folder: folder, failpoint: { XCTFail("it went on: \($0)") }, verify: { _ in true })
+        XCTAssertThrowsError(try installer.install(staged, gameRunning: { true })) { XCTAssertEqual($0 as? UpdateError, .gameRunning) }
+        XCTAssertEqual(try snapshot(folder), before)
     }
 
     func testCleansWhatAnEarlyStopLeft() throws {
@@ -472,7 +584,19 @@ final class UpdateSwapTests: XCTestCase {
         XCTAssertEqual(try snapshot(folder), before)
     }
 
-    /// A folder where the download has a file, and a file where it needs a folder: nothing moves
+    func testNeverAFileWhereItNeedsAFolder() throws {
+        let folder = try tempFolder("afile")
+        defer { try? fm.removeItem(at: folder) }
+        try makeGameFolder(folder)
+        try fm.removeItem(at: folder.appendingPathComponent("licenses"))
+        try write(folder.appendingPathComponent("licenses"), "a file of the player's")
+        let before = try snapshot(folder)
+        let staged = try makeStage(folder)
+        XCTAssertThrowsError(try UpdateInstaller(folder: folder, verify: { _ in true }).install(staged))
+        XCTAssertEqual(try snapshot(folder), before)
+    }
+
+    /// A folder where the download has a file: nothing moves
     func testNeverInPlaceOfAFolder() throws {
         let folder = try tempFolder("infolder")
         defer { try? fm.removeItem(at: folder) }
@@ -505,11 +629,11 @@ final class UpdateSwapTests: XCTestCase {
     func testLockIsOnePerFolder() throws {
         let folder = try tempFolder("lock")
         defer { try? fm.removeItem(at: folder) }
-        let first = UpdateLock(folder: folder)
-        XCTAssertNotNil(first)
-        XCTAssertNil(UpdateLock(folder: folder))
-        first?.release()
-        XCTAssertNotNil(UpdateLock(folder: folder))
+        guard case .locked(let first) = UpdateLock.take(folder: folder) else { return XCTFail("the first takes it") }
+        guard case .busy = UpdateLock.take(folder: folder) else { return XCTFail("the second doesn't") }
+        first.release()
+        guard case .locked = UpdateLock.take(folder: folder) else { return XCTFail("free again") }
+        guard case .noAccess = UpdateLock.take(folder: folder.appendingPathComponent("missing")) else { return XCTFail("no folder") }
     }
 
     func testOnlyTheLauncherBesideTheGameUpdates() throws {
@@ -767,7 +891,7 @@ final class UpdateRunTests: XCTestCase {
 
     func testABadSignatureAtTheCheck() async throws {
         let before = try snapshot(folder)
-        try assertFailed(await update(verify: { $0.lastPathComponent != UpdateNames.launcher }), .tryLater, before)
+        try assertFailed(await update(verify: { $0.lastPathComponent != UpdateNames.launcher }), .failed, before)
     }
 
     func testOtherBundleIDs() async throws {
@@ -775,7 +899,7 @@ final class UpdateRunTests: XCTestCase {
         try makeApp(folder.appendingPathComponent(UpdateNames.game), id: "some.other.game", exe: "openmohaa", tag: "old")
         let changed = try snapshot(folder)
         XCTAssertNotEqual(before, changed)
-        try assertFailed(await update(), .tryLater, changed)
+        try assertFailed(await update(), .failed, changed)
     }
 
     func testAZipOfAnotherCommit() async throws {
@@ -796,7 +920,25 @@ final class UpdateRunTests: XCTestCase {
         try assertFailed(await update(), .tryLater, before)
     }
 
+    /// A real zip whose entry climbs out, made with zip(1), as ditto would have to refuse to see it
     func testAZipThatLeavesItsFolder() async throws {
+        let before = try snapshot(folder)
+        let source = try tempFolder("zip4")
+        defer { try? fm.removeItem(at: source) }
+        let inner = source.appendingPathComponent(top)
+        try makeZipTree(inner)
+        try write(source.appendingPathComponent("escaped.txt"), "out")
+        let out = source.appendingPathComponent("a.zip")
+        let made = runTool("/bin/sh", ["-c", "cd '\(inner.path)' && /usr/bin/zip -q -r '\(out.path)' ../\(top) ../escaped.txt"])
+        XCTAssertEqual(made.status, 0, made.output)
+        XCTAssertTrue(runTool("/usr/bin/zipinfo", ["-1", out.path]).output.contains("../"))
+        StubProtocol.body = try Data(contentsOf: out)
+        offer.size = Int64(StubProtocol.body.count)
+        offer.sha256 = try fileSHA256(out)
+        try assertFailed(await update(), .tryLater, before)
+    }
+
+    func testAZipOverThePlayersData() async throws {
         let before = try snapshot(folder)
         try replaceZip { try fm.createDirectory(at: $0.appendingPathComponent("main"), withIntermediateDirectories: true)
             try write($0.appendingPathComponent("main/x"), "over the player's data") }
@@ -822,6 +964,24 @@ final class UpdateRunTests: XCTestCase {
         defer { try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder.path) }
         guard !fm.isWritableFile(atPath: folder.path) else { throw XCTSkip("this volume ignores permissions") }
         try assertFailed(await update(), .unwritable, before)
+    }
+
+    /// The second look, after the download: the first found no game
+    func testAGameStartedDuringTheDownloadStopsIt() async throws {
+        let exe = folder.appendingPathComponent("\(UpdateNames.game)/Contents/MacOS/openmohaa")
+        try fm.removeItem(at: exe)
+        try fm.copyItem(atPath: "/bin/sleep", toPath: exe.path)
+        let process = Process()
+        process.executableURL = exe
+        process.arguments = ["30"]
+        defer { if process.isRunning { process.terminate() } }
+        let before = try binarySafeSnapshot()
+        var hooks = UpdateHooks()
+        hooks.afterDownload = { _ in try? process.run() }
+        let result = await update(hooks: hooks)
+        guard case .failure(let error) = result else { return XCTFail("it succeeded") }
+        XCTAssertEqual(error as? UpdateError, .gameRunning)
+        XCTAssertEqual(try binarySafeSnapshot(), before)
     }
 
     func testARunningGameStopsIt() async throws {

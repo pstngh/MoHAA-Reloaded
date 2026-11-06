@@ -54,7 +54,8 @@ ditto "$APP" "$STAGE/openmohaa.app"
 MOHL_SCRATCH="$OUT/mohlauncher-build" "$ROOT/launcher/macos/bundle.sh" "$STAGE" > /dev/null
 # the updater's test hooks never go out (MOHL_TEST_HOOKS, launcher/macos/bundle.sh), and neither does a launcher that
 # can't say which source it came from: the updater would replace it every time
-! strings -a "$STAGE/mohlauncher.app/Contents/MacOS/mohlauncher" | grep -q 'mohl-test-hooks' || die "mohlauncher has the test hooks"
+# (grep on the file: `strings | grep -q` under pipefail would let a hooked build through when grep stops early)
+! grep -aq 'mohl-test-hooks' "$STAGE/mohlauncher.app/Contents/MacOS/mohlauncher" || die "mohlauncher has the test hooks"
 /usr/libexec/PlistBuddy -c 'Print MOHLauncherSource' "$STAGE/mohlauncher.app/Contents/Info.plist" > /dev/null || die "mohlauncher has no source stamp"
 cp "$ROOT/COPYING.txt" "$STAGE/"
 for l in "${LICENSES[@]}"; do

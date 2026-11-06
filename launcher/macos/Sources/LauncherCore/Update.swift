@@ -20,6 +20,9 @@ public enum UpdateNames {
     public static let workFolder = ".mohlauncher-update"
     public static let game = "openmohaa.app"
     public static let launcher = "mohlauncher.app"
+    /// Where the old launcher waits on a volume without RENAME_SWAP: beside the game, under a name that can be opened.
+    /// There's a moment with no mohlauncher.app there, and a player must still have a launcher to recover with.
+    public static let launcherAside = "mohlauncher-update-interrupted.app"
     /// The git tree of launcher/ a launcher was built from (bundle.sh): the same on both sides means nothing changed.
     /// CI's builds differ byte for byte even from the same source, so the bytes can't tell.
     public static let sourceKey = "MOHLauncherSource"
@@ -31,7 +34,7 @@ public enum UpdateNames {
 
 /// Why an update didn't happen. The folder is as it was, except after .interrupted (the next start tries again).
 public enum UpdateError: Error, Equatable {
-    case cancelled, tryLater, network, diskFull, unwritable, blocked, gameRunning, translocated, interrupted, failed
+    case cancelled, tryLater, network, diskFull, unwritable, blocked, gameRunning, translocated, interrupted, failed, busy
 
     /// One plain sentence for the player
     public var message: String {
@@ -46,6 +49,7 @@ public enum UpdateError: Error, Equatable {
         case .translocated: return "macOS is running MoHAA Launcher from a temporary copy, so it can't update itself: use the command in INSTALL.txt, or download the new version."
         case .interrupted: return "The update couldn't be finished or undone: open MoHAA Launcher again, or download the game again if this stays."
         case .failed: return "The update couldn't be installed, so nothing was changed: try again later."
+        case .busy: return "Another MoHAA Launcher is working on this game folder: close it and try again."
         }
     }
 }
@@ -157,9 +161,11 @@ public struct UpdateOffer: Equatable, Sendable {
     public var size: Int64
     /// In lowercase hex; GitHub's digest and the notes' row agree on it
     public var sha256: String
+    /// The game's commit this was found newer than: another game in the folder since makes it void
+    public var installed: String
 
-    public init(commit: String, asset: String, url: URL, size: Int64, sha256: String) {
-        (self.commit, self.asset, self.url, self.size, self.sha256) = (commit, asset, url, size, sha256)
+    public init(commit: String, asset: String, url: URL, size: Int64, sha256: String, installed: String = "") {
+        (self.commit, self.asset, self.url, self.size, self.sha256, self.installed) = (commit, asset, url, size, sha256, installed)
     }
 
     public var shortCommit: String { String(commit.prefix(8)) }
@@ -216,7 +222,22 @@ public typealias UpdateFetch = @Sendable (URL) async throws -> (status: Int, dat
 /// no commit (a build without git), one GitHub doesn't know (a local build), no network, the rate limit or any
 /// unexpected answer is nil, and nothing is said about it.
 public func checkForUpdate(installed: String?, fetch: UpdateFetch) async -> UpdateOffer? {
-    guard let installed, installed.count >= 7, installed.allSatisfy(\.isHexDigit) else { return nil }
+    if case .newer(let offer) = await checkRelease(installed: installed, fetch: fetch) { return offer }
+    return nil
+}
+
+public enum UpdateCheck: Equatable {
+    case newer(UpdateOffer)
+    /// GitHub answered: this game has nothing to update to
+    case notNewer
+    /// No answer that says either: the network, the rate limit, a local build's commit, CI at work
+    case noAnswer
+}
+
+/// The same with the difference that matters once an offer has been made: at Update, "not newer" ends it, and "no
+/// answer" goes on with the offer so that the download's own checks say what's wrong.
+public func checkRelease(installed: String?, fetch: UpdateFetch) async -> UpdateCheck {
+    guard let installed, installed.count >= 7, installed.allSatisfy(\.isHexDigit) else { return .notNewer }
     let api = "https://api.github.com/repos/\(UpdateNames.repository)"
     func get(_ path: String) async -> Data? {
         guard let url = URL(string: api + path), let (status, data) = try? await fetch(url), status == 200 else { return nil }
@@ -225,21 +246,22 @@ public func checkForUpdate(installed: String?, fetch: UpdateFetch) async -> Upda
     guard let releaseData = await get("/releases/tags/\(UpdateNames.tag)"),
           let asset = releaseAsset(releaseData),
           let refData = await get("/git/ref/tags/\(UpdateNames.tag)"),
-          var ref = try? JSONDecoder().decode(RefJSON.self, from: refData) else { return nil }
+          var ref = try? JSONDecoder().decode(RefJSON.self, from: refData) else { return .noAnswer }
     // annotated, as CI makes it: the tag object names the commit
     if ref.object.type == "tag" {
         guard let tagData = await get("/git/tags/\(ref.object.sha)"),
-              let tag = try? JSONDecoder().decode(RefJSON.self, from: tagData) else { return nil }
+              let tag = try? JSONDecoder().decode(RefJSON.self, from: tagData) else { return .noAnswer }
         ref = tag
     }
-    guard ref.object.type == "commit", isFullCommit(ref.object.sha) else { return nil }
+    guard ref.object.type == "commit", isFullCommit(ref.object.sha) else { return .noAnswer }
     let commit = ref.object.sha
-    if commit.hasPrefix(installed.lowercased()) { return nil }
+    if commit.hasPrefix(installed.lowercased()) { return .notNewer }
     // The second page of one commit each leaves the commits and the changed files out: the answer is a few kB
     guard let compareData = await get("/compare/\(installed)...\(commit)?per_page=1&page=2"),
-          let comparison = try? JSONDecoder().decode(CompareJSON.self, from: compareData),
-          comparison.status == "ahead" else { return nil }
-    return UpdateOffer(commit: commit, asset: asset.asset, url: asset.url, size: asset.size, sha256: asset.sha256)
+          let comparison = try? JSONDecoder().decode(CompareJSON.self, from: compareData) else { return .noAnswer }
+    guard comparison.status == "ahead" else { return .notNewer }
+    return .newer(UpdateOffer(commit: commit, asset: asset.asset, url: asset.url, size: asset.size, sha256: asset.sha256,
+                              installed: installed))
 }
 
 /// Nothing of it stays on the internal disk, and a stale answer can't be served
@@ -549,8 +571,12 @@ public func unpackUpdate(zip: URL, asset: String, commit: String, folder: URL,
         if ditto.output.contains("Permission denied") || ditto.output.contains("not permitted") { throw UpdateError.unwritable }
         throw UpdateError.tryLater
     }
-    // what ditto made, whatever the listing said: one folder, and only folders and files in it
-    guard (try? FileManager.default.contentsOfDirectory(atPath: unpacked.path)) == [top] else { throw UpdateError.tryLater }
+    // what ditto made, whatever the listing said: one folder, and only folders and files in it. On a volume without
+    // extended attributes (exFAT, FAT32) macOS keeps them in ._ files beside each file, and moves them with it.
+    func sidecar(_ name: String) -> Bool { name.hasPrefix("._") }
+    guard (try? FileManager.default.contentsOfDirectory(atPath: unpacked.path))?.filter({ !sidecar($0) }) == [top] else {
+        throw UpdateError.tryLater
+    }
     let stage = unpacked.appendingPathComponent(top)
     let game = stage.appendingPathComponent(UpdateNames.game)
     let launcher = stage.appendingPathComponent(UpdateNames.launcher)
@@ -562,7 +588,9 @@ public func unpackUpdate(zip: URL, asset: String, commit: String, folder: URL,
         case S_IFDIR: break
         case S_IFREG:
             let inner = String(url.path.dropFirst(base.count))
-            if !inner.hasPrefix(UpdateNames.game + "/"), !inner.hasPrefix(UpdateNames.launcher + "/") { files.append(inner) }
+            if !inner.hasPrefix(UpdateNames.game + "/"), !inner.hasPrefix(UpdateNames.launcher + "/"), !sidecar(url.lastPathComponent) {
+                files.append(inner)
+            }
         default: throw UpdateError.tryLater // a link could point anywhere
         }
     }
@@ -576,10 +604,10 @@ public func unpackUpdate(zip: URL, asset: String, commit: String, folder: URL,
     let newGame = BundleInfo(app: game)
     let newLauncher = BundleInfo(app: launcher)
     guard let id = newGame.identifier, id == oldGame.identifier,
-          let lid = newLauncher.identifier, lid == oldLauncher.identifier else { throw UpdateError.tryLater }
+          let lid = newLauncher.identifier, lid == oldLauncher.identifier else { throw UpdateError.failed }
     for (app, info) in [(game, newGame), (launcher, newLauncher)] {
         guard let exe = info.executable, access(app.appendingPathComponent("Contents/MacOS/\(exe)").path, X_OK) == 0,
-              verify(app) else { throw UpdateError.tryLater }
+              verify(app) else { throw UpdateError.failed }
     }
     // the zip is the tag's build, or it's CI at work
     guard let built = installedCommit(folder: stage), commit.hasPrefix(built) else { throw UpdateError.tryLater }
@@ -606,10 +634,12 @@ public func volumeSupportsSwap(_ path: String) -> Bool {
 }
 
 struct UpdateJournal: Codable, Equatable {
-    enum Phase: String, Codable { case started, committed, undone }
+    enum Phase: String, Codable { case started, committed }
 
     struct App: Codable, Equatable {
         var name: String
+        /// What it must be to count as the player's own reinstall
+        var identifier: String?
         /// With a swap, the two bundles' inodes tell which is where: they keep them, whatever iCloud does to the rest
         var oldInode: UInt64
         var newInode: UInt64
@@ -667,6 +697,12 @@ public final class UpdateInstaller {
     private var journalFile: URL { work.appendingPathComponent("journal.json") }
     private func stage(_ j: UpdateJournal) -> URL { work.appendingPathComponent(j.stage) }
     private var oldFolder: URL { work.appendingPathComponent("old") }
+    private var launcherAside: URL { folder.appendingPathComponent(UpdateNames.launcherAside) }
+
+    /// Where an old app waits, without RENAME_SWAP
+    private func aside(_ name: String) -> URL {
+        name == UpdateNames.launcher ? launcherAside : oldFolder.appendingPathComponent(name)
+    }
 
     private func inode(_ url: URL) -> UInt64? {
         var st = stat()
@@ -728,7 +764,7 @@ public final class UpdateInstaller {
             guard isDirectory(old), isDirectory(new), let oldInode = inode(old), let newInode = inode(new) else {
                 throw UpdateError.failed
             }
-            appEntries.append(.init(name: name, oldInode: oldInode, newInode: newInode))
+            appEntries.append(.init(name: name, identifier: BundleInfo(app: new).identifier, oldInode: oldInode, newInode: newInode))
         }
         var fileEntries: [UpdateJournal.File] = []
         var created: [String] = []
@@ -750,6 +786,8 @@ public final class UpdateInstaller {
             created += parents
         }
         let useSwap = !forceRename && volumeSupportsSwap(folder.path)
+        // an earlier update's, with no journal left to want it
+        if exists(launcherAside) { try FileManager.default.removeItem(at: launcherAside) }
         return UpdateJournal(commit: staged.commit, useSwap: useSwap, phase: .started,
                              stage: String(staged.stage.path.dropFirst(base.count)),
                              apps: appEntries, files: fileEntries, createdFolders: created)
@@ -768,7 +806,7 @@ public final class UpdateInstaller {
             }
         }
         let inStage = exists(stage(j).appendingPathComponent(app.name))
-        let inOld = exists(oldFolder.appendingPathComponent(app.name))
+        let inOld = exists(aside(app.name))
         switch (exists(target), inStage, inOld) {
         case (true, true, false): return .old
         case (false, true, true): return .aside
@@ -789,7 +827,7 @@ public final class UpdateInstaller {
             if state(app, j) == .old {
                 try FileManager.default.createDirectory(at: oldFolder, withIntermediateDirectories: true)
                 try failpoint("aside:\(app.name)")
-                try rawRename(target, oldFolder.appendingPathComponent(app.name))
+                try rawRename(target, aside(app.name))
             }
             if state(app, j) == .aside {
                 try failpoint("place:\(app.name)")
@@ -814,7 +852,7 @@ public final class UpdateInstaller {
             }
             if state(app, j) == .aside {
                 try failpoint("undo-aside:\(app.name)")
-                try rawRename(oldFolder.appendingPathComponent(app.name), target)
+                try rawRename(aside(app.name), target)
             }
         }
         syncFolder(folder)
@@ -869,22 +907,29 @@ public final class UpdateInstaller {
 
     /// Everything back, last first. Its steps can be run again: it starts from what the folder holds.
     private func rollback(_ j: UpdateJournal) throws {
-        var journal = j
         for file in j.files.reversed() { try moveOut(file, j) }
         for name in j.createdFolders.reversed() { _ = rmdir(folder.appendingPathComponent(name).path) }
         for app in j.apps.reversed() {
             try moveOut(app, j)
             guard state(app, j) == .old else { throw UpdateError.interrupted }
         }
+        // Everything's back, and no journal means nothing to undo. Not a new journal: on a full disk that write fails,
+        // and the folder that's already fine would be reported as broken.
         try failpoint("undone")
-        journal.phase = .undone
-        try writeJournal(journal)
+        if unlink(journalFile.path) != 0, errno != ENOENT { throw posixError() }
+        syncFolder(work)
     }
 
     /// After the commit or the rollback nothing here matters any more, so a failure to remove it doesn't either
     private func removeWork() throws {
         try failpoint("cleanup")
-        try FileManager.default.removeItem(at: work)
+        let fm = FileManager.default
+        if exists(launcherAside) { try fm.removeItem(at: launcherAside) }
+        // the journal last: without it, what's left is known to be nothing anyone needs (recover)
+        for name in try fm.contentsOfDirectory(atPath: work.path) where name != journalFile.lastPathComponent {
+            try fm.removeItem(at: work.appendingPathComponent(name))
+        }
+        try fm.removeItem(at: work)
     }
 
     private func removeWorkQuietly() throws {
@@ -899,9 +944,11 @@ public final class UpdateInstaller {
     /// follow it, so the pair always matches. .interrupted if the undoing failed too: the journal stays for recover.
     /// The work folder stays when the launcher was replaced: the old bundle in it is running, and the next start
     /// removes it (`finishInstall`).
-    public func install(_ staged: StagedUpdate) throws {
+    public func install(_ staged: StagedUpdate, gameRunning: () -> Bool = { false }) throws {
         let journal = try makeJournal(staged)
         try syncTree(staged.stage)
+        // again, as close to the first move as it can be: that sync can take a while on a slow disk
+        if gameRunning() { throw UpdateError.gameRunning }
         try failpoint("journal")
         try writeJournal(journal)
         do {
@@ -925,6 +972,17 @@ public final class UpdateInstaller {
     /// The work folder removed when the update didn't replace the running launcher's bundle
     public func finishInstall(replacedLauncher: Bool) throws {
         if !replacedLauncher { try removeWorkQuietly() }
+    }
+
+    /// Anything but folders where the old files wait, or the launcher's old bundle beside the game
+    private var hasOldFiles: Bool {
+        if exists(launcherAside) { return true }
+        guard exists(oldFolder) else { return false }
+        var found = false
+        try? walk(oldFolder) { _, st in
+            if st.st_mode & S_IFMT != S_IFDIR { found = true }
+        }
+        return found
     }
 
     private func readJournal() throws -> UpdateJournal? {
@@ -967,25 +1025,35 @@ public final class UpdateInstaller {
             return .noAccess
         }
         guard let journal else {
-            // written before the first move: nothing moved
+            // None is written before the first move and removed after the last undoing. Old files with no journal
+            // would mean it never reached the disk though the moves did (a volume that doesn't keep the order): those
+            // files aren't for removing.
+            if hasOldFiles { return .stuck }
             try removeWorkQuietly()
             return .cleaned
         }
-        switch journal.phase {
-        case .committed:
+        if journal.phase == .committed {
             try removeWorkQuietly()
             return .finished(commit: journal.commit)
-        case .undone:
-            try removeWorkQuietly()
-            return .cleaned
-        case .started:
-            break
         }
         if gameRunning() { return .gameRunning }
         let states = journal.apps.map { state($0, journal) }
-        if states.contains(.unknown) { return .stuck }
+        if states.contains(.unknown) {
+            // what the update's message tells a player to do: fresh apps in place, whole and the right ones. Then
+            // that's the install, and what's here is an old story. Anything else isn't this code's to guess at.
+            let reinstalled = journal.apps.allSatisfy {
+                let app = folder.appendingPathComponent($0.name)
+                return isDirectory(app) && BundleInfo(app: app).identifier == $0.identifier && verify(app)
+            }
+            guard reinstalled else { return .stuck }
+            try removeWorkQuietly()
+            return .cleaned
+        }
         let allNew = states.allSatisfy { $0 == .new }
-        if allNew, journal.apps.allSatisfy({ verify(folder.appendingPathComponent($0.name)) }) {
+        let verified = allNew && journal.apps.allSatisfy { verify(folder.appendingPathComponent($0.name)) }
+        // the signatures can take a while, and the game may have started meanwhile
+        if gameRunning() { return .gameRunning }
+        if verified {
             do {
                 try forward(journal)
                 try removeWorkQuietly()
@@ -1021,17 +1089,29 @@ public enum UpdateStage: Sendable {
 
 /// Only one launcher works on a folder at a time; the system lets go when the process ends, however it ends
 public final class UpdateLock {
+    public enum Result {
+        case locked(UpdateLock)
+        /// Another launcher has it
+        case busy
+        /// The folder can't be opened: macOS's folder access was refused
+        case noAccess
+    }
+
     private var fd: Int32
 
-    /// nil if another launcher holds it. A volume without locks gets none, and works as if it had it.
-    public init?(folder: URL) {
-        fd = open(folder.path, O_RDONLY | O_CLOEXEC)
-        guard fd >= 0 else { return nil }
+    private init(fd: Int32) {
+        self.fd = fd
+    }
+
+    /// A volume without locks gets none, and works as if it had it
+    public static func take(folder: URL) -> Result {
+        let fd = open(folder.path, O_RDONLY | O_CLOEXEC)
+        guard fd >= 0 else { return .noAccess }
         if flock(fd, LOCK_EX | LOCK_NB) != 0, errno == EWOULDBLOCK {
             close(fd)
-            fd = -1
-            return nil
+            return .busy
         }
+        return .locked(UpdateLock(fd: fd))
     }
 
     public func release() {
@@ -1101,7 +1181,7 @@ public func runUpdate(_ offer: UpdateOffer, folder: URL, flags: UpdateFlags, hoo
         if gameIsRunning(folder: folder) { throw UpdateError.gameRunning }
         guard flags.beginInstall() else { throw UpdateError.cancelled }
         report(.install)
-        try installer.install(staged)
+        try installer.install(staged, gameRunning: { gameIsRunning(folder: folder) })
         try installer.finishInstall(replacedLauncher: staged.replaceLauncher)
         return staged.replaceLauncher
     } catch UpdateError.interrupted {

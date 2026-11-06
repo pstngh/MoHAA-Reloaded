@@ -86,6 +86,10 @@ final class LauncherModel: ObservableObject {
     var updating = false
     var recovering = false
     var recoveryPending = false
+    /// What's in the folder isn't what an interrupted update left, or it can't be put right (yet)
+    @Published var updateStuck = false
+    var stuckShown = false
+    var nextRecovery: Date?
     var updateChecked = false
     var updateDeclined = false
     var quitAfterUpdate = false
@@ -155,7 +159,7 @@ final class LauncherModel: ObservableObject {
     var canStart: Bool { folder != nil && gameAppURL != nil && !running && !starting && (!updateBusy || updaterOff) }
     var canConnect: Bool { canStart && !trimmed(address).isEmpty }
     /// Something stands in the way: no game, or a game folder that can't be written
-    var problem: Bool { folder == nil || gameAppURL == nil || unwritable }
+    var problem: Bool { folder == nil || gameAppURL == nil || unwritable || updateStuck }
 
     /// The problem first: the line may be cut off at the end
     var status: String {
@@ -163,6 +167,7 @@ final class LauncherModel: ObservableObject {
         let path = (folder.path as NSString).abbreviatingWithTildeInPath
         if gameAppURL == nil { return "No openmohaa.app beside the launcher or in \(path)" }
         if unwritable { return "Can't write to the game folder: \(path)" }
+        if updateStuck { return "An update didn't finish: download the game again from the release page." }
         if running { return "\(game.title) is running." }
         return path
     }
@@ -441,6 +446,11 @@ final class LauncherModel: ObservableObject {
 
     func start(connect: Bool) {
         guard !running, !starting, !updateBusy || updaterOff else { return }
+        // a second launcher, while the first one is moving the files
+        if let own = updateFolder(launcherBundle: Bundle.main.bundleURL), case .busy = UpdateLock.take(folder: own) {
+            alertMessage = UpdateError.busy.message
+            return
+        }
         findGame()
         guard let folder else {
             askForFolder = true
