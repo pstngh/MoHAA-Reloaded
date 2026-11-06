@@ -466,6 +466,8 @@ extension LauncherModel {
             if kills.contains(step) {
                 NSLog("mohlauncher test hook: killed before %@", step)
                 kill(getpid(), SIGKILL)
+                // the signal can land a moment later: this thread mustn't get to the step it's meant to die before
+                while true { sleep(1) }
             }
         }
         return slow
