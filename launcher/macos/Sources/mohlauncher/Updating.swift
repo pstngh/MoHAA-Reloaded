@@ -170,13 +170,32 @@ extension LauncherModel {
     private func checkForNewerBuild(folder: URL) {
         guard !updateChecked else { return }
         updateChecked = true
+        let fetch = updateFetch(folder: folder)
         Task { @MainActor in
             let offer = await Task.detached { () -> UpdateOffer? in
-                await checkForUpdate(installed: installedCommit(folder: folder), fetch: { try await githubFetch($0) })
+                await checkForUpdate(installed: installedCommit(folder: folder), fetch: fetch)
             }.value
             updateOffer = offer
             offerUpdate()
         }
+    }
+
+    /// How GitHub is asked. A test build may answer from files saved in the folder (mktest.sh makes them with a token):
+    /// GitHub allows 60 calls an hour without one, and a day of tests uses them up.
+    private func updateFetch(folder: URL) -> UpdateFetch {
+        #if MOHL_TEST_HOOKS
+        let saved = folder.appendingPathComponent(".mohl-test-github")
+        if FileManager.default.fileExists(atPath: saved.path) {
+            return { url in
+                let path = url.path
+                let name = path.hasSuffix("/releases/tags/\(UpdateNames.tag)") ? "release"
+                    : path.hasSuffix("/git/ref/tags/\(UpdateNames.tag)") ? "ref"
+                    : path.contains("/git/tags/") ? "tag" : "compare"
+                return (200, try Data(contentsOf: saved.appendingPathComponent("\(name).json")))
+            }
+        }
+        #endif
+        return { try await githubFetch($0) }
     }
 
     /// The newer build found, offered when nothing stands in the way: no other question open, and the game not running
@@ -234,6 +253,7 @@ extension LauncherModel {
         updateCanCancel = true
         updateText = "Downloading \(stale.asset)…"
         updateDialog = .progress
+        let fetch = updateFetch(folder: folder)
         var hooks = UpdateHooks()
         #if MOHL_TEST_HOOKS
         let slow = LauncherModel.testHooks(&hooks, folder: folder)
@@ -245,7 +265,7 @@ extension LauncherModel {
             // the network's message, and against a replaced zip the size or the hash says try later. GitHub saying it's
             // not newer any more ends it.
             let fresh = await Task.detached { () -> UpdateCheck in
-                await checkRelease(installed: stale.installed, fetch: { try await githubFetch($0) })
+                await checkRelease(installed: stale.installed, fetch: fetch)
             }.value
             let offer: UpdateOffer
             switch fresh {
