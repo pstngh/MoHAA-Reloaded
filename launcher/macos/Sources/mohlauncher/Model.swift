@@ -390,32 +390,17 @@ final class LauncherModel: ObservableObject {
         }, set: { $0.apply(to: &self.edits) })
     }
 
-    private var fullscreenStretch: Int { Int(edits.get("r_fullscreenStretch")) ?? 0 }
-
-    /// r_fullscreenStretch 1: exclusive fullscreen at a size of another shape than the screen's fills it, stretched
-    var stretch: Bool {
-        get { fullscreenStretch != 0 && fullscreenStretch != 2 }
-        set { edits.set("r_fullscreenStretch", newValue ? "1" : "0") }
+    var scaling: Binding<FullscreenScaling> {
+        Binding(get: {
+            FullscreenScaling(cvar: self.edits.get("r_fullscreenStretch"))
+        }, set: { $0.apply(to: &self.edits) })
     }
 
-    /// Only exclusive fullscreen scales the game to the screen, and only another shape than the screen's has bars
-    var stretchApplies: Bool {
+    /// Only exclusive fullscreen scales the game to the screen, and the screen's own size has nothing to scale
+    var scalingApplies: Bool {
         let size = currentResolution
         return displayMode.wrappedValue == .exclusive
-            && stretchMatters(Resolution(size.width, size.height), desktop: desktop)
-    }
-
-    /// r_fullscreenStretch 2: exclusive fullscreen at a size other than the screen's stays 1:1, between black bars
-    var oneToOne: Bool {
-        get { fullscreenStretch == 2 }
-        set { edits.set("r_fullscreenStretch", newValue ? "2" : "0") }
-    }
-
-    /// Only exclusive fullscreen scales the game to the screen, and only the screen's own size has nothing to change
-    var oneToOneApplies: Bool {
-        let size = currentResolution
-        return displayMode.wrappedValue == .exclusive
-            && oneToOneMatters(Resolution(size.width, size.height), desktop: desktop)
+            && scalingMatters(Resolution(size.width, size.height), desktop: desktop)
     }
 
     var resolutionEntries: [ResolutionEntry] {

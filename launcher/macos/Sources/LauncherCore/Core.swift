@@ -360,16 +360,31 @@ public func resolutionList(desktop: Resolution) -> [Resolution] {
     return list.sorted { $0.width != $1.width ? $0.width > $1.width : $0.height > $1.height }
 }
 
-/// Exclusive fullscreen scales a size to the screen: one of another shape than the screen's keeps its shape between
-/// black bars, or with r_fullscreenStretch 1 fills the screen stretched; one of the screen's shape fills it either way
-/// (an unknown screen: it may matter)
-public func stretchMatters(_ size: Resolution, desktop: Resolution) -> Bool {
-    desktop.width <= 0 || desktop.height <= 0 || size.width * desktop.height != size.height * desktop.width
+/// r_fullscreenStretch: how exclusive fullscreen shows a size other than the screen's. Fit keeps its shape, as large as
+/// it fits, between black bars if the shape differs; Stretch fills the screen; 1:1 doesn't scale it, centered between
+/// black bars.
+public enum FullscreenScaling: Int, CaseIterable, Identifiable {
+    case fit, stretch, oneToOne
+
+    public var id: Int { rawValue }
+    public var title: String { ["Fit", "Stretch", "1:1"][rawValue] }
+
+    /// As the game reads it: 2 is 1:1, and any other number but 0 is stretched
+    public init(cvar: String) {
+        switch Int(cvar) ?? 0 {
+        case 0: self = .fit
+        case 2: self = .oneToOne
+        default: self = .stretch
+        }
+    }
+
+    public func apply(to edits: inout CvarEdits) {
+        edits.set("r_fullscreenStretch", String(rawValue))
+    }
 }
 
-/// r_fullscreenStretch 2 shows a size 1:1, centered between black bars: every size but the screen's own changes (an
-/// unknown screen: it may matter)
-public func oneToOneMatters(_ size: Resolution, desktop: Resolution) -> Bool {
+/// The screen's own size has nothing to scale (an unknown screen: it may matter)
+public func scalingMatters(_ size: Resolution, desktop: Resolution) -> Bool {
     desktop.width <= 0 || desktop.height <= 0 || size != desktop
 }
 

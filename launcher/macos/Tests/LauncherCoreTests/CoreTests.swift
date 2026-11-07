@@ -171,19 +171,24 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(aspectRatio(5120, 1440), "32:9")
         XCTAssertEqual(aspectRatio(1000, 1000), "1:1")
 
-        // r_fullscreenStretch only changes a size of another shape than the screen's
-        let screen = Resolution(1920, 1080)
-        XCTAssertTrue(stretchMatters(Resolution(1440, 1080), desktop: screen))
-        XCTAssertTrue(stretchMatters(Resolution(1280, 1024), desktop: screen))
-        XCTAssertFalse(stretchMatters(Resolution(1280, 720), desktop: screen))
-        XCTAssertFalse(stretchMatters(Resolution(1920, 1080), desktop: screen))
-        XCTAssertTrue(stretchMatters(Resolution(1280, 720), desktop: Resolution(0, 0)))
+        // r_fullscreenStretch as the game reads it, and written back as the number it means
+        XCTAssertEqual(FullscreenScaling(cvar: "0"), .fit)
+        XCTAssertEqual(FullscreenScaling(cvar: ""), .fit)
+        XCTAssertEqual(FullscreenScaling(cvar: "1"), .stretch)
+        XCTAssertEqual(FullscreenScaling(cvar: "3"), .stretch)
+        XCTAssertEqual(FullscreenScaling(cvar: "2"), .oneToOne)
+        var scalingEdits = CvarEdits(defaults: [("r_fullscreenStretch", "0")])
+        for scaling in FullscreenScaling.allCases {
+            scaling.apply(to: &scalingEdits)
+            XCTAssertEqual(FullscreenScaling(cvar: scalingEdits.get("r_fullscreenStretch")), scaling)
+        }
 
-        // r_fullscreenStretch 2 changes every size but the screen's own
-        XCTAssertTrue(oneToOneMatters(Resolution(800, 600), desktop: screen))
-        XCTAssertTrue(oneToOneMatters(Resolution(1280, 720), desktop: screen))
-        XCTAssertFalse(oneToOneMatters(Resolution(1920, 1080), desktop: screen))
-        XCTAssertTrue(oneToOneMatters(Resolution(1920, 1080), desktop: Resolution(0, 0)))
+        // every size but the screen's own has something to scale
+        let screen = Resolution(1920, 1080)
+        XCTAssertTrue(scalingMatters(Resolution(800, 600), desktop: screen))
+        XCTAssertTrue(scalingMatters(Resolution(1280, 720), desktop: screen))
+        XCTAssertFalse(scalingMatters(Resolution(1920, 1080), desktop: screen))
+        XCTAssertTrue(scalingMatters(Resolution(1920, 1080), desktop: Resolution(0, 0)))
     }
 
     func testSettingsAndServers() throws {

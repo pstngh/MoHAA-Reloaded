@@ -529,24 +529,19 @@ struct DisplaySection: View {
         let mode = model.displayMode.wrappedValue
         VStack(alignment: .leading, spacing: Metrics.gap) {
             Field("Resolution", accessory: {
-                HStack(spacing: Metrics.gap / 2) {
-                    LabelAction(systemImage: model.stretch ? "checkmark.square.fill" : "square", title: "Stretch",
-                                active: model.stretch, enabled: model.stretchApplies) {
-                        model.stretch.toggle()
+                Picker("Scaling", selection: model.scaling) {
+                    ForEach(FullscreenScaling.allCases) { scaling in
+                        Text(scaling.title).tag(scaling)
                     }
-                    .help(model.stretchApplies
-                          ? "Fill the screen with this size, stretched. Off: its own shape, with black bars at the sides."
-                          : mode == .exclusive ? "This size has the screen's shape: it fills the screen either way"
-                          : "Only exclusive fullscreen scales the game to the screen")
-                    LabelAction(systemImage: model.oneToOne ? "checkmark.square.fill" : "square", title: "1:1",
-                                active: model.oneToOne, enabled: model.oneToOneApplies) {
-                        model.oneToOne.toggle()
-                    }
-                    .help(model.oneToOneApplies
-                          ? "Show this size pixel for pixel, centered, with black bars around it. Off: scaled to the screen."
-                          : mode == .exclusive ? "This is the screen's own size: it's pixel for pixel either way"
-                          : "Only exclusive fullscreen scales the game to the screen")
                 }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .fixedSize() // the name whole
+                .disabled(!model.scalingApplies)
+                .help(model.scalingApplies
+                      ? "How this size fits the screen. Fit: its own shape, as large as it fits. Stretch: fills the screen. 1:1: pixel for pixel, centered between black bars."
+                      : mode == .exclusive ? "This is the screen's own size: there's nothing to scale"
+                      : "Only exclusive fullscreen scales the game to the screen")
             }) {
                 Picker("Resolution", selection: model.resolution) {
                     ForEach(model.resolutionEntries) { entry in
