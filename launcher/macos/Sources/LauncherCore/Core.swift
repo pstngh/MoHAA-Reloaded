@@ -367,6 +367,12 @@ public func stretchMatters(_ size: Resolution, desktop: Resolution) -> Bool {
     desktop.width <= 0 || desktop.height <= 0 || size.width * desktop.height != size.height * desktop.width
 }
 
+/// r_fullscreenStretch 2 shows a size 1:1, centered between black bars: every size but the screen's own changes (an
+/// unknown screen: it may matter)
+public func oneToOneMatters(_ size: Resolution, desktop: Resolution) -> Bool {
+    desktop.width <= 0 || desktop.height <= 0 || size != desktop
+}
+
 /// A data folder (main, mainta, maintt), in any case: retail folders sometimes come as MAIN or MainTA
 public func dataFolder(_ folder: URL, _ name: String) -> URL? {
     let fm = FileManager.default

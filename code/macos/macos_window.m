@@ -34,8 +34,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 //   centers windows whether r_centerWindow is set or not), at its old position after a vid_restart;
 // - exclusive fullscreen, r_fullscreen 1: a borderless window over the screen at the shielding level. The display
 //   keeps its mode: the game renders at r_mode's size and the display hardware scales the drawable to the screen
-//   (still direct to display, no GPU pass), in its own shape or stretched (r_fullscreenStretch; docs/METAL_PORT_PLAN.md
-//   3.1 #60). Losing
+//   (still direct to display, no GPU pass), in its own shape or stretched, or centers it unscaled
+//   (r_fullscreenStretch; docs/METAL_PORT_PLAN.md 3.1 #60, #68). Losing
 //   the focus minimizes the window, as SDL does;
 // - borderless fullscreen, r_fullscreen 1 + r_noborder 1: a native fullscreen Space at the desktop resolution, or
 //   with r_borderlessWindow 1 a borderless window over the screen at the normal level, the dock and menu bar
@@ -112,7 +112,7 @@ cvar_t *r_displayIndex; // display to open the window on (0 = main)
 cvar_t *r_metalDrawables; // CAMetalLayer.maximumDrawableCount (2 or 3; 0 = 3 for vsync in fullscreen, else 2)
 static cvar_t *r_borderlessWindow; // borderless fullscreen: 1 = a borderless window over the screen, 0 = a fullscreen Space
 static cvar_t *r_blackOutDisplays; // 1 = the other displays covered black while the game is in fullscreen in front
-static cvar_t *r_fullscreenStretch; // exclusive fullscreen at another size than the display's: 1 = stretched to the screen, 0 = its own shape
+static cvar_t *r_fullscreenStretch; // exclusive fullscreen at another size than the display's: 1 = stretched to the screen, 0 = its own shape, 2 = 1:1, centered
 
 static void MTLimp_EnterExclusive( void );
 static void MTLimp_LeaveExclusive( qboolean minimize );
@@ -967,8 +967,9 @@ MTLimp_SetGameRect
 Where the game's image goes on the screen. Exclusive fullscreen at another size than the display's: the drawable has
 the game's size and the display hardware scales it to the layer, stretched to fill it with r_fullscreenStretch 1, else
 in its own shape, as large as it fits, centered between black bars (the layer's black background). Still direct to
-display, with no GPU pass: as a PC's GPU scaling (docs/METAL_PORT_PLAN.md 2, session 80). Everywhere else the drawable
-has the screen's size. The input layer maps the cursor through the same rectangle (MacOS_GameRect).
+display, with no GPU pass: as a PC's GPU scaling (docs/METAL_PORT_PLAN.md 2, session 80). r_fullscreenStretch 2 doesn't
+scale it: 1:1, centered between the same bars (3.1 #68). Everywhere else the drawable has the screen's size. The input
+layer maps the cursor through the same rectangle (MacOS_GameRect).
 ===============
 */
 static void MTLimp_SetGameRect( int screenWidth, int screenHeight, CGFloat scale )
@@ -979,11 +980,14 @@ static void MTLimp_SetGameRect( int screenWidth, int screenHeight, CGFloat scale
 	if( width == screenWidth && height == screenHeight )
 		return;
 
-	mac_layer.contentsGravity = r_fullscreenStretch->integer ? kCAGravityResize : kCAGravityResizeAspect;
+	mac_layer.contentsGravity = r_fullscreenStretch->integer == 2 ? kCAGravityCenter :
+		r_fullscreenStretch->integer ? kCAGravityResize : kCAGravityResizeAspect;
 	mac_layer.backgroundColor = CGColorGetConstantColor( kCGColorBlack );
 
 	// the rectangle Core Animation fits the drawable into, for the cursor
-	if( r_fullscreenStretch->integer )
+	if( r_fullscreenStretch->integer == 2 )
+		;	// 1:1: width and height stay the drawable's
+	else if( r_fullscreenStretch->integer )
 	{
 		width = screenWidth;
 		height = screenHeight;
@@ -1006,7 +1010,7 @@ static void MTLimp_SetGameRect( int screenWidth, int screenHeight, CGFloat scale
 	mac_gameRect = NSMakeRect( x / scale, ( screenHeight - y - height ) / scale, width / scale, height / scale );
 
 	ri.Printf( PRINT_ALL, "Scaled to %dx%d of the %dx%d screen (%s)\n", width, height, screenWidth, screenHeight,
-		r_fullscreenStretch->integer ? "stretched" : "its own shape" );
+		r_fullscreenStretch->integer == 2 ? "1:1" : r_fullscreenStretch->integer ? "stretched" : "its own shape" );
 }
 
 /*

@@ -178,6 +178,12 @@ final class CoreTests: XCTestCase {
         XCTAssertFalse(stretchMatters(Resolution(1280, 720), desktop: screen))
         XCTAssertFalse(stretchMatters(Resolution(1920, 1080), desktop: screen))
         XCTAssertTrue(stretchMatters(Resolution(1280, 720), desktop: Resolution(0, 0)))
+
+        // r_fullscreenStretch 2 changes every size but the screen's own
+        XCTAssertTrue(oneToOneMatters(Resolution(800, 600), desktop: screen))
+        XCTAssertTrue(oneToOneMatters(Resolution(1280, 720), desktop: screen))
+        XCTAssertFalse(oneToOneMatters(Resolution(1920, 1080), desktop: screen))
+        XCTAssertTrue(oneToOneMatters(Resolution(1920, 1080), desktop: Resolution(0, 0)))
     }
 
     func testSettingsAndServers() throws {

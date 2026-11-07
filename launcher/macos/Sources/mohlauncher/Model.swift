@@ -390,9 +390,11 @@ final class LauncherModel: ObservableObject {
         }, set: { $0.apply(to: &self.edits) })
     }
 
-    /// r_fullscreenStretch: exclusive fullscreen at a size of another shape than the screen's fills it, stretched
+    private var fullscreenStretch: Int { Int(edits.get("r_fullscreenStretch")) ?? 0 }
+
+    /// r_fullscreenStretch 1: exclusive fullscreen at a size of another shape than the screen's fills it, stretched
     var stretch: Bool {
-        get { (Int(edits.get("r_fullscreenStretch")) ?? 0) != 0 }
+        get { fullscreenStretch != 0 && fullscreenStretch != 2 }
         set { edits.set("r_fullscreenStretch", newValue ? "1" : "0") }
     }
 
@@ -401,6 +403,19 @@ final class LauncherModel: ObservableObject {
         let size = currentResolution
         return displayMode.wrappedValue == .exclusive
             && stretchMatters(Resolution(size.width, size.height), desktop: desktop)
+    }
+
+    /// r_fullscreenStretch 2: exclusive fullscreen at a size other than the screen's stays 1:1, between black bars
+    var oneToOne: Bool {
+        get { fullscreenStretch == 2 }
+        set { edits.set("r_fullscreenStretch", newValue ? "2" : "0") }
+    }
+
+    /// Only exclusive fullscreen scales the game to the screen, and only the screen's own size has nothing to change
+    var oneToOneApplies: Bool {
+        let size = currentResolution
+        return displayMode.wrappedValue == .exclusive
+            && oneToOneMatters(Resolution(size.width, size.height), desktop: desktop)
     }
 
     var resolutionEntries: [ResolutionEntry] {
