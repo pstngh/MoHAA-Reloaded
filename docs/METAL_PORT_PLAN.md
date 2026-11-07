@@ -2747,7 +2747,7 @@ Plan (session 1):
 
 ## 6. Next session
 
-**Session 85 (2026-11-07): exclusive fullscreen 1:1** (`r_fullscreenStretch 2`, the launcher's **1:1**; §3.1 #68), pushed at the user's "u can push the commit to metal and update everything": a code push, so CI's `release-v1` puts it in v1.0.0. Left to see on the Mac: `port/build.sh metal`, then in exclusive fullscreen `r_fullscreenStretch 2; vid_restart` at 800×600: sharp, centered, the menus' cursor on target, still direct to display; and the launcher's label row on a screen. v1.0.0's notes, written by hand, don't mention it yet.
+**Session 85 (2026-11-07): exclusive fullscreen 1:1** (`r_fullscreenStretch 2`, the launcher's **1:1**; §3.1 #68), pushed at the user's "u can push the commit to metal and update everything": a code push, so CI's `release-v1` puts it in v1.0.0. Left to see on the Mac: `port/build.sh metal`, then in exclusive fullscreen `r_fullscreenStretch 2; vid_restart` at 800×600: sharp, centered, the menus' cursor on target, still direct to display; and the launcher's label row on a screen. v1.0.0's notes and `docs/RELEASE_NOTES_1.0.0.md` have it, at the user's "Yes, add it".
 
 **Session 84 (2026-11-06): `metal`'s docs tidied, CLAUDE.md's history moved here** (§3.1 #66; the history is at the end of this section). Docs only, so v1.0.0 is untouched. Both of its open items were done the same day: the `misc/openmohaa*` logos are gone (the other unused files stay, by 7a's rules; #66), and `vulkan-cleanup` is merged into `vulkan`. Open: whether the GameScript fix ended the macOS abort on `quit` (#67).
 
